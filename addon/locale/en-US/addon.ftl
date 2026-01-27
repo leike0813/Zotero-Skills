@@ -1,6 +1,13 @@
 startup-begin = Addon is loading
 startup-finish = Addon is ready
 menuitem-label = Addon Template: Helper Examples
+menuitem-sample-selection = Sample Selection Context
+menuitem-validate-selection = Validate Selection Context
+sample-output-dir-missing = Please set the sample output directory in preferences.
+sample-output-saved = Saved selection context: { $path }
+sample-output-dir-title = Select Sample Output Directory
+validate-selection-ok = Selection context is valid.
+validate-selection-failed = Selection context is invalid
 menupopup-label = Addon Template: Menupopup
 menuitem-submenulabel = Addon Template
 menuitem-filemenulabel = Addon Template: File Menuitem

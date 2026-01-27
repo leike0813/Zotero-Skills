@@ -1,24 +1,24 @@
 {
-  "name": "zotero-plugin-template",
+  "name": "zotero-skills",
   "type": "module",
-  "version": "3.1.0",
-  "description": "Zotero Plugin Template",
+  "version": "0.0.0",
+  "description": "A Zotero plugin for execute agent skills using Skill-Runner backend",
   "config": {
-    "addonName": "Zotero Plugin Template",
-    "addonID": "addontemplate@euclpts.com",
-    "addonRef": "addontemplate",
-    "addonInstance": "AddonTemplate",
-    "prefsPrefix": "extensions.zotero.addontemplate"
+    "addonName": "Zotero Skills",
+    "addonID": "zotero-skills@leike0813@gmail.com",
+    "addonRef": "zotero-skills",
+    "addonInstance": "ZoteroSkills",
+    "prefsPrefix": "extensions.zotero.zotero-skills"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/windingwind/zotero-plugin-template.git"
+    "url": "git+https://github.com/leike0813/Zotero-Skills.git"
   },
-  "author": "windingwind",
+  "author": "Joshua Reed",
   "bugs": {
-    "url": "https://github.com/windingwind/zotero-plugin-template/issues"
+    "url": "https://github.com/leike0813/Zotero-Skills/issues"
   },
-  "homepage": "https://github.com/windingwind/zotero-plugin-template#readme",
+  "homepage": "https://github.com/leike0813/Zotero-Skills#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",
@@ -27,9 +27,13 @@
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
     "test": "zotero-plugin test",
+    "test:zotero": "zotero-plugin test",
+    "test:node": "tsx node_modules/mocha/bin/mocha \"test/**/*.test.ts\" --require test/setup/zotero-mock.ts",
     "update-deps": "npm update --save"
   },
   "dependencies": {
+    "ajv": "^8.12.0",
+    "ajv-formats": "^2.1.1",
     "zotero-plugin-toolkit": "^5.1.0-beta.13"
   },
   "devDependencies": {
@@ -41,6 +45,7 @@
     "eslint": "^9.39.2",
     "mocha": "^11.7.5",
     "prettier": "^3.7.4",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "zotero-plugin-scaffold": "^0.8.2",
     "zotero-types": "^4.1.0-beta.4"

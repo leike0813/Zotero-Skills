@@ -1,5 +1,6 @@
 import { config } from "../../package.json";
 import { FluentMessageId } from "../../typings/i10n";
+import { createZToolkit } from "./ztoolkit";
 
 export { initLocale, getString, getLocaleID };
 
@@ -7,11 +8,19 @@ export { initLocale, getString, getLocaleID };
  * Initialize locale data
  */
 function initLocale() {
-  const l10n = new (
+  const toolkit = getToolkit();
+  const localizationCtor =
     typeof Localization === "undefined"
-      ? ztoolkit.getGlobal("Localization")
-      : Localization
-  )([`${config.addonRef}-addon.ftl`], true);
+      ? toolkit.getGlobal("Zotero")?.getMainWindow?.()?.Localization ||
+        toolkit.getGlobal("Localization")
+      : Localization;
+  if (!localizationCtor) {
+    throw new Error("Localization is not available");
+  }
+  const l10n = new localizationCtor(
+    [`${config.addonRef}-addon.ftl`],
+    true,
+  );
   addon.data.locale = {
     current: l10n,
   };
@@ -93,4 +102,10 @@ function _getString(
 
 function getLocaleID(id: FluentMessageId) {
   return `${config.addonRef}-${id}`;
+}
+
+function getToolkit() {
+  if (addon?.data?.ztoolkit) return addon.data.ztoolkit;
+  addon.data.ztoolkit = createZToolkit();
+  return addon.data.ztoolkit;
 }

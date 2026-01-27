@@ -1,6 +1,13 @@
 startup-begin = 插件加载中
 startup-finish = 插件已就绪
 menuitem-label = 插件模板: 帮助工具样例
+menuitem-sample-selection = 采样选区上下文
+menuitem-validate-selection = 校验选区上下文
+sample-output-dir-missing = 请在首选项中设置采样输出目录。
+sample-output-saved = 已保存选区上下文：{ $path }
+sample-output-dir-title = 选择采样输出目录
+validate-selection-ok = 选区上下文校验通过。
+validate-selection-failed = 选区上下文校验失败
 menupopup-label = 插件模板: 弹出菜单
 menuitem-submenulabel = 插件模板：子菜单
 menuitem-filemenulabel = 插件模板: 文件菜单

@@ -8,6 +8,7 @@ import {
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
+import { registerSelectionSampleMenu } from "./modules/selectionSample";
 
 async function onStartup() {
   await Promise.all([
@@ -71,6 +72,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   UIExampleFactory.registerStyleSheet(win);
 
   UIExampleFactory.registerRightClickMenuItem();
+  registerSelectionSampleMenu();
 
   UIExampleFactory.registerRightClickMenuPopup(win);
 
@@ -90,7 +92,6 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   });
   popupWin.startCloseTimer(5000);
 
-  addon.hooks.onDialogEvents("dialogExample");
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {

@@ -450,7 +450,7 @@ export class PromptExampleFactory {
           const container = prompt.createCommandsContainer();
           container.classList.add("suggestions");
           ids = filter(ids);
-          console.log(ids.length);
+          Zotero.debug(`PromptExampleFactory search ids: ${ids.length}`);
           if (ids.length == 0) {
             const s = new Zotero.Search();
             const operators = [
@@ -494,7 +494,7 @@ export class PromptExampleFactory {
             }
           }
           ids = filter(ids);
-          console.log(ids.length);
+          Zotero.debug(`PromptExampleFactory search ids: ${ids.length}`);
           if (ids.length > 0) {
             ids.forEach((id: number) => {
               const item = Zotero.Items.get(id);

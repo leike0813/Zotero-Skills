@@ -14,3 +14,13 @@ tsconfig.tsbuildinfo
 .scaffold
 build
 logs
+
+.vscode
+.history
+
+.pnpmfile.cjs
+
+attachments
+
+reference/Skill-Runner
+reference/zotero

@@ -1,5 +1,6 @@
 import { config } from "../../package.json";
 import { getString } from "../utils/locale";
+import { getPref, setPref } from "../utils/prefs";
 
 export async function registerPrefsScripts(_window: Window) {
   // This function is called when the prefs window is opened
@@ -107,6 +108,34 @@ async function updatePrefsUI() {
 }
 
 function bindPrefEvents() {
+  const sampleOutputDirInput = addon.data
+    .prefs!.window.document?.querySelector(
+      `#zotero-prefpane-${config.addonRef}-sample-output-dir`,
+    ) as HTMLInputElement | null;
+  if (sampleOutputDirInput) {
+    sampleOutputDirInput.value = getPref("sampleOutputDir") || "";
+    sampleOutputDirInput.addEventListener("change", (e: Event) => {
+      const value = (e.target as HTMLInputElement).value;
+      setPref("sampleOutputDir", value);
+    });
+  }
+
+  addon.data
+    .prefs!.window.document?.querySelector(
+      `#zotero-prefpane-${config.addonRef}-sample-output-dir-browse`,
+    )
+    ?.addEventListener("command", async () => {
+      const folder = await new ztoolkit.FilePicker(
+        getString("sample-output-dir-title"),
+        "folder",
+      ).open();
+      if (!folder || typeof folder !== "string") return;
+      if (sampleOutputDirInput) {
+        sampleOutputDirInput.value = folder;
+      }
+      setPref("sampleOutputDir", folder);
+    });
+
   addon.data
     .prefs!.window.document?.querySelector(
       `#zotero-prefpane-${config.addonRef}-enable`,

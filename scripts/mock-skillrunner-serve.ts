@@ -1,4 +1,5 @@
 import path from "path";
+import { fileURLToPath } from "url";
 import {
   literatureDigestBundlePath,
   startMockSkillRunnerServer,
@@ -12,7 +13,7 @@ type CliOptions = {
 };
 
 function projectRoot() {
-  const filePath = decodeURIComponent(new URL(import.meta.url).pathname);
+  const filePath = fileURLToPath(import.meta.url);
   return path.resolve(path.dirname(filePath), "..");
 }
 
@@ -63,7 +64,6 @@ function parseArgs(rootDir: string): CliOptions {
 
 async function main() {
   const rootDir = projectRoot();
-  process.chdir(rootDir);
 
   const options = parseArgs(rootDir);
   const server = await startMockSkillRunnerServer({

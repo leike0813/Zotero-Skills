@@ -1,11 +1,21 @@
 import { spawn } from "child_process";
 
 type Child = ReturnType<typeof spawn>;
+type SpawnOptions = Parameters<typeof spawn>[2];
 
-const NPM_CMD = process.platform === "win32" ? "npm.cmd" : "npm";
 const MOCK_PORT = "8030";
 const MOCK_HOST = "127.0.0.1";
 const TARGET_TEST_SCRIPT = process.argv[2] || "test:zotero:raw";
+
+function spawnNpm(args: string[], options?: SpawnOptions) {
+  if (process.platform === "win32") {
+    return spawn("cmd.exe", ["/d", "/s", "/c", "npm", ...args], {
+      ...options,
+      windowsHide: true,
+    });
+  }
+  return spawn("npm", args, options);
+}
 
 function waitForMockReady(mock: Child, timeoutMs = 8000) {
   return new Promise<void>((resolve, reject) => {
@@ -52,7 +62,7 @@ function waitForMockReady(mock: Child, timeoutMs = 8000) {
 
 function runTargetTests() {
   return new Promise<number>((resolve) => {
-    const proc = spawn(NPM_CMD, ["run", TARGET_TEST_SCRIPT], {
+    const proc = spawnNpm(["run", TARGET_TEST_SCRIPT], {
       stdio: "inherit",
       env: process.env,
     });
@@ -102,8 +112,7 @@ function terminateMock(mock: Child) {
 }
 
 async function main() {
-  const mock = spawn(
-    NPM_CMD,
+  const mock = spawnNpm(
     [
       "run",
       "mock:skillrunner",

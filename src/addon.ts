@@ -1,7 +1,8 @@
 import { config } from "../package.json";
-import { ColumnOptions, DialogHelper } from "zotero-plugin-toolkit";
+import { DialogHelper } from "zotero-plugin-toolkit";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
+import type { LoadedWorkflows } from "./workflows/types";
 
 class Addon {
   public data: {
@@ -16,8 +17,10 @@ class Addon {
     };
     prefs?: {
       window: Window;
-      columns: Array<ColumnOptions>;
-      rows: Array<{ [dataKey: string]: string }>;
+    };
+    workflow?: {
+      workflowsDir: string;
+      loaded: LoadedWorkflows;
     };
     dialog?: DialogHelper;
   };

@@ -1,17 +1,21 @@
 import { assert } from "chai";
-import { handlers } from "../src/handlers";
-import { buildSelectionContext } from "../src/modules/selectionContext";
-import dualParent from "./fixtures/selection-context/selection-context-dual-parent.json";
-import mixAll from "./fixtures/selection-context/selection-context-mix-all.json";
-import multiAttachDiffParents from "./fixtures/selection-context/selection-context-multi-attach-diff-parents.json";
-import multiAttachSameParent from "./fixtures/selection-context/selection-context-multi-attach-same-parent.json";
-import multiPdfAndMd from "./fixtures/selection-context/selection-context-multi-pdf-and-md.json";
-import orphanNote from "./fixtures/selection-context/selection-context-orphan-note.json";
-import singleMarkdown from "./fixtures/selection-context/selection-context-single-markdown.json";
-import singleParent from "./fixtures/selection-context/selection-context-single-parent.json";
-import singlePdf from "./fixtures/selection-context/selection-context-single-pdf.json";
-import variousTypeAttachDiffParents from "./fixtures/selection-context/selection-context-various-type-attach-diff-parents.json";
-import variousTypeAttachSameParent from "./fixtures/selection-context/selection-context-various-type-attach-same-parent.json";
+import { handlers } from "../../src/handlers";
+import { buildSelectionContext } from "../../src/modules/selectionContext";
+import dualParent from "../fixtures/selection-context/selection-context-dual-parent.json";
+import mixAll from "../fixtures/selection-context/selection-context-mix-all.json";
+import multiAttachDiffParents from "../fixtures/selection-context/selection-context-multi-attach-diff-parents.json";
+import multiAttachSameParent from "../fixtures/selection-context/selection-context-multi-attach-same-parent.json";
+import multiMarkdownDiffParents from "../fixtures/selection-context/selection-context-multi-markdown-diff-parents.json";
+import multiMarkdownNoPdf from "../fixtures/selection-context/selection-context-multi-markdown-no-pdf.json";
+import multiMarkdownSameParent from "../fixtures/selection-context/selection-context-multi-markdown-same-parent.json";
+import multiMarkdownWithParent from "../fixtures/selection-context/selection-context-multi-markdown-with-parent.json";
+import multiPdfAndMd from "../fixtures/selection-context/selection-context-multi-pdf-and-md.json";
+import orphanNote from "../fixtures/selection-context/selection-context-orphan-note.json";
+import singleMarkdown from "../fixtures/selection-context/selection-context-single-markdown.json";
+import singleParent from "../fixtures/selection-context/selection-context-single-parent.json";
+import singlePdf from "../fixtures/selection-context/selection-context-single-pdf.json";
+import variousTypeAttachDiffParents from "../fixtures/selection-context/selection-context-various-type-attach-diff-parents.json";
+import variousTypeAttachSameParent from "../fixtures/selection-context/selection-context-various-type-attach-same-parent.json";
 
 type ItemBase = {
   id: number;
@@ -524,6 +528,22 @@ describe("selection-context rebuild", function () {
     {
       name: "selection-context-multi-attach-same-parent.json",
       data: multiAttachSameParent,
+    },
+    {
+      name: "selection-context-multi-markdown-diff-parents.json",
+      data: multiMarkdownDiffParents,
+    },
+    {
+      name: "selection-context-multi-markdown-no-pdf.json",
+      data: multiMarkdownNoPdf,
+    },
+    {
+      name: "selection-context-multi-markdown-same-parent.json",
+      data: multiMarkdownSameParent,
+    },
+    {
+      name: "selection-context-multi-markdown-with-parent.json",
+      data: multiMarkdownWithParent,
     },
     { name: "selection-context-multi-pdf-and-md.json", data: multiPdfAndMd },
     { name: "selection-context-orphan-note.json", data: orphanNote },

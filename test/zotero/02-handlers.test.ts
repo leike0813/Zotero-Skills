@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { handlers } from "../src/handlers";
+import { handlers } from "../../src/handlers";
 
 const KEEP_TEST_OBJECTS = (() => {
   const parseFlag = (raw?: string | null) => {
@@ -33,7 +33,7 @@ const KEEP_TEST_OBJECTS = (() => {
   if (parsedGlobal !== undefined) {
     return parsedGlobal;
   }
-  return true;
+  return false;
 })();
 
 function isZoteroEnv() {

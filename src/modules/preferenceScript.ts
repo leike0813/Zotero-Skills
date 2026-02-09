@@ -1,160 +1,69 @@
 import { config } from "../../package.json";
-import { getString } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
+import { getEffectiveWorkflowDir } from "./workflowRuntime";
 
-export async function registerPrefsScripts(_window: Window) {
-  // This function is called when the prefs window is opened
-  // See addon/content/preferences.xhtml onpaneload
+const DEFAULT_SKILLRUNNER_ENDPOINT = "http://127.0.0.1:8030";
+
+export async function registerPrefsScripts(window: Window) {
   if (!addon.data.prefs) {
-    addon.data.prefs = {
-      window: _window,
-      columns: [
-        {
-          dataKey: "title",
-          label: getString("prefs-table-title"),
-          fixedWidth: true,
-          width: 100,
-        },
-        {
-          dataKey: "detail",
-          label: getString("prefs-table-detail"),
-        },
-      ],
-      rows: [
-        {
-          title: "Orange",
-          detail: "It's juicy",
-        },
-        {
-          title: "Banana",
-          detail: "It's sweet",
-        },
-        {
-          title: "Apple",
-          detail: "I mean the fruit APPLE",
-        },
-      ],
-    };
+    addon.data.prefs = { window };
   } else {
-    addon.data.prefs.window = _window;
+    addon.data.prefs.window = window;
   }
-  updatePrefsUI();
   bindPrefEvents();
 }
 
-async function updatePrefsUI() {
-  // You can initialize some UI elements on prefs window
-  // with addon.data.prefs.window.document
-  // Or bind some events to the elements
-  const renderLock = ztoolkit.getGlobal("Zotero").Promise.defer();
-  if (addon.data.prefs?.window == undefined) return;
-  const tableHelper = new ztoolkit.VirtualizedTable(addon.data.prefs?.window)
-    .setContainerId(`${config.addonRef}-table-container`)
-    .setProp({
-      id: `${config.addonRef}-prefs-table`,
-      // Do not use setLocale, as it modifies the Zotero.Intl.strings
-      // Set locales directly to columns
-      columns: addon.data.prefs?.columns,
-      showHeader: true,
-      multiSelect: true,
-      staticColumns: true,
-      disableFontSizeScaling: true,
-    })
-    .setProp("getRowCount", () => addon.data.prefs?.rows.length || 0)
-    .setProp(
-      "getRowData",
-      (index) =>
-        addon.data.prefs?.rows[index] || {
-          title: "no data",
-          detail: "no data",
-        },
-    )
-    // Show a progress window when selection changes
-    .setProp("onSelectionChange", (selection) => {
-      new ztoolkit.ProgressWindow(config.addonName)
-        .createLine({
-          text: `Selected line: ${addon.data.prefs?.rows
-            .filter((v, i) => selection.isSelected(i))
-            .map((row) => row.title)
-            .join(",")}`,
-          progress: 100,
-        })
-        .show();
-    })
-    // When pressing delete, delete selected line and refresh table.
-    // Returning false to prevent default event.
-    .setProp("onKeyDown", (event: KeyboardEvent) => {
-      if (event.key == "Delete" || (Zotero.isMac && event.key == "Backspace")) {
-        addon.data.prefs!.rows =
-          addon.data.prefs?.rows.filter(
-            (v, i) => !tableHelper.treeInstance.selection.isSelected(i),
-          ) || [];
-        tableHelper.render();
-        return false;
-      }
-      return true;
-    })
-    // For find-as-you-type
-    .setProp(
-      "getRowString",
-      (index) => addon.data.prefs?.rows[index].title || "",
-    )
-    // Render the table.
-    .render(-1, () => {
-      renderLock.resolve();
-    });
-  await renderLock.promise;
-  ztoolkit.log("Preference table rendered!");
-}
-
 function bindPrefEvents() {
-  const sampleOutputDirInput = addon.data
-    .prefs!.window.document?.querySelector(
-      `#zotero-prefpane-${config.addonRef}-sample-output-dir`,
-    ) as HTMLInputElement | null;
-  if (sampleOutputDirInput) {
-    sampleOutputDirInput.value = getPref("sampleOutputDir") || "";
-    sampleOutputDirInput.addEventListener("change", (e: Event) => {
-      const value = (e.target as HTMLInputElement).value;
-      setPref("sampleOutputDir", value);
+  const doc = addon.data.prefs?.window.document;
+  if (!doc) {
+    return;
+  }
+
+  const endpointInput = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-endpoint`,
+  ) as HTMLInputElement | null;
+  const workflowDirInput = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-dir`,
+  ) as HTMLInputElement | null;
+  const scanButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-scan`,
+  ) as XUL.Button | null;
+  if (!endpointInput) {
+    return;
+  }
+
+  const endpoint = String(getPref("skillRunnerEndpoint") || "").trim();
+  const normalizedEndpoint = endpoint || DEFAULT_SKILLRUNNER_ENDPOINT;
+  if (!endpoint) {
+    setPref("skillRunnerEndpoint", normalizedEndpoint);
+  }
+  endpointInput.value = normalizedEndpoint;
+
+  endpointInput.addEventListener("change", (event: Event) => {
+    const value = (event.target as HTMLInputElement).value.trim();
+    const nextValue = value || DEFAULT_SKILLRUNNER_ENDPOINT;
+    setPref("skillRunnerEndpoint", nextValue);
+    endpointInput.value = nextValue;
+  });
+
+  if (workflowDirInput) {
+    const workflowDir = String(getPref("workflowDir") || "").trim();
+    const normalizedWorkflowDir = workflowDir || getEffectiveWorkflowDir();
+    workflowDirInput.value = normalizedWorkflowDir;
+    setPref("workflowDir", normalizedWorkflowDir);
+    workflowDirInput.addEventListener("change", (event: Event) => {
+      const value = (event.target as HTMLInputElement).value.trim();
+      const nextValue = value || getEffectiveWorkflowDir();
+      setPref("workflowDir", nextValue);
+      workflowDirInput.value = nextValue;
     });
   }
 
-  addon.data
-    .prefs!.window.document?.querySelector(
-      `#zotero-prefpane-${config.addonRef}-sample-output-dir-browse`,
-    )
-    ?.addEventListener("command", async () => {
-      const folder = await new ztoolkit.FilePicker(
-        getString("sample-output-dir-title"),
-        "folder",
-      ).open();
-      if (!folder || typeof folder !== "string") return;
-      if (sampleOutputDirInput) {
-        sampleOutputDirInput.value = folder;
-      }
-      setPref("sampleOutputDir", folder);
+  if (scanButton) {
+    scanButton.addEventListener("command", () => {
+      void addon.hooks.onPrefsEvent("scanWorkflows", {
+        window: addon.data.prefs?.window,
+      });
     });
-
-  addon.data
-    .prefs!.window.document?.querySelector(
-      `#zotero-prefpane-${config.addonRef}-enable`,
-    )
-    ?.addEventListener("command", (e: Event) => {
-      ztoolkit.log(e);
-      addon.data.prefs!.window.alert(
-        `Successfully changed to ${(e.target as XUL.Checkbox).checked}!`,
-      );
-    });
-
-  addon.data
-    .prefs!.window.document?.querySelector(
-      `#zotero-prefpane-${config.addonRef}-input`,
-    )
-    ?.addEventListener("change", (e: Event) => {
-      ztoolkit.log(e);
-      addon.data.prefs!.window.alert(
-        `Successfully changed to ${(e.target as HTMLInputElement).value}!`,
-      );
-    });
+  }
 }

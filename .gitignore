@@ -17,6 +17,7 @@ logs
 
 .vscode
 .history
+.codex
 
 .pnpmfile.cjs
 
@@ -24,3 +25,5 @@ logs
 
 reference/Skill-Runner
 reference/zotero
+
+*-safeBackup-*

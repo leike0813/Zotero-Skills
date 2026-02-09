@@ -5,40 +5,42 @@
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
 >
   <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
-  <checkbox
-    id="zotero-prefpane-__addonRef__-enable"
-    preference="enable"
-    data-l10n-id="pref-enable"
-  />
-  <hbox>
+  <label><html:h3 data-l10n-id="pref-section-plugin"></html:h3></label>
+  <hbox align="center">
     <html:label
-      for="zotero-prefpane-__addonRef__-input"
-      data-l10n-id="pref-input"
+      for="zotero-prefpane-__addonRef__-workflow-dir"
+      data-l10n-id="pref-workflow-dir"
     ></html:label>
-    <html:input
-      type="text"
-      id="zotero-prefpane-__addonRef__-input"
-      preference="input"
-    ></html:input>
   </hbox>
   <hbox>
-    <html:label
-      for="zotero-prefpane-__addonRef__-sample-output-dir"
-      data-l10n-id="pref-sample-output-dir"
-    ></html:label>
     <html:input
       type="text"
-      id="zotero-prefpane-__addonRef__-sample-output-dir"
-      preference="sampleOutputDir"
+      id="zotero-prefpane-__addonRef__-workflow-dir"
+      preference="workflowDir"
     ></html:input>
     <button
-      id="zotero-prefpane-__addonRef__-sample-output-dir-browse"
-      data-l10n-id="pref-sample-output-dir-browse"
+      id="zotero-prefpane-__addonRef__-workflow-scan"
+      data-l10n-id="pref-workflow-scan"
     ></button>
   </hbox>
-  <hbox class="virtualized-table-container" flex="1" height="300px">
-    <html:div id="__addonRef__-table-container" />
+  <description data-l10n-id="pref-workflow-dir-help"></description>
+  <description data-l10n-id="pref-plugin-placeholder"></description>
+
+  <label><html:h3 data-l10n-id="pref-section-backends"></html:h3></label>
+  <hbox align="center">
+    <html:label
+      for="zotero-prefpane-__addonRef__-skillrunner-endpoint"
+      data-l10n-id="pref-skillrunner-endpoint"
+    ></html:label>
   </hbox>
+  <hbox>
+    <html:input
+      type="text"
+      id="zotero-prefpane-__addonRef__-skillrunner-endpoint"
+      preference="skillRunnerEndpoint"
+    ></html:input>
+  </hbox>
+  <description data-l10n-id="pref-skillrunner-endpoint-help"></description>
 </groupbox>
 <vbox>
   <html:label

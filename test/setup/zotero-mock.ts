@@ -1,8 +1,8 @@
 import { config } from "../../package.json";
-import { promises as fs } from "node:fs";
-import * as fsSync from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { promises as fs } from "fs";
+import * as fsSync from "fs";
+import os from "os";
+import path from "path";
 
 type TagEntry = { tag: string; type?: number };
 
@@ -2095,6 +2095,11 @@ const fieldIdByTypeAndBase = new Map<number, Map<number, number>>([
 ]);
 
 function createZoteroMock(): ZoteroMock {
+  prefsStore.set(
+    `${config.prefsPrefix}.workflowDir`,
+    path.join(process.cwd(), "workflows"),
+  );
+
   const mock: ZoteroMock = {
     Promise: {
       delay: (ms: number) =>

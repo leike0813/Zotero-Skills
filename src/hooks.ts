@@ -9,6 +9,8 @@ import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { registerSelectionSampleMenu } from "./modules/selectionSample";
+import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
+import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
 
 async function onStartup() {
   await Promise.all([
@@ -18,6 +20,8 @@ async function onStartup() {
   ]);
 
   initLocale();
+
+  await rescanWorkflowRegistry();
 
   BasicExampleFactory.registerPrefs();
 
@@ -70,13 +74,8 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   });
 
   UIExampleFactory.registerStyleSheet(win);
-
-  UIExampleFactory.registerRightClickMenuItem();
+  ensureWorkflowMenuForWindow(win);
   registerSelectionSampleMenu();
-
-  UIExampleFactory.registerRightClickMenuPopup(win);
-
-  UIExampleFactory.registerWindowMenuWithSeparator();
 
   PromptExampleFactory.registerNormalCommandExample();
 
@@ -142,6 +141,13 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "load":
       registerPrefsScripts(data.window);
       break;
+    case "scanWorkflows": {
+      const state = await rescanWorkflowRegistry();
+      refreshWorkflowMenus();
+      const message = `Workflow scan finished: loaded=${state.loaded.workflows.length}, warnings=${state.loaded.warnings.length}, errors=${state.loaded.errors.length}`;
+      data.window?.alert?.(message);
+      break;
+    }
     default:
       return;
   }

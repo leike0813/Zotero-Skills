@@ -36,6 +36,12 @@ ProviderRegistry {
 - 执行 step-based RequestSpec
 - 不内置业务逻辑，仅负责协议编排
 
+## 声明式 request.kind（Workflow 侧）
+
+- Workflow `request.kind` 可映射到内核构建器，再编译为 `http.steps`
+- M1 首个内置 kind：`skillrunner.job.v1`
+- Provider 仍只消费编译后的 `http.steps`，不直接处理业务语义
+
 ## 行为与边界
 
 - Provider 不处理业务落库（交给 applyResult/Handlers）

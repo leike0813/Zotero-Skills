@@ -19,7 +19,21 @@
 0.3 文档化要求
 - 每个阶段完成后更新开发文档与变更记录
 - 新增/调整流程需同步更新本文件与 `README.md`
-- 测试框架策略详见 `docs/testing-framework.md`
+- 测试框架策略详见 `doc/testing-framework.md`
+
+0.4 测试入口与顺序（当前约定）
+- Zotero 真实环境测试主入口：`npm run test`（同 `npm run test:zotero`）
+- Zotero 测试单入口目录：`test/zotero`
+- Node 测试入口：`npm run test:node`（开发加速，不替代 Zotero 交付验证）
+- 当前测试顺序（Zotero/Node 一致）：
+  1) `00-startup.test.ts`
+  2) `01-selection-context-schema.test.ts`
+  3) `02-handlers.test.ts`
+  4) `03-selection-context-rebuild.test.ts`
+  5) `04-workflow-loader-validation.test.ts`
+  6) `05-workflow-literature-digest.test.ts`
+  7) `06-literature-digest-filter-inputs.test.ts`
+- `selection-context-mix-all` 在重建测试中保持最后执行
 
 
 ================================================================================
@@ -192,7 +206,7 @@ workflows/
     workflow.json
     hooks/
       filterInputs.js   # 可选
-      buildRequest.js   # 必需
+      buildRequest.js   # 可选（声明式 request 无法覆盖时使用）
       applyResult.js    # 必需
 
 6.2 workflow.json 示例（M1）
@@ -202,12 +216,18 @@ workflows/
   "version": "1.0.0",
   "backend": "skillrunner-local",
   "inputs": {
-    "attachments": { "mime": ["text/markdown", "text/x-markdown", "text/plain"], "max": 1 }
+    "unit": "attachment",
+    "accepts": {
+      "mime": ["text/markdown", "text/x-markdown", "text/plain"]
+    },
+    "per_parent": { "min": 1, "max": 1 }
   },
   "hooks": {
     "filterInputs": "hooks/filterInputs.js",
-    "buildRequest": "hooks/buildRequest.js",
     "applyResult": "hooks/applyResult.js"
+  },
+  "request": {
+    "kind": "skillrunner.job.v1"
   },
   "execution": {
     "mode": "auto",
@@ -226,6 +246,10 @@ workflows/
 说明：
 - Manifest 的 result 只描述“接口返回了什么/如何获取”，不负责落库或创建笔记。
 - 结果应用逻辑由 applyResult Hook 执行。
+- buildRequest 能力必需，但实现方式二选一：
+  - `hooks.buildRequest`（代码模式）
+  - `request`（声明模式，推荐）
+- 两者同时存在时，`hooks.buildRequest` 优先。
 
 6.3 RequestSpec（M1 = http.steps）
 buildRequest 必须返回 step-based RequestSpec，示意：
@@ -255,9 +279,17 @@ buildRequest 必须返回 step-based RequestSpec，示意：
 }
 
 6.4 Hooks 说明（最小接口）
-- filterInputs(ctx): 输入过滤/校验，返回 InputSelection（可选）
-- buildRequest(ctx, input): 构建 RequestSpec（必需，且不直接发请求）
+- filterInputs(ctx): 歧义裁决（可选）
+  - 仅在声明式 `inputs` 无法唯一确定合法输入时触发
+  - 若未提供 hook，或 hook 未返回合法输入，则该歧义输入单元报错并跳过
+- buildRequest(ctx, input): 构建 RequestSpec（能力必需，可由 hook 或声明式 request 实现，且不直接发请求）
 - applyResult(ctx, result): 处理结果并落库（必需）
+- Hook 运行时提供 `runtime.helpers` 内建函数（见 `doc/components/workflow-hook-helpers.md`），用于复用常见逻辑。
+
+6.4.1 M1 输入与调度约束
+- M1 固定输入单元类型：`attachment`、`parent`、`note`
+- M1 不引入批处理调度配置：每个合法输入单元单独生成一个 Job
+- 复杂输入选择规则（同父多附件择一、同名优先、时间优先等）统一交给 `filterInputs`
 
 6.5 execution.mode
 - auto：由 Provider 根据 steps 与返回状态自动判定（默认）
@@ -267,6 +299,17 @@ buildRequest 必须返回 step-based RequestSpec，示意：
 6.6 Workflow 加载位置
 - 插件内置：workflows/（随版本发布）
 - 用户覆盖（可选，后续）：<profile>/zotero-skillclient/workflows/
+
+6.7 Loader 运行时兼容约束（当前实现）
+- `loader` 同时支持 Zotero 与 Node 两种运行时。
+- 禁止在 `loader` 顶层静态引入 Node 内置模块（`fs/path/url` 等），避免 Zotero 打包失败。
+- 路径拼接必须先做 segment 归一化，再交给 `PathUtils.join`，避免 `NS_ERROR_FILE_UNRECOGNIZED_PATH`。
+- Hook 加载策略：
+  - Zotero：优先脚本加载器加载；失败回退到文本导出转换。
+  - Node：优先动态 import；失败回退到文本导出转换。
+- Bundle 读取策略：
+  - Zotero：zip reader 直接读取条目。
+  - Node：Windows 使用 PowerShell `Expand-Archive`，其他平台使用 `unzip`。
 
 
 ================================================================================
@@ -382,4 +425,4 @@ M3：规范化与生态
 附录：Architecture Flow
 ================================================================================
 
-本项目运行逻辑详见 `docs/architecture-flow.md`。
+本项目运行逻辑详见 `doc/architecture-flow.md`。

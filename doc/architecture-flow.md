@@ -56,9 +56,10 @@ flowchart TD
 
 1) Job 请求构建  
 - Job 队列接收 Selection Context + Workflow manifest  
-- 执行 filterInputs（可选）与 Workflow-level 输入校验  
-  - 校验失败：不创建 Job  
-  - 校验通过：调用 buildRequest 生成 RequestSpec 并入队
+- 执行声明式初筛（inputs）与 filterInputs（可选，处理复杂歧义）  
+  - 对非法输入单元：直接跳过  
+  - 对合法输入单元：调用 buildRequest 生成 RequestSpec 并入队  
+  - 若合法输入单元为 0：本次触发不创建 Job（用于 UI 禁用原因）
 
 2) 调度执行  
 - FIFO 调度  

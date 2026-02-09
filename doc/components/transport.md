@@ -2,56 +2,78 @@
 
 ## 目标
 
-为 Provider 提供底层 HTTP/上传/下载能力，不理解业务协议。
+为 Provider 提供底层 HTTP/上传/下载能力，不理解 Workflow 业务语义。
 
 ## 职责
 
-- 执行单次 HTTP 请求
-- 处理 multipart 上传（Zip/文件）
-- 下载文件与二进制响应
-- 统一错误映射
+- 执行 `http.steps` 请求流水（create/upload/poll/fetch）
+- 处理 multipart 上传（按文件路径上传）
+- 处理轮询状态（queued/running/succeeded/failed）
+- 下载 bundle 二进制结果
+- 统一错误映射（HTTP 错误、超时、远端失败）
 
 ## 输入
 
-- `TransportRequest`（Provider 构造的单次请求）
-- 文件输入（由 Provider 指定）
+- `HttpStepsRequest`（由 `workflow.request.kind = skillrunner.job.v1` 生成）
+- `baseUrl`（后端地址）
 
 ## 输出
 
-- `TransportResponse`（HTTP 响应）
-- `TransportError`（失败）
+- `SkillRunnerExecutionResult`
+  - `status = succeeded`
+  - `requestId`
+  - `bundleBytes`
 
 ## 数据结构（建议）
 
 ```
 TransportRequest {
-  method: string
-  url: string
-  headers?: Record<string, string>
-  query?: Record<string, string | number | boolean>
-  json?: Record<string, unknown>
-  files?: Array<{ key: string; path: string }>
+  kind: "http.steps"
+  steps: Array<{
+    id: "create" | "upload" | "poll" | "bundle" | "result"
+    request: {
+      method: string
+      path: string
+      json?: Record<string, unknown>
+      multipart?: boolean
+    }
+    files?: Array<{ key: string; path: string }>
+    extract?: { request_id?: string }
+  }>
+  poll?: { interval_ms?: number; timeout_ms?: number }
 }
 
 TransportResponse {
-  status: number
-  headers: Record<string, string>
-  body: string | ArrayBuffer
+  status: "succeeded"
+  requestId: string
+  bundleBytes: Uint8Array
 }
 ```
 
 ## 行为与边界
 
-- 不在 Transport 层做业务解析，只负责通信与传输
+- 不解析 `selectionContext`，不决定输入筛选
+- 不执行 `applyResult`
+- 只负责网络传输和后端状态驱动
 
 ## 失败模式
 
-- 请求失败：返回 `TransportError`（HTTP 状态、错误详情）
-- 超时：标记失败并返回可重试提示
+- HTTP 请求失败：抛出带状态码的错误
+- 轮询超时：抛出 timeout 错误
+- 后端状态 failed：抛出后端失败信息
 
 ## 测试点（TDD）
 
-- 纯 JSON 请求与响应解析
-- multipart 上传文件正确
-- 二进制下载与内容完整性
-- 错误映射与重试策略
+- create 请求包体校验
+- upload 为 `file=@inputs.zip` 且 Zip 内容可被后端解压
+- poll 经历短暂等待后进入 succeeded
+- bundle 下载成功并返回非空二进制
+
+## M1 Mock SkillRunner 协议
+
+测试侧提供 `test/mock-skillrunner/server.ts`，M1 固定支持以下接口：
+
+- `POST /v1/jobs`：校验 `skill_id/engine/parameter`，返回 `request_id`
+- `POST /v1/jobs/{request_id}/upload`：校验 multipart 中包含 `file`（Zip）
+- `GET /v1/jobs/{request_id}`：短暂等待后按 `queued/running/succeeded` 返回
+- `GET /v1/jobs/{request_id}/bundle`：固定返回 `test/fixtures/literature-digest/run_bundle.zip`

@@ -1,0 +1,55 @@
+{
+  "id": "literature-digest",
+  "label": "Literature Digest",
+  "version": "0.1.0",
+  "backend": {
+    "skillId": "literature-digest",
+    "engine": "gemini"
+  },
+  "inputs": {
+    "unit": "attachment",
+    "accepts": {
+      "mime": ["text/markdown", "text/x-markdown", "text/plain"]
+    },
+    "per_parent": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "request": {
+    "kind": "skillrunner.job.v1",
+    "create": {
+      "skill_id": "literature-digest",
+      "engine": "gemini",
+      "parameter": {
+        "language": "en-US"
+      }
+    },
+    "input": {
+      "upload": {
+        "files": [
+          { "key": "md_path", "from": "selected.markdown" }
+        ]
+      }
+    },
+    "result": {
+      "fetch": "bundle"
+    }
+  },
+  "execution": {
+    "mode": "auto",
+    "poll_interval_ms": 2000,
+    "timeout_ms": 600000
+  },
+  "result": {
+    "fetch": { "type": "bundle" },
+    "expects": {
+      "result_json": "result/result.json",
+      "artifacts": ["artifacts/digest.md", "artifacts/references.json"]
+    }
+  },
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.js",
+    "applyResult": "hooks/applyResult.js"
+  }
+}

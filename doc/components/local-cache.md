@@ -17,7 +17,7 @@
 
 ## 输出
 
-- 缓存命中结果（RunBundle）
+- 缓存命中结果（例如 ProviderExecutionResult / 衍生结果快照）
 - 未命中（继续执行）
 
 ## 缓存键（建议）

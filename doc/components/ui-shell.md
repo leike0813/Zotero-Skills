@@ -2,61 +2,45 @@
 
 ## 目标
 
-提供可扩展的 UI 骨架：右键菜单按 Workflow 分组、设置页面用于注册工作流目录，未来支持每个 Workflow 的个性化配置入口。
+提供插件可见入口：首选项按钮、右键菜单、任务管理窗口，并把用户动作分发到内核模块。
 
-## 职责
+## 当前职责
 
-- 注册 Workflow 目录并加载可用工作流
-- 生成右键菜单（按 Workflow 分组）
-- 提供基础设置入口与状态展示
-- 为未来“工作流配置 UI”预留扩展点
-- 提供独立任务管理窗口入口
+- 启动时触发 workflow 扫描并初始化右键菜单
+- 右键菜单按 workflow 展示可执行项，并显示不可用原因
+- 提供以下入口：
+  - 重新扫描 workflows
+  - Workflow Settings
+  - Backend Manager
+  - Task Manager
 
-## 输入
+## 右键菜单行为
 
-- Workflow 注册目录（由插件总体设置指定）
-- 已解析的 Workflow 列表
-- Selection/Context 当前选择状态
+- 根菜单固定为 `Zotero-Skills`（带图标）
+- 每个 workflow 对应一个触发项
+- 在 `popupshowing` 时动态判定可执行性：
+  - 解析 workflow execution context
+  - 尝试构建 request
+  - 失败则菜单项禁用并附带原因
 
-## 输出
+## 任务管理窗口（当前实现）
 
-- 右键菜单项集合
-- 设置页内容（工作流目录设置与状态提示）
-- 独立任务管理窗口（任务状态、日志、产物、错误）
+- 打开时会清理已完成任务（succeeded/failed/canceled）
+- 实时显示任务列表三列：
+  - Task Name
+  - Workflow
+  - Status（queued/running/completed）
+- 当前不提供取消任务、日志查看、产物查看
 
-## 工作流注册策略
+## 边界
 
-1. 在插件设置中指定 “Workflow 目录”
-2. 启动时扫描目录，读取 Workflow 包（`workflow.json` + hooks）
-3. 注册到内部 Workflow Registry
-
-## 右键菜单组织
-
-- 按 Workflow 分组
-- 每个 Workflow 菜单项触发一次 Job 创建
-- 若当前选择与 Workflow 输入不匹配，则禁用或隐藏
-
-## 菜单可用性判定（M1）
-
-- UI Shell 使用与运行时一致的输入判定结果（同一套规则）决定菜单状态，避免双重逻辑。
-- 当前选择对某 Workflow 非法时，菜单项先采用“禁用并显示原因”策略。
-- 原因来自输入筛选阶段（声明式初筛 + 可选 `filterInputs`），应可被用户理解。
-- 对 `per_input` 场景，若存在至少一个合法输入单元，则菜单可用；执行时跳过非法输入并提示跳过数量。
-- 若合法输入单元数量为 0，则菜单禁用并显示失败原因。
-
-## 行为与边界
-
-- Workflow 结构未定时，先只展示基础信息（id/label）
-- 不在 UI Shell 层执行任务，仅派发事件
-- UI Shell 不做业务执行，但会消费统一输入校验结果用于菜单可用性展示
-
-## 失败模式
-
-- 目录无效或不可读：显示警告提示
-- Workflow 解析失败：跳过并记录错误
+- UI Shell 不执行业务落库
+- UI Shell 不包含 provider 协议逻辑
+- 执行逻辑由 `workflowExecute` + `providers` + `applyResult` 完成
 
 ## 测试点（TDD）
 
-- Workflow 目录配置持久化
-- 扫描目录成功生成菜单
-- 不匹配的选择禁用菜单项
+- 菜单初始化与重建
+- 菜单项禁用逻辑与禁用原因
+- 右键菜单入口事件分发
+- 任务窗口基础渲染与状态刷新

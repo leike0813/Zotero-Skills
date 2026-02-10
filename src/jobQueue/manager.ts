@@ -20,12 +20,15 @@ export type JobRecord = {
 type QueueConfig = {
   concurrency: number;
   executeJob: (job: JobRecord) => Promise<unknown>;
+  onJobUpdated?: (job: JobRecord) => void;
 };
 
 export class JobQueueManager {
   private readonly concurrency: number;
 
   private readonly executeJob: (job: JobRecord) => Promise<unknown>;
+
+  private readonly onJobUpdated?: (job: JobRecord) => void;
 
   private readonly jobs = new Map<string, JobRecord>();
 
@@ -40,6 +43,7 @@ export class JobQueueManager {
   constructor(config: QueueConfig) {
     this.concurrency = Math.max(1, config.concurrency);
     this.executeJob = config.executeJob;
+    this.onJobUpdated = config.onJobUpdated;
   }
 
   enqueue(args: {
@@ -59,6 +63,7 @@ export class JobQueueManager {
       updatedAt: now,
     };
     this.jobs.set(id, job);
+    this.emitJobUpdated(job);
     this.pendingIds.push(id);
     void this.drain();
     return id;
@@ -89,6 +94,16 @@ export class JobQueueManager {
     job.updatedAt = new Date().toISOString();
   }
 
+  private emitJobUpdated(job: JobRecord) {
+    if (!this.onJobUpdated) {
+      return;
+    }
+    this.onJobUpdated({
+      ...job,
+      meta: { ...job.meta },
+    });
+  }
+
   private resolveIdleIfNeeded() {
     if (this.runningCount !== 0 || this.pendingIds.length !== 0) {
       return;
@@ -107,15 +122,18 @@ export class JobQueueManager {
     }
     job.state = "running";
     this.touch(job);
+    this.emitJobUpdated(job);
     this.runningCount += 1;
     try {
       job.result = await this.executeJob({ ...job });
       job.state = "succeeded";
       this.touch(job);
+      this.emitJobUpdated(job);
     } catch (error) {
       job.state = "failed";
       job.error = error instanceof Error ? error.message : String(error);
       this.touch(job);
+      this.emitJobUpdated(job);
     } finally {
       this.runningCount -= 1;
     }
@@ -135,4 +153,3 @@ export class JobQueueManager {
     this.resolveIdleIfNeeded();
   }
 }
-

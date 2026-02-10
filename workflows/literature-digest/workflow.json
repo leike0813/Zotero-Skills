@@ -1,11 +1,8 @@
 {
   "id": "literature-digest",
   "label": "Literature Digest",
+  "provider": "skillrunner",
   "version": "0.1.0",
-  "backend": {
-    "skillId": "literature-digest",
-    "engine": "gemini"
-  },
   "inputs": {
     "unit": "attachment",
     "accepts": {
@@ -19,11 +16,7 @@
   "request": {
     "kind": "skillrunner.job.v1",
     "create": {
-      "skill_id": "literature-digest",
-      "engine": "gemini",
-      "parameter": {
-        "language": "en-US"
-      }
+      "skill_id": "literature-digest"
     },
     "input": {
       "upload": {
@@ -31,15 +24,20 @@
           { "key": "md_path", "from": "selected.markdown" }
         ]
       }
-    },
-    "result": {
-      "fetch": "bundle"
+    }
+  },
+  "parameters": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "enum": ["zh-CN", "en-US"],
+      "default": "zh-CN"
     }
   },
   "execution": {
     "mode": "auto",
     "poll_interval_ms": 2000,
-    "timeout_ms": 600000
+    "timeout_ms": 1200000
   },
   "result": {
     "fetch": { "type": "bundle" },

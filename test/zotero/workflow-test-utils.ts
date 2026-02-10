@@ -38,18 +38,16 @@ function getPathSeparator() {
 }
 
 export function joinPath(...segments: string[]) {
-  const runtime = globalThis as {
-    PathUtils?: { join?: (...parts: string[]) => string };
-  };
-  if (typeof runtime.PathUtils?.join === "function") {
-    return runtime.PathUtils.join(...segments.filter(Boolean));
-  }
+  const normalizedSegments = segments
+    .map((segment) => String(segment || ""))
+    .filter(Boolean);
   const separator = getPathSeparator();
-  const firstNonEmpty = segments.find((segment) => segment.length > 0) || "";
+  const firstNonEmpty =
+    normalizedSegments.find((segment) => segment.length > 0) || "";
   const isPosixAbsolute = firstNonEmpty.startsWith("/");
   const driveMatch = firstNonEmpty.match(/^([A-Za-z]:)[\\/]?/);
   const drivePrefix = driveMatch?.[1] || "";
-  const normalized = segments
+  const normalized = normalizedSegments
     .flatMap((segment) => segment.split(/[\\/]+/))
     .filter(Boolean);
   if (!normalized.length) {

@@ -1,79 +1,23 @@
 # Transport 组件说明
 
-## 目标
+## 当前状态
 
-为 Provider 提供底层 HTTP/上传/下载能力，不理解 Workflow 业务语义。
+当前版本中，`transport` 层未启用。
 
-## 职责
+- `src/transport/` 目录为空
+- 真实网络执行逻辑位于 Provider 内部：
+  - SkillRunner：`src/providers/skillrunner/client.ts`
+  - Generic HTTP：`src/providers/generic-http/provider.ts`
 
-- 执行 `http.steps` 请求流水（create/upload/poll/fetch）
-- 处理 multipart 上传（按文件路径上传）
-- 处理轮询状态（queued/running/succeeded/failed）
-- 下载 bundle 二进制结果
-- 统一错误映射（HTTP 错误、超时、远端失败）
+## 设计结论
 
-## 输入
+- 现阶段不再将“传输协议”作为独立层对外暴露
+- 执行协议由 Provider 决定并自行实现
+- Workflow/runtime 仅依赖 Provider 抽象，不依赖 transport 细节
 
-- `HttpStepsRequest`（由 `workflow.request.kind = skillrunner.job.v1` 生成）
-- `baseUrl`（后端地址）
+## 未来演进（可选）
 
-## 输出
+若后续出现多个 Provider 复用同一网络执行器，再抽离通用 `transport` 层。抽离前提建议：
 
-- `SkillRunnerExecutionResult`
-  - `status = succeeded`
-  - `requestId`
-  - `bundleBytes`
-
-## 数据结构（建议）
-
-```
-TransportRequest {
-  kind: "http.steps"
-  steps: Array<{
-    id: "create" | "upload" | "poll" | "bundle" | "result"
-    request: {
-      method: string
-      path: string
-      json?: Record<string, unknown>
-      multipart?: boolean
-    }
-    files?: Array<{ key: string; path: string }>
-    extract?: { request_id?: string }
-  }>
-  poll?: { interval_ms?: number; timeout_ms?: number }
-}
-
-TransportResponse {
-  status: "succeeded"
-  requestId: string
-  bundleBytes: Uint8Array
-}
-```
-
-## 行为与边界
-
-- 不解析 `selectionContext`，不决定输入筛选
-- 不执行 `applyResult`
-- 只负责网络传输和后端状态驱动
-
-## 失败模式
-
-- HTTP 请求失败：抛出带状态码的错误
-- 轮询超时：抛出 timeout 错误
-- 后端状态 failed：抛出后端失败信息
-
-## 测试点（TDD）
-
-- create 请求包体校验
-- upload 为 `file=@inputs.zip` 且 Zip 内容可被后端解压
-- poll 经历短暂等待后进入 succeeded
-- bundle 下载成功并返回非空二进制
-
-## M1 Mock SkillRunner 协议
-
-测试侧提供 `test/mock-skillrunner/server.ts`，M1 固定支持以下接口：
-
-- `POST /v1/jobs`：校验 `skill_id/engine/parameter`，返回 `request_id`
-- `POST /v1/jobs/{request_id}/upload`：校验 multipart 中包含 `file`（Zip）
-- `GET /v1/jobs/{request_id}`：短暂等待后按 `queued/running/succeeded` 返回
-- `GET /v1/jobs/{request_id}/bundle`：固定返回 `test/fixtures/literature-digest/run_bundle.zip`
+- 至少两个 Provider 出现明显重复的 HTTP/上传/轮询逻辑
+- 抽离后不会引入额外协议耦合（例如再次固化成单一 request 形态）

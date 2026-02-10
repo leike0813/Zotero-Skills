@@ -1,50 +1,7 @@
 import { getPref, setPref } from "../utils/prefs";
+import { joinPath } from "../utils/path";
 import { loadWorkflowManifests } from "../workflows/loader";
 import type { LoadedWorkflow, LoadedWorkflows } from "../workflows/types";
-
-function getPathSeparator() {
-  const runtime = globalThis as { Zotero?: { isWin?: boolean } };
-  if (typeof runtime.Zotero?.isWin === "boolean") {
-    return runtime.Zotero.isWin ? "\\" : "/";
-  }
-  const processObj = (globalThis as { process?: { platform?: string } }).process;
-  return processObj?.platform === "win32" ? "\\" : "/";
-}
-
-function joinPath(...segments: string[]) {
-  const runtime = globalThis as { PathUtils?: { join?: (...parts: string[]) => string } };
-  if (typeof runtime.PathUtils?.join === "function") {
-    return runtime.PathUtils.join(...segments.filter(Boolean));
-  }
-  const separator = getPathSeparator();
-  const firstNonEmpty = segments.find((segment) => String(segment || "").length > 0) || "";
-  const isPosixAbsolute = firstNonEmpty.startsWith("/");
-  const driveMatch = firstNonEmpty.match(/^([A-Za-z]:)[\\/]?/);
-  const drivePrefix = driveMatch?.[1] || "";
-  const normalized = segments
-    .flatMap((segment) => String(segment || "").split(/[\\/]+/))
-    .filter(Boolean);
-  if (normalized.length === 0) {
-    if (drivePrefix) {
-      return `${drivePrefix}${separator}`;
-    }
-    return isPosixAbsolute ? separator : "";
-  }
-  if (
-    drivePrefix &&
-    normalized[0].toLowerCase() === drivePrefix.toLowerCase()
-  ) {
-    normalized.shift();
-  }
-  const joined = normalized.join(separator);
-  if (drivePrefix) {
-    return `${drivePrefix}${separator}${joined}`;
-  }
-  if (isPosixAbsolute) {
-    return `${separator}${joined}`;
-  }
-  return joined;
-}
 
 function getDefaultWorkflowDir() {
   const runtime = globalThis as {
@@ -60,6 +17,36 @@ function getDefaultWorkflowDir() {
     return joinPath(cwd, "workflows");
   }
   return "workflows";
+}
+
+function readTestWorkflowDirOverride() {
+  const runtime = globalThis as {
+    __zoteroSkillsDisableWorkflowDirOverride?: boolean;
+    process?: { env?: Record<string, string | undefined> };
+    Services?: { env?: { get?: (key: string) => string } };
+  };
+
+  if (runtime.__zoteroSkillsDisableWorkflowDirOverride) {
+    return "";
+  }
+
+  const fromProcess = runtime.process?.env?.ZOTERO_TEST_WORKFLOW_DIR;
+  if (typeof fromProcess === "string" && fromProcess.trim().length > 0) {
+    return fromProcess.trim();
+  }
+
+  if (typeof runtime.Services?.env?.get === "function") {
+    try {
+      const fromServices = runtime.Services.env.get("ZOTERO_TEST_WORKFLOW_DIR");
+      if (typeof fromServices === "string" && fromServices.trim().length > 0) {
+        return fromServices.trim();
+      }
+    } catch {
+      // ignore env read failures
+    }
+  }
+
+  return "";
 }
 
 function emptyLoadedWorkflows(): LoadedWorkflows {
@@ -86,6 +73,13 @@ export function getEffectiveWorkflowDir() {
   if (current) {
     return current;
   }
+
+  const testOverride = readTestWorkflowDirOverride();
+  if (testOverride) {
+    setPref("workflowDir", testOverride);
+    return testOverride;
+  }
+
   const fallback = getDefaultWorkflowDir();
   setPref("workflowDir", fallback);
   return fallback;
@@ -94,6 +88,7 @@ export function getEffectiveWorkflowDir() {
 export async function rescanWorkflowRegistry(args?: { workflowsDir?: string }) {
   const workflowsDir = String(args?.workflowsDir || getEffectiveWorkflowDir()).trim();
   const loaded = await loadWorkflowManifests(workflowsDir);
+
   const state = getState();
   state.workflowsDir = workflowsDir;
   state.loaded = loaded;

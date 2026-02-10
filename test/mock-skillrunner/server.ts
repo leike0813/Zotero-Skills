@@ -1,10 +1,14 @@
-import { createServer } from "http";
-import fs from "fs";
-import path from "path";
 import {
   validateCreatePayload,
   validateMultipartHasField,
 } from "./contracts";
+import { joinPath } from "../../src/utils/path";
+
+type DynamicImport = (specifier: string) => Promise<any>;
+const dynamicImport: DynamicImport = new Function(
+  "specifier",
+  "return import(specifier)",
+) as DynamicImport;
 
 type MockJob = {
   id: string;
@@ -40,10 +44,13 @@ export async function startMockSkillRunnerServer(args: {
   host?: string;
   port?: number;
 }) {
+  const httpMod = await dynamicImport("http");
+  const fsMod = await dynamicImport("fs/promises");
+  const createServer = httpMod.createServer as typeof import("http").createServer;
   const jobs = new Map<string, MockJob>();
   const traffic: TrafficRecord[] = [];
   let nextId = 1;
-  const bundleBytes = fs.readFileSync(args.bundlePath);
+  const bundleBytes = Buffer.from(await fsMod.readFile(args.bundlePath));
   const pollDelayMs = Math.max(0, args.pollDelayMs ?? 50);
 
   const server = createServer((req, res) => {
@@ -145,6 +152,29 @@ export async function startMockSkillRunnerServer(args: {
         return;
       }
 
+      if (method === "POST" && url === "/v1/generic-http/echo") {
+        let payload: unknown = {};
+        if (bodyRaw.length > 0) {
+          try {
+            payload = JSON.parse(bodyRaw);
+          } catch {
+            payload = { raw: bodyRaw };
+          }
+        }
+        const requestId = `generic-${String(nextId++)}`;
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            request_id: requestId,
+            status: "succeeded",
+            provider: "generic-http",
+            echo: payload,
+          }),
+        );
+        return;
+      }
+
       const uploadMatch = url.match(/^\/v1\/jobs\/([^/]+)\/upload$/);
       if (method === "POST" && uploadMatch) {
         const requestId = uploadMatch[1];
@@ -222,6 +252,37 @@ export async function startMockSkillRunnerServer(args: {
         return;
       }
 
+      const resultMatch = url.match(/^\/v1\/jobs\/([^/]+)\/result$/);
+      if (method === "GET" && resultMatch) {
+        const requestId = resultMatch[1];
+        const job = jobs.get(requestId);
+        if (!job) {
+          res.statusCode = 404;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "job not found" }));
+          return;
+        }
+        if (!job.uploadReceived) {
+          res.statusCode = 409;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "upload missing" }));
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            request_id: requestId,
+            status: "succeeded",
+            data: {
+              digest_path: "digest.md",
+              references_path: "references.json",
+            },
+          }),
+        );
+        return;
+      }
+
       res.statusCode = 404;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ error: "not found" }));
@@ -256,7 +317,7 @@ export async function startMockSkillRunnerServer(args: {
 }
 
 export function literatureDigestBundlePath(projectRoot: string) {
-  return path.join(
+  return joinPath(
     projectRoot,
     "test",
     "fixtures",

@@ -1,0 +1,43 @@
+export type TestMode = "lite" | "full";
+
+function normalizeMode(value: unknown): TestMode {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "full" ? "full" : "lite";
+}
+
+function readFromProcessEnv() {
+  if (typeof process === "undefined" || !process.env) {
+    return "";
+  }
+  return process.env.ZOTERO_TEST_MODE || "";
+}
+
+function readFromServicesEnv() {
+  const runtime = globalThis as {
+    Services?: { env?: { get?: (key: string) => string } };
+  };
+  if (!runtime.Services?.env?.get) {
+    return "";
+  }
+  try {
+    return runtime.Services.env.get("ZOTERO_TEST_MODE") || "";
+  } catch {
+    return "";
+  }
+}
+
+export function getTestMode(): TestMode {
+  const fromProcess = readFromProcessEnv();
+  if (fromProcess) {
+    return normalizeMode(fromProcess);
+  }
+  const fromServices = readFromServicesEnv();
+  if (fromServices) {
+    return normalizeMode(fromServices);
+  }
+  return "lite";
+}
+
+export function isFullTestMode() {
+  return getTestMode() === "full";
+}

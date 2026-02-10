@@ -1,6 +1,10 @@
 import { config } from "../../package.json";
 
-type PluginPrefsMap = _ZoteroTypes.Prefs["PluginPrefsMap"];
+type BasePluginPrefsMap = _ZoteroTypes.Prefs["PluginPrefsMap"];
+type PluginPrefsMap = BasePluginPrefsMap & {
+  backendsConfigJson: string;
+  workflowSettingsJson: string;
+};
 
 const PREFS_PREFIX = config.prefsPrefix;
 

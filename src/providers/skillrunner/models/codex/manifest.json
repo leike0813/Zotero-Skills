@@ -1,0 +1,13 @@
+{
+  "engine": "codex",
+  "snapshots": [
+    {
+      "version": "0.0.0",
+      "file": "models_0.0.0.json"
+    },
+    {
+      "version": "0.89.0",
+      "file": "models_0.89.0.json"
+    }
+  ]
+}

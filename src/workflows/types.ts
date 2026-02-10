@@ -1,10 +1,14 @@
-export type WorkflowBackend = {
-  skillId?: string;
-  engine?: string;
-  backendId?: string;
-};
+export type WorkflowParameterType = "string" | "number" | "boolean";
 
-export type WorkflowDefaults = Record<string, unknown>;
+export type WorkflowParameterSchema = {
+  type: WorkflowParameterType;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+  min?: number;
+  max?: number;
+};
 
 export type WorkflowHooksSpec = {
   filterInputs?: string;
@@ -43,10 +47,6 @@ export type WorkflowRequestSpec = {
   kind: string;
   create?: {
     skill_id?: string;
-    engine?: string;
-    parameter?: Record<string, unknown>;
-    model?: string;
-    runtime_options?: Record<string, unknown>;
   };
   input?: {
     upload?: {
@@ -60,18 +60,15 @@ export type WorkflowRequestSpec = {
     interval_ms?: number;
     timeout_ms?: number;
   };
-  result?: {
-    fetch?: "bundle" | "result";
-  };
   [key: string]: unknown;
 };
 
 export type WorkflowManifest = {
   id: string;
   label: string;
+  provider?: string;
   version?: string;
-  backend?: WorkflowBackend;
-  defaults?: WorkflowDefaults;
+  parameters?: Record<string, WorkflowParameterSchema>;
   inputs?: WorkflowInputsSpec;
   execution?: WorkflowExecutionSpec;
   result?: WorkflowResultSpec;
@@ -107,6 +104,10 @@ export type WorkflowRuntimeContext = {
 export type BuildRequestHook = (args: {
   selectionContext: unknown;
   manifest: WorkflowManifest;
+  executionOptions?: {
+    workflowParams?: Record<string, unknown>;
+    providerOptions?: Record<string, unknown>;
+  };
   runtime: WorkflowRuntimeContext;
 }) => unknown | Promise<unknown>;
 

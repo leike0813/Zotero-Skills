@@ -1,0 +1,6 @@
+{
+  "id": "empty-apply-path",
+  "label": "Empty Apply Path",
+  "request": { "kind": "skillrunner.job.v1" },
+  "hooks": { "applyResult": "" }
+}

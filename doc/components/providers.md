@@ -2,54 +2,53 @@
 
 ## 目标
 
-提供“协议适配层”，将 step-based RequestSpec 转换为实际请求执行流程，并统一输出 RunResult。
+提供“后端协议适配层”，将 Workflow 构建出的 provider-specific request 执行为统一结果。
 
-## 职责
+## 当前实现
 
-- 根据 requestSpec.kind 与 backend.type 选择 Provider
-- 执行 Backend-level 输入/输出校验
-- 将 steps 交给 Transport 执行并聚合结果
-- 统一状态映射与错误处理
+- Provider 注册中心：`src/providers/registry.ts`
+- 内置 Provider：
+  - `skillrunner`：`src/providers/skillrunner/provider.ts`
+  - `generic-http`：`src/providers/generic-http/provider.ts`
+- 选择逻辑：按 `requestKind + backend.type` 解析 Provider
 
 ## 输入
 
-- `RequestSpec`（buildRequest 生成）
-- `BackendConfig`（base_url/auth/defaults）
-- `Transport`（HTTP/上传/下载能力）
+- `requestKind`：由 Workflow manifest/request 与 backend.type 共同决定
+- `request`：由 `compileDeclarativeRequest` 或 `hooks.buildRequest` 产出
+- `backend`：由 backend registry + workflow settings 解析出的 profile
+- `providerOptions`：运行时选项（持久化或 run-once 覆盖）
 
 ## 输出
 
-- `RunResult`（包含状态、bundle/result 位置、错误）
+统一返回 `ProviderExecutionResult`：
 
-## ProviderRegistry
+- `status: "succeeded"`
+- `requestId: string`
+- `fetchType: "bundle" | "result"`
+- `bundleBytes?`
+- `resultJson?`
+- `responseJson?`
 
-```
-ProviderRegistry {
-  register(kind: string, provider: Provider)
-  resolve(requestSpec.kind, backend.type): Provider
-}
-```
+## Runtime 选项能力
 
-## GenericProvider（M1）
+- Provider 可声明可调选项 schema（如 skillrunner 的 `engine/model/no_cache`）
+- Provider 可返回动态枚举（如 `model` 随 `engine` 变化）
+- Provider 负责对 runtime options 做 normalize
 
-- kind: `http.steps`
-- 执行 step-based RequestSpec
-- 不内置业务逻辑，仅负责协议编排
+## 边界
 
-## 声明式 request.kind（Workflow 侧）
+- Provider 不做业务落库（由 Workflow `applyResult` + handlers 负责）
+- Provider 不直接操作 UI
+- Provider 不依赖 workflow 私有逻辑（只消费 request payload）
 
-- Workflow `request.kind` 可映射到内核构建器，再编译为 `http.steps`
-- M1 首个内置 kind：`skillrunner.job.v1`
-- Provider 仍只消费编译后的 `http.steps`，不直接处理业务语义
+## 备注
 
-## 行为与边界
-
-- Provider 不处理业务落库（交给 applyResult/Handlers）
-- Provider 不直接读写 UI
-- Provider 与 Transport 解耦，便于未来扩展
+`transport` 目录当前未启用。网络执行逻辑目前在 Provider 内部实现（例如 skillrunner client）。
 
 ## 测试点（TDD）
 
-- ProviderRegistry 选择逻辑
-- steps 执行顺序与变量替换
-- 失败步骤的错误映射与停止策略
+- registry 选择逻辑
+- runtime options schema 与动态枚举
+- provider 执行成功/失败路径
+- provider 与 backend type 不匹配时的错误行为

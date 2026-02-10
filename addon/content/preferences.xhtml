@@ -24,23 +24,32 @@
     ></button>
   </hbox>
   <description data-l10n-id="pref-workflow-dir-help"></description>
+  <hbox>
+    <button
+      id="zotero-prefpane-__addonRef__-workflow-settings"
+      data-l10n-id="pref-workflow-settings"
+    ></button>
+  </hbox>
+  <description data-l10n-id="pref-workflow-settings-help"></description>
   <description data-l10n-id="pref-plugin-placeholder"></description>
 
   <label><html:h3 data-l10n-id="pref-section-backends"></html:h3></label>
-  <hbox align="center">
-    <html:label
-      for="zotero-prefpane-__addonRef__-skillrunner-endpoint"
-      data-l10n-id="pref-skillrunner-endpoint"
-    ></html:label>
-  </hbox>
   <hbox>
-    <html:input
-      type="text"
-      id="zotero-prefpane-__addonRef__-skillrunner-endpoint"
-      preference="skillRunnerEndpoint"
-    ></html:input>
+    <button
+      id="zotero-prefpane-__addonRef__-backend-manage"
+      data-l10n-id="pref-backend-manage"
+    ></button>
   </hbox>
-  <description data-l10n-id="pref-skillrunner-endpoint-help"></description>
+  <description data-l10n-id="pref-backend-manage-help"></description>
+
+  <label><html:h3 data-l10n-id="pref-section-about"></html:h3></label>
+  <hbox align="center">
+    <html:img
+      src="chrome://__addonRef__/content/icons/icon_full.png"
+      alt="Zotero-Skills"
+      style="max-width: 180px; width: 50%; height: auto"
+    ></html:img>
+  </hbox>
 </groupbox>
 <vbox>
   <html:label

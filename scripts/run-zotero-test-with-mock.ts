@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import path from "path";
 
 type Child = ReturnType<typeof spawn>;
 type SpawnOptions = Parameters<typeof spawn>[2];
@@ -6,6 +7,14 @@ type SpawnOptions = Parameters<typeof spawn>[2];
 const MOCK_PORT = "8030";
 const MOCK_HOST = "127.0.0.1";
 const TARGET_TEST_SCRIPT = process.argv[2] || "test:zotero:raw";
+const REQUESTED_TEST_MODE = process.argv[3] || process.env.ZOTERO_TEST_MODE || "lite";
+const TEST_WORKFLOW_DIR = path.join(process.cwd(), "workflows");
+
+function normalizeTestMode(value: string) {
+  return value.trim().toLowerCase() === "full" ? "full" : "lite";
+}
+
+const TEST_MODE = normalizeTestMode(REQUESTED_TEST_MODE);
 
 function spawnNpm(args: string[], options?: SpawnOptions) {
   if (process.platform === "win32") {
@@ -60,11 +69,11 @@ function waitForMockReady(mock: Child, timeoutMs = 8000) {
   });
 }
 
-function runTargetTests() {
+function runTargetTests(env: NodeJS.ProcessEnv) {
   return new Promise<number>((resolve) => {
     const proc = spawnNpm(["run", TARGET_TEST_SCRIPT], {
       stdio: "inherit",
-      env: process.env,
+      env,
     });
     proc.on("exit", (code, signal) => {
       if (typeof code === "number") {
@@ -112,6 +121,14 @@ function terminateMock(mock: Child) {
 }
 
 async function main() {
+  const testEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ZOTERO_TEST_MODE: TEST_MODE,
+    ZOTERO_TEST_WORKFLOW_DIR: TEST_WORKFLOW_DIR,
+  };
+  console.log(`[test-mode] ${TEST_MODE}`);
+  console.log(`[test-workflow-dir] ${TEST_WORKFLOW_DIR}`);
+
   const mock = spawnNpm(
     [
       "run",
@@ -124,7 +141,7 @@ async function main() {
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: testEnv,
       detached: process.platform !== "win32",
     },
   );
@@ -160,7 +177,7 @@ async function main() {
 
   try {
     await waitForMockReady(mock);
-    const code = await runTargetTests();
+    const code = await runTargetTests(testEnv);
     await cleanup();
     process.exit(code);
   } catch (error) {

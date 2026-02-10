@@ -43,6 +43,7 @@ export function filterInputs({ selectionContext, runtime }) {
 - `filterInputs` 内尽量调用 `runtime.helpers` 完成通用判断与排序。
 - `chooseMarkdownByPdfOrEarliest` 这类工作流私有规则，建议仅保留在对应 workflow 的 hook 文件中。
 - `applyResult` 中涉及 item 解析、HTML note 包装、artifact 文件名处理时优先使用内建函数。
+- 当请求终态为 `result`（非 `bundle`）时，`bundleReader.readText()` 不可用会抛错；此时应优先从 `runResult` 读取结果并做分支处理。
 - 仅当某逻辑明显是 workflow 私有规则时，再在 hook 内定义局部函数。
 
 ## 示例：applyResult

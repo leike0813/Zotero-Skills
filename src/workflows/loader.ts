@@ -7,6 +7,8 @@ import type {
   WorkflowHooksModule,
   WorkflowManifest,
 } from "./types";
+import { getBaseName, joinPath } from "../utils/path";
+import { DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE } from "../config/defaults";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -34,59 +36,6 @@ function isZoteroRuntime() {
     typeof runtime.Cc !== "undefined" &&
     typeof runtime.Ci !== "undefined"
   );
-}
-
-function getPathSeparator() {
-  const runtime = globalThis as { Zotero?: { isWin?: boolean } };
-  if (typeof runtime.Zotero?.isWin === "boolean") {
-    return runtime.Zotero.isWin ? "\\" : "/";
-  }
-  const processObj = (globalThis as { process?: { platform?: string } }).process;
-  return processObj?.platform === "win32" ? "\\" : "/";
-}
-
-function joinPath(...segments: string[]) {
-  const runtime = globalThis as { PathUtils?: { join?: (...parts: string[]) => string } };
-  if (typeof runtime.PathUtils?.join === "function") {
-    return runtime.PathUtils.join(...segments.filter(Boolean));
-  }
-
-  const separator = getPathSeparator();
-  const firstNonEmpty = segments.find((segment) => segment.length > 0) || "";
-  const isPosixAbsolute = firstNonEmpty.startsWith("/");
-  const driveMatch = firstNonEmpty.match(/^([A-Za-z]:)[\\/]?/);
-  const drivePrefix = driveMatch?.[1] || "";
-  const normalized = segments
-    .flatMap((segment) => segment.split(/[\\/]+/))
-    .filter(Boolean);
-
-  if (normalized.length === 0) {
-    if (drivePrefix) {
-      return `${drivePrefix}${separator}`;
-    }
-    return isPosixAbsolute ? separator : "";
-  }
-
-  if (
-    drivePrefix &&
-    normalized[0].toLowerCase() === drivePrefix.toLowerCase()
-  ) {
-    normalized.shift();
-  }
-  const joined = normalized.join(separator);
-  if (drivePrefix) {
-    return `${drivePrefix}${separator}${joined}`;
-  }
-  if (isPosixAbsolute) {
-    return `${separator}${joined}`;
-  }
-  return joined;
-}
-
-function getBaseName(targetPath: string) {
-  const normalized = targetPath.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : "";
 }
 
 async function readTextFile(filePath: string) {
@@ -251,16 +200,128 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isValidParameterSchema(
+  value: unknown,
+): value is import("./types").WorkflowParameterSchema {
+  if (!isObject(value)) {
+    return false;
+  }
+  const type = value.type;
+  if (type !== "string" && type !== "number" && type !== "boolean") {
+    return false;
+  }
+  if (
+    typeof value.min !== "undefined" &&
+    (typeof value.min !== "number" || !Number.isFinite(value.min))
+  ) {
+    return false;
+  }
+  if (
+    typeof value.max !== "undefined" &&
+    (typeof value.max !== "number" || !Number.isFinite(value.max))
+  ) {
+    return false;
+  }
+  if (
+    typeof value.min === "number" &&
+    typeof value.max === "number" &&
+    value.min > value.max
+  ) {
+    return false;
+  }
+  if (
+    typeof value.enum !== "undefined" &&
+    (!Array.isArray(value.enum) || value.enum.length === 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasValidParameters(value: unknown) {
+  if (typeof value === "undefined") {
+    return true;
+  }
+  if (!isObject(value)) {
+    return false;
+  }
+  for (const entry of Object.values(value)) {
+    if (!isValidParameterSchema(entry)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasDeprecatedWorkflowFields(value: Record<string, unknown>) {
+  if (typeof value.backend !== "undefined") {
+    return true;
+  }
+  if (typeof value.defaults !== "undefined") {
+    return true;
+  }
+
+  const request = value.request;
+  if (!isObject(request)) {
+    return false;
+  }
+  if (typeof request.result !== "undefined") {
+    return true;
+  }
+  const create = request.create;
+  if (!isObject(create)) {
+    return false;
+  }
+  return (
+    typeof create.engine !== "undefined" ||
+    typeof create.parameter !== "undefined" ||
+    typeof create.model !== "undefined" ||
+    typeof create.runtime_options !== "undefined"
+  );
+}
+
+function inferProviderFromRequestKind(kind: string) {
+  const normalized = String(kind || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  for (const [backendType, requestKind] of Object.entries(
+    DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
+  )) {
+    if (requestKind === normalized) {
+      return backendType;
+    }
+  }
+  return "";
+}
+
 function isManifestLike(value: unknown): value is WorkflowManifest {
   if (!isObject(value)) {
+    return false;
+  }
+  if (hasDeprecatedWorkflowFields(value)) {
     return false;
   }
   return (
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.label) &&
     isObject(value.hooks) &&
-    isNonEmptyString(value.hooks.applyResult)
+    isNonEmptyString(value.hooks.applyResult) &&
+    hasValidParameters(value.parameters)
   );
+}
+
+function normalizeManifestProvider(manifest: WorkflowManifest) {
+  const declared = String(manifest.provider || "").trim();
+  if (declared) {
+    manifest.provider = declared;
+    return manifest;
+  }
+  const inferred = inferProviderFromRequestKind(manifest.request?.kind || "");
+  if (inferred) {
+    manifest.provider = inferred;
+  }
+  return manifest;
 }
 
 function resolveBuildStrategy(manifest: WorkflowManifest) {
@@ -281,7 +342,7 @@ async function readManifestFile(
   if (!isManifestLike(parsed)) {
     return null;
   }
-  return parsed;
+  return normalizeManifestProvider(parsed);
 }
 
 async function loadHooks(
@@ -359,6 +420,12 @@ export async function loadWorkflowManifests(
       const manifest = await readManifestFile(manifestPath);
       if (!manifest) {
         warnings.push(`Invalid workflow manifest: ${manifestPath}`);
+        continue;
+      }
+      if (!isNonEmptyString(manifest.provider)) {
+        warnings.push(
+          `Skip workflow ${manifest.id}: missing provider declaration and unable to infer from request kind`,
+        );
         continue;
       }
 

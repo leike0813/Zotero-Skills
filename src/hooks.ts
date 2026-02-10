@@ -11,6 +11,57 @@ import { createZToolkit } from "./utils/ztoolkit";
 import { registerSelectionSampleMenu } from "./modules/selectionSample";
 import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
 import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
+import { openBackendManagerDialog } from "./modules/backendManager";
+import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
+import { openTaskManagerDialog } from "./modules/taskManagerDialog";
+
+const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
+const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
+
+async function delayMs(ms: number) {
+  const runtime = globalThis as {
+    Zotero?: { Promise?: { delay?: (delayMs: number) => Promise<void> } };
+  };
+  if (typeof runtime.Zotero?.Promise?.delay === "function") {
+    await runtime.Zotero.Promise.delay(ms);
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function ensureWorkflowRegistryAndMenu(
+  win: _ZoteroTypes.MainWindow,
+  options?: {
+    retryIntervalMs?: number;
+    maxMenuRetryAttempts?: number;
+  },
+) {
+  if (
+    !addon.data.workflow?.workflowsDir ||
+    !addon.data.workflow?.loaded?.workflows?.length
+  ) {
+    await rescanWorkflowRegistry();
+  }
+
+  const retryIntervalMs = Math.max(
+    0,
+    options?.retryIntervalMs ?? WORKFLOW_MENU_RETRY_INTERVAL_MS,
+  );
+  const maxMenuRetryAttempts = Math.max(
+    1,
+    options?.maxMenuRetryAttempts ?? WORKFLOW_MENU_RETRY_MAX_ATTEMPTS,
+  );
+  const menuId = `${addon.data.config.addonRef}-workflows-menu`;
+  for (let attempt = 0; attempt < maxMenuRetryAttempts; attempt++) {
+    ensureWorkflowMenuForWindow(win);
+    if (win.document.getElementById(menuId)) {
+      return;
+    }
+    if (attempt < maxMenuRetryAttempts - 1 && retryIntervalMs > 0) {
+      await delayMs(retryIntervalMs);
+    }
+  }
+}
 
 async function onStartup() {
   await Promise.all([
@@ -52,6 +103,8 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   // Create ztoolkit for every window
   addon.data.ztoolkit = createZToolkit();
 
+  await ensureWorkflowRegistryAndMenu(win);
+
   win.MozXULElement.insertFTLIfNeeded(
     `${addon.data.config.addonRef}-mainWindow.ftl`,
   );
@@ -74,7 +127,6 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   });
 
   UIExampleFactory.registerStyleSheet(win);
-  ensureWorkflowMenuForWindow(win);
   registerSelectionSampleMenu();
 
   PromptExampleFactory.registerNormalCommandExample();
@@ -142,12 +194,48 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       registerPrefsScripts(data.window);
       break;
     case "scanWorkflows": {
-      const state = await rescanWorkflowRegistry();
+      const requestedDir = String(data.workflowsDir || "").trim();
+      const state = requestedDir
+        ? await rescanWorkflowRegistry({ workflowsDir: requestedDir })
+        : await rescanWorkflowRegistry();
       refreshWorkflowMenus();
-      const message = `Workflow scan finished: loaded=${state.loaded.workflows.length}, warnings=${state.loaded.warnings.length}, errors=${state.loaded.errors.length}`;
+      const messageLines = [
+        `Workflow scan finished: loaded=${state.loaded.workflows.length}, warnings=${state.loaded.warnings.length}, errors=${state.loaded.errors.length}`,
+      ];
+      if (state.loaded.errors.length > 0) {
+        messageLines.push(`First error: ${state.loaded.errors[0]}`);
+      }
+      if (state.loaded.warnings.length > 0) {
+        messageLines.push(`First warning: ${state.loaded.warnings[0]}`);
+      }
+      if (typeof console !== "undefined") {
+        if (state.loaded.errors.length > 0) {
+          console.error(
+            `[workflow-scan] dir=${state.workflowsDir} errors=${JSON.stringify(state.loaded.errors)} warnings=${JSON.stringify(state.loaded.warnings)}`,
+          );
+        } else {
+          console.info(
+            `[workflow-scan] dir=${state.workflowsDir} loaded=${state.loaded.workflows.length} warnings=${state.loaded.warnings.length}`,
+          );
+        }
+      }
+      const message = messageLines.join("\n");
       data.window?.alert?.(message);
       break;
     }
+    case "openBackendManager":
+      await openBackendManagerDialog({
+        window: data.window,
+      });
+      break;
+    case "openWorkflowSettings":
+      await openWorkflowSettingsDialog({
+        window: data.window,
+      });
+      break;
+    case "openTaskManager":
+      await openTaskManagerDialog();
+      break;
     default:
       return;
   }

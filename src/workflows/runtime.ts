@@ -1,6 +1,7 @@
 import { handlers } from "../handlers";
+import { getBaseName } from "../utils/path";
 import { createHookHelpers } from "./helpers";
-import { buildRequestFromManifest } from "./requestBuilders";
+import { compileDeclarativeRequest } from "./declarativeRequestCompiler";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -15,11 +16,11 @@ type AttachmentLike = {
   };
   filePath?: string | null;
   mimeType?: string | null;
-  parent?: { id?: number | null } | null;
+  parent?: { id?: number | null; title?: string } | null;
 };
 
 type ParentLike = {
-  item?: { id?: number };
+  item?: { id?: number; title?: string };
 };
 
 type NoteLike = {
@@ -30,7 +31,11 @@ type SelectionLike = {
   items?: {
     attachments?: AttachmentLike[];
     parents?: Array<ParentLike & { attachments?: AttachmentLike[] }>;
-    children?: Array<{ attachments?: AttachmentLike[] }>;
+    children?: Array<{
+      item?: { id?: number; title?: string };
+      parent?: { id?: number | null; title?: string } | null;
+      attachments?: AttachmentLike[];
+    }>;
     notes?: NoteLike[];
   };
   summary?: {
@@ -40,6 +45,110 @@ type SelectionLike = {
     noteCount?: number;
   };
 };
+
+type ResolvedSelectionContexts = {
+  contexts: SelectionLike[];
+  totalUnits: number;
+};
+
+type BuildRequestStats = {
+  totalUnits: number;
+  requestCount: number;
+  skippedUnits: number;
+};
+
+type BuildRequestsResult = unknown[] & {
+  __stats?: BuildRequestStats;
+};
+
+function resolveTargetParentIDFromSelection(selectionContext: SelectionLike) {
+  const attachmentParentID = selectionContext?.items?.attachments?.[0]?.parent?.id;
+  if (attachmentParentID) {
+    return attachmentParentID;
+  }
+  const selectedParentID = selectionContext?.items?.parents?.[0]?.item?.id;
+  if (selectedParentID) {
+    return selectedParentID;
+  }
+  const childParentID = selectionContext?.items?.children?.[0]?.parent?.id;
+  if (childParentID) {
+    return childParentID;
+  }
+  const childID = selectionContext?.items?.children?.[0]?.item?.id;
+  if (childID) {
+    return childID;
+  }
+  return null;
+}
+
+function resolveSourceAttachmentPathsFromSelection(selectionContext: SelectionLike) {
+  const paths = collectAttachmentCandidates(selectionContext)
+    .map((entry) => String(entry.filePath || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(paths));
+}
+
+function resolveTaskNameFromSelection(args: {
+  selectionContext: SelectionLike;
+  targetParentID: number | null;
+  sourceAttachmentPaths: string[];
+}) {
+  if (args.sourceAttachmentPaths.length > 0) {
+    return getBaseName(args.sourceAttachmentPaths[0]);
+  }
+  const parentTitle =
+    args.selectionContext?.items?.attachments?.[0]?.parent?.title ||
+    args.selectionContext?.items?.parents?.[0]?.item?.title ||
+    args.selectionContext?.items?.children?.[0]?.parent?.title ||
+    args.selectionContext?.items?.children?.[0]?.item?.title ||
+    "";
+  if (String(parentTitle || "").trim()) {
+    return String(parentTitle).trim();
+  }
+  if (args.targetParentID) {
+    return `item-${args.targetParentID}`;
+  }
+  return "task";
+}
+
+function enrichRequestWithSelectionMeta(
+  request: unknown,
+  selectionContext: SelectionLike,
+) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new Error("buildRequest must return an object request payload");
+  }
+  const normalized = {
+    ...(request as Record<string, unknown>),
+  };
+  const targetParentID = resolveTargetParentIDFromSelection(selectionContext);
+  if (typeof normalized.targetParentID !== "number" && targetParentID) {
+    normalized.targetParentID = targetParentID;
+  }
+
+  const sourceAttachmentPaths =
+    Array.isArray(normalized.sourceAttachmentPaths) &&
+    normalized.sourceAttachmentPaths.length > 0
+      ? normalized.sourceAttachmentPaths
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      : resolveSourceAttachmentPathsFromSelection(selectionContext);
+  normalized.sourceAttachmentPaths = sourceAttachmentPaths;
+
+  const taskName =
+    typeof normalized.taskName === "string" ? normalized.taskName.trim() : "";
+  if (!taskName) {
+    normalized.taskName = resolveTaskNameFromSelection({
+      selectionContext,
+      targetParentID:
+        typeof normalized.targetParentID === "number"
+          ? normalized.targetParentID
+          : targetParentID,
+      sourceAttachmentPaths,
+    });
+  }
+  return normalized;
+}
 
 function createRuntimeContext(
   override?: Partial<WorkflowRuntimeContext>,
@@ -226,7 +335,7 @@ async function resolveAttachmentSelectionUnits(args: {
   workflow: LoadedWorkflow;
   selectionContext: unknown;
   runtime: WorkflowRuntimeContext;
-}) {
+}): Promise<ResolvedSelectionContexts> {
   const copied = copySelection(args.selectionContext);
   const inputs = args.workflow.manifest.inputs;
   const allowedMimes = inputs?.accepts?.mime;
@@ -249,16 +358,22 @@ async function resolveAttachmentSelectionUnits(args: {
     min: perParentMin,
     max: perParentMax,
   });
+  const totalUnitsBeforeHook = split.valid.length + split.ambiguousParents.size;
 
-  if (split.ambiguousParents.size > 0 && args.workflow.hooks.filterInputs) {
+  if (args.workflow.hooks.filterInputs) {
     const fromHook = (await args.workflow.hooks.filterInputs({
       selectionContext: declarativeFiltered,
       manifest: args.workflow.manifest,
       runtime: args.runtime,
     })) as SelectionLike;
 
+    const hookSelection = copySelection(fromHook);
+    const hookDirectAttachments = hookSelection.items?.attachments;
+    const hookSourceAttachments = Array.isArray(hookDirectAttachments)
+      ? (hookDirectAttachments as AttachmentLike[])
+      : collectAttachmentCandidates(hookSelection);
     const hookAttachments = applyAttachmentMimeFilter(
-      collectAttachmentCandidates(copySelection(fromHook)),
+      hookSourceAttachments,
       allowedMimes,
     );
     split = splitAttachmentsByPerParentRules({
@@ -268,22 +383,34 @@ async function resolveAttachmentSelectionUnits(args: {
     });
   }
 
-  return split.valid.map((entry) =>
+  const contexts = split.valid.map((entry) =>
     withScopedAttachments(copied, [entry], args.runtime),
   );
+  return {
+    contexts,
+    totalUnits: totalUnitsBeforeHook,
+  };
 }
 
 async function resolveSelectionContexts(args: {
   workflow: LoadedWorkflow;
   selectionContext: unknown;
   runtime: WorkflowRuntimeContext;
-}) {
+}): Promise<ResolvedSelectionContexts> {
   const unit = args.workflow.manifest.inputs?.unit || "attachment";
   if (unit === "parent") {
-    return buildParentSelectionUnits(copySelection(args.selectionContext));
+    const contexts = buildParentSelectionUnits(copySelection(args.selectionContext));
+    return {
+      contexts,
+      totalUnits: contexts.length,
+    };
   }
   if (unit === "note") {
-    return buildNoteSelectionUnits(copySelection(args.selectionContext));
+    const contexts = buildNoteSelectionUnits(copySelection(args.selectionContext));
+    return {
+      contexts,
+      totalUnits: contexts.length,
+    };
   }
   return resolveAttachmentSelectionUnits(args);
 }
@@ -291,14 +418,19 @@ async function resolveSelectionContexts(args: {
 export async function executeBuildRequests(args: {
   workflow: LoadedWorkflow;
   selectionContext: unknown;
+  executionOptions?: {
+    workflowParams?: Record<string, unknown>;
+    providerOptions?: Record<string, unknown>;
+  };
   runtime?: Partial<WorkflowRuntimeContext>;
 }) {
   const runtime = createRuntimeContext(args.runtime);
-  const resolvedSelections = await resolveSelectionContexts({
+  const resolved = await resolveSelectionContexts({
     workflow: args.workflow,
     selectionContext: args.selectionContext,
     runtime,
   });
+  const resolvedSelections = resolved.contexts;
 
   if (resolvedSelections.length === 0) {
     throw new Error(
@@ -306,15 +438,19 @@ export async function executeBuildRequests(args: {
     );
   }
 
-  const requests = [];
+  const requests: BuildRequestsResult = [];
   for (const selectionContext of resolvedSelections) {
     if (args.workflow.hooks.buildRequest) {
       requests.push(
-        await args.workflow.hooks.buildRequest({
+        enrichRequestWithSelectionMeta(
+          await args.workflow.hooks.buildRequest({
+            selectionContext,
+            manifest: args.workflow.manifest,
+            executionOptions: args.executionOptions,
+            runtime,
+          }),
           selectionContext,
-          manifest: args.workflow.manifest,
-          runtime,
-        }),
+        ),
       );
       continue;
     }
@@ -327,13 +463,29 @@ export async function executeBuildRequests(args: {
     }
 
     requests.push(
-      buildRequestFromManifest({
-        kind: request.kind,
+      enrichRequestWithSelectionMeta(
+        compileDeclarativeRequest({
+          kind: request.kind,
+          selectionContext,
+          manifest: args.workflow.manifest,
+          executionOptions: args.executionOptions,
+        }),
         selectionContext,
-        manifest: args.workflow.manifest,
-      }),
+      ),
     );
   }
+  const skippedUnits = Math.max(0, resolved.totalUnits - requests.length);
+  Object.defineProperty(requests, "__stats", {
+    value: {
+      totalUnits: resolved.totalUnits,
+      requestCount: requests.length,
+      skippedUnits,
+    } satisfies BuildRequestStats,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+
   return requests;
 }
 

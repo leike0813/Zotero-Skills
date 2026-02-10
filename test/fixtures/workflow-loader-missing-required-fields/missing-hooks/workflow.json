@@ -1,0 +1,5 @@
+{
+  "id": "missing-hooks",
+  "label": "Missing Hooks",
+  "request": { "kind": "skillrunner.job.v1" }
+}

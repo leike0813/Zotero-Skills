@@ -1,55 +1,23 @@
 import { JobQueueManager } from "../jobQueue/manager";
 import { buildSelectionContext } from "./selectionContext";
-import { SkillRunnerProvider } from "../providers/skillrunnerProvider";
-import { getPref } from "../utils/prefs";
+import {
+  buildWorkflowFinishMessage,
+  normalizeErrorMessage,
+} from "./workflowExecuteMessage";
+import { joinPath } from "../utils/path";
 import { executeApplyResult, executeBuildRequests } from "../workflows/runtime";
+import { ZipBundleReader } from "../workflows/zipBundleReader";
 import type { LoadedWorkflow } from "../workflows/types";
-
-const DEFAULT_SKILLRUNNER_ENDPOINT = "http://127.0.0.1:8030";
+import { executeWithProvider } from "../providers/registry";
+import { resolveWorkflowExecutionContext } from "./workflowSettings";
+import { getBaseName } from "../utils/path";
+import { recordWorkflowTaskUpdate } from "./taskRuntime";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 const dynamicImport: DynamicImport = new Function(
   "specifier",
   "return import(specifier)",
 ) as DynamicImport;
-
-function getPathSeparator() {
-  return Zotero.isWin ? "\\" : "/";
-}
-
-function joinPath(...segments: string[]) {
-  const runtime = globalThis as { PathUtils?: { join?: (...parts: string[]) => string } };
-  if (typeof runtime.PathUtils?.join === "function") {
-    return runtime.PathUtils.join(...segments.filter(Boolean));
-  }
-  const firstNonEmpty = segments.find((segment) => String(segment || "").length > 0) || "";
-  const isPosixAbsolute = firstNonEmpty.startsWith("/");
-  const driveMatch = firstNonEmpty.match(/^([A-Za-z]:)[\\/]?/);
-  const drivePrefix = driveMatch?.[1] || "";
-  const normalized = segments
-    .flatMap((segment) => String(segment || "").split(/[\\/]+/))
-    .filter(Boolean);
-  if (normalized.length === 0) {
-    if (drivePrefix) {
-      return `${drivePrefix}${getPathSeparator()}`;
-    }
-    return isPosixAbsolute ? getPathSeparator() : "";
-  }
-  if (
-    drivePrefix &&
-    normalized[0].toLowerCase() === drivePrefix.toLowerCase()
-  ) {
-    normalized.shift();
-  }
-  const joined = normalized.join(getPathSeparator());
-  if (drivePrefix) {
-    return `${drivePrefix}${getPathSeparator()}${joined}`;
-  }
-  if (isPosixAbsolute) {
-    return `${getPathSeparator()}${joined}`;
-  }
-  return joined;
-}
 
 function buildTempBundlePath(requestId: string) {
   const tempDir = Zotero.getTempDirectory?.()?.path || ".";
@@ -87,60 +55,78 @@ async function removeFileIfExists(filePath: string) {
   }
 }
 
-class ZipBundleReader {
-  constructor(private readonly bundlePath: string) {}
+type BundleReader = { readText: (entryPath: string) => Promise<string> };
 
-  async readText(entryPath: string) {
-    const runtime = globalThis as {
-      Cc?: Record<string, { createInstance: (iface: unknown) => any }>;
-      Ci?: Record<string, unknown> & {
-        nsIZipReader?: unknown;
-        nsIConverterInputStream?: { DEFAULT_REPLACEMENT_CHARACTER: number };
-      };
-      Zotero?: { File?: { pathToFile: (targetPath: string) => unknown } };
-    };
-    if (
-      !runtime.Cc ||
-      !runtime.Ci?.nsIZipReader ||
-      !runtime.Ci?.nsIConverterInputStream ||
-      !runtime.Zotero?.File?.pathToFile
-    ) {
-      throw new Error("Zip bundle reader is unavailable in current runtime");
-    }
-
-    const zipReader = runtime.Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
-      runtime.Ci.nsIZipReader,
-    );
-    zipReader.open(runtime.Zotero.File.pathToFile(this.bundlePath));
-    const stream = zipReader.getInputStream(entryPath);
-    const converter = runtime.Cc[
-      "@mozilla.org/intl/converter-input-stream;1"
-    ].createInstance(runtime.Ci.nsIConverterInputStream);
-    converter.init(
-      stream,
-      "UTF-8",
-      0,
-      runtime.Ci.nsIConverterInputStream.DEFAULT_REPLACEMENT_CHARACTER,
-    );
-    let output = "";
-    const chunk = { value: "" };
-    while (converter.readString(0xffffffff, chunk) !== 0) {
-      output += chunk.value;
-    }
-    converter.close();
-    zipReader.close();
-    return output;
-  }
-}
-
-function resolveSkillRunnerEndpoint() {
-  const raw = String(getPref("skillRunnerEndpoint") || "").trim();
-  return raw || DEFAULT_SKILLRUNNER_ENDPOINT;
+function createUnavailableBundleReader(requestId: string): BundleReader {
+  return {
+    readText: async (entryPath: string) => {
+      throw new Error(
+        `Run ${requestId} does not provide bundle content; entry unavailable: ${entryPath}`,
+      );
+    },
+  };
 }
 
 function resolveTargetParentID(request: unknown) {
   const parsed = request as { targetParentID?: number };
   return typeof parsed.targetParentID === "number" ? parsed.targetParentID : null;
+}
+
+function resolveAttachmentPathsFromRequest(request: unknown) {
+  const typed = request as {
+    sourceAttachmentPaths?: unknown;
+    request?: { json?: { attachment_paths?: unknown } };
+    attachment_paths?: unknown;
+  };
+  const fromSource = Array.isArray(typed.sourceAttachmentPaths)
+    ? typed.sourceAttachmentPaths
+    : [];
+  const fromRequestJson = Array.isArray(typed.request?.json?.attachment_paths)
+    ? typed.request?.json?.attachment_paths || []
+    : [];
+  const fromTopLevel = Array.isArray(typed.attachment_paths)
+    ? typed.attachment_paths || []
+    : [];
+  return [...fromSource, ...fromRequestJson, ...fromTopLevel]
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function resolveParentTaskName(targetParentID: number | null) {
+  if (!targetParentID) {
+    return "";
+  }
+  const parent = Zotero.Items.get(targetParentID);
+  if (!parent) {
+    return "";
+  }
+  const title = String(parent.getField?.("title") || "").trim();
+  return title || "";
+}
+
+function resolveTaskNameFromRequest(request: unknown, index: number) {
+  const fromRequest = String(
+    (request as { taskName?: unknown }).taskName || "",
+  ).trim();
+  if (fromRequest) {
+    return fromRequest;
+  }
+  const attachmentPaths = resolveAttachmentPathsFromRequest(request);
+  if (attachmentPaths.length > 0) {
+    return getBaseName(attachmentPaths[0]) || attachmentPaths[0];
+  }
+  const targetParentID = resolveTargetParentID(request);
+  const parentName = resolveParentTaskName(targetParentID);
+  if (parentName) {
+    return parentName;
+  }
+  return `task-${index + 1}`;
+}
+
+function isNoValidInputUnitsError(error: unknown) {
+  return /has no valid input units after filtering/i.test(
+    normalizeErrorMessage(error),
+  );
 }
 
 function alertWindow(win: _ZoteroTypes.MainWindow, message: string) {
@@ -168,41 +154,108 @@ export async function executeWorkflowFromCurrentSelection(args: {
   }
 
   let requests: unknown[];
+  let skippedByFilter = 0;
+  let executionContext:
+    | Awaited<ReturnType<typeof resolveWorkflowExecutionContext>>
+    | null = null;
   try {
+    executionContext = await resolveWorkflowExecutionContext({
+      workflow: args.workflow,
+      consumeRunOnce: true,
+    });
     const selectionContext = await buildSelectionContext(selectedItems);
-    requests = await executeBuildRequests({
+    const builtRequests = await executeBuildRequests({
       workflow: args.workflow,
       selectionContext,
+      executionOptions: {
+        workflowParams: executionContext.workflowParams,
+        providerOptions: executionContext.providerOptions,
+      },
     });
+    requests = builtRequests;
+    skippedByFilter = Math.max(
+      0,
+      Number(
+        (
+          builtRequests as unknown as {
+            __stats?: { skippedUnits?: number };
+          }
+        ).__stats?.skippedUnits || 0,
+      ),
+    );
   } catch (error) {
+    if (isNoValidInputUnitsError(error)) {
+      if (typeof console !== "undefined") {
+        console.info(
+          `[workflow-execute] skipped workflow=${args.workflow.manifest.id} reason=no-valid-input-units`,
+        );
+      }
+      alertWindow(
+        args.win,
+        buildWorkflowFinishMessage({
+          workflowLabel: args.workflow.manifest.label,
+          succeeded: 0,
+          failed: 0,
+          skipped: 1,
+          failureReasons: [],
+        }),
+      );
+      return;
+    }
     alertWindow(
       args.win,
-      `Workflow ${args.workflow.manifest.label} cannot run: ${String(error)}`,
+      `Workflow ${args.workflow.manifest.label} cannot run: ${normalizeErrorMessage(error)}`,
     );
     return;
   }
 
   if (requests.length === 0) {
-    alertWindow(args.win, `Workflow ${args.workflow.manifest.label} has no jobs.`);
+    alertWindow(
+      args.win,
+      buildWorkflowFinishMessage({
+        workflowLabel: args.workflow.manifest.label,
+        succeeded: 0,
+        failed: 0,
+        skipped: Math.max(1, skippedByFilter),
+        failureReasons: [],
+      }),
+    );
     return;
   }
 
-  const endpoint = resolveSkillRunnerEndpoint();
-  const provider = new SkillRunnerProvider({ baseUrl: endpoint });
+  if (!executionContext) {
+    alertWindow(
+      args.win,
+      `Workflow ${args.workflow.manifest.label} cannot run: execution context is unavailable`,
+    );
+    return;
+  }
   const queue = new JobQueueManager({
     concurrency: 1,
     executeJob: (job) =>
-      provider.execute({
-        requestKind: args.workflow.manifest.request?.kind || "skillrunner.job.v1",
+      executeWithProvider({
+        requestKind: executionContext.requestKind,
         request: job.request,
+        backend: executionContext.backend,
+        providerOptions: executionContext.providerOptions,
       }),
+    onJobUpdated: (job) => {
+      recordWorkflowTaskUpdate(job);
+    },
   });
+  const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
   const jobIds = requests.map((request, index) =>
     queue.enqueue({
       workflowId: args.workflow.manifest.id,
       request,
-      meta: { index },
+      meta: {
+        index,
+        runId,
+        workflowLabel: args.workflow.manifest.label,
+        taskName: resolveTaskNameFromRequest(request, index),
+        targetParentID: resolveTargetParentID(request),
+      },
     }),
   );
 
@@ -210,28 +263,49 @@ export async function executeWorkflowFromCurrentSelection(args: {
 
   let succeeded = 0;
   let failed = 0;
+  const failureReasons: string[] = [];
   for (let i = 0; i < jobIds.length; i++) {
     const job = queue.getJob(jobIds[i]);
     if (!job || job.state !== "succeeded") {
       failed += 1;
+      if (!job) {
+        failureReasons.push(`job-${i}: record missing`);
+      } else {
+        const reason = job.error || `state=${job.state}`;
+        failureReasons.push(`job-${i}: ${reason}`);
+      }
       continue;
     }
-    const targetParentID = resolveTargetParentID(requests[i]);
+    const targetParentID =
+      typeof job.meta.targetParentID === "number"
+        ? job.meta.targetParentID
+        : resolveTargetParentID(requests[i]);
     if (!targetParentID) {
       failed += 1;
+      failureReasons.push(`job-${i}: cannot resolve target parent`);
       continue;
     }
 
-    const result = job.result as { bundleBytes?: Uint8Array; requestId?: string };
-    if (!result?.bundleBytes || !result.requestId) {
+    const result = job.result as {
+      bundleBytes?: Uint8Array;
+      requestId?: string;
+    };
+    if (!result?.requestId) {
       failed += 1;
+      failureReasons.push(`job-${i}: missing requestId in execution result`);
       continue;
     }
 
-    const bundlePath = buildTempBundlePath(result.requestId);
+    let bundlePath = "";
     try {
-      await writeBytes(bundlePath, result.bundleBytes);
-      const bundleReader = new ZipBundleReader(bundlePath);
+      let bundleReader: BundleReader = createUnavailableBundleReader(
+        result.requestId,
+      );
+      if (result.bundleBytes && result.bundleBytes.length > 0) {
+        bundlePath = buildTempBundlePath(result.requestId);
+        await writeBytes(bundlePath, result.bundleBytes);
+        bundleReader = new ZipBundleReader(bundlePath);
+      }
       await executeApplyResult({
         workflow: args.workflow,
         parent: targetParentID,
@@ -239,15 +313,26 @@ export async function executeWorkflowFromCurrentSelection(args: {
         runResult: job.result,
       });
       succeeded += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      failureReasons.push(
+        `job-${i} (request_id=${result.requestId}): ${normalizeErrorMessage(error)}`,
+      );
     } finally {
-      await removeFileIfExists(bundlePath);
+      if (bundlePath) {
+        await removeFileIfExists(bundlePath);
+      }
     }
   }
 
   alertWindow(
     args.win,
-    `Workflow ${args.workflow.manifest.label} finished. succeeded=${succeeded}, failed=${failed}`,
+    buildWorkflowFinishMessage({
+      workflowLabel: args.workflow.manifest.label,
+      succeeded,
+      failed,
+      skipped: skippedByFilter,
+      failureReasons,
+    }),
   );
 }

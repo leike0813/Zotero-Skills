@@ -8,6 +8,8 @@ declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
       "skillRunnerEndpoint": string;
+      "backendsConfigJson": string;
+      "workflowSettingsJson": string;
       "workflowDir": string;
       "sampleOutputDir": string;
     };

@@ -115,7 +115,14 @@ Provider runtime options：
 
 - 架构总览：`doc/architecture-flow.md`
 - Workflows：`doc/components/workflows.md`
+- Workflow Hook Helpers：`doc/components/workflow-hook-helpers.md`
 - Providers：`doc/components/providers.md`
+- Selection/Context：`doc/components/selection-context.md`
+- Selection/Context Schema：`doc/components/selection-context.schema.json`
+- Handlers：`doc/components/handlers.md`
+- Job Queue：`doc/components/job-queue.md`
+- Transport：`doc/components/transport.md`
+- Local Cache（占位设计）：`doc/components/local-cache.md`
 - UI Shell：`doc/components/ui-shell.md`
 - Mock：`doc/components/zotero-mock.md`
 - 测试：`doc/testing-framework.md`

@@ -15,11 +15,13 @@ export function filterInputs({ selectionContext, runtime }) {
 
 ## filterInputs 触发与契约（M1）
 
-- `filterInputs` 不是通用二次过滤器，仅在“声明式 inputs 无法唯一确定合法输入”时触发。
-- 典型触发场景：同一父条目下出现多个同类候选附件，声明无法裁决唯一输入。
+- 对于 `inputs.unit = "attachment"` 的 workflow：只要声明了 `hooks.filterInputs`，就会在声明式 `inputs` 初筛后执行。
+- `filterInputs` 的主要用途仍是处理复杂输入裁决（例如同一父条目下多个同类候选附件）。
 - 输入：`selectionContext`（声明式初筛后的候选集）+ `manifest` + `runtime`。
-- 输出：合法输入单元集合（通过 `withFilteredAttachments` 返回过滤后的上下文）。
-- 失败语义：若未提供 hook，或 hook 未返回合法输入，则该歧义输入单元记错并跳过。
+- 输出：筛选后的 `selectionContext`（通常通过 `withFilteredAttachments` 返回）。
+- 失败语义：
+  - 未提供 hook：直接使用声明式初筛结果继续执行。
+  - hook 返回后无合法输入：该 workflow 在构建请求阶段会出现 `no valid input units`，执行层按“跳过并提示”处理。
 
 ## 可用函数（M1）
 

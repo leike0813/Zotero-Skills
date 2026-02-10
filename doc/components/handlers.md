@@ -45,7 +45,7 @@
 - `remove(attachment)`：删除附件  
 
 说明：
-- `fileSpec` 仅支持 `{ file }`，不支持 `{ filePath }`  
+- `fileSpec` 运行时仅支持 `{ file }`。类型层面保留 `{ filePath }` 兼容分支，但传入会显式抛错；路径场景请使用 `createFromPath`  
 - `createFromPath` 支持 `attachments:` / `storage:` 路径解析  
 - `mimeType` 会映射到附件字段 `contentType`（字段存在才写入）  
 

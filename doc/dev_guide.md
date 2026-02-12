@@ -25,7 +25,7 @@
 - `src/providers/*`：provider 执行层
 - `src/jobQueue/manager.ts`：任务队列
 - `src/modules/workflowExecute.ts`：执行主链路
-- `src/modules/*Dialog.ts`：设置/任务管理窗口
+- `src/modules/*Dialog.ts`：设置/任务管理/日志窗口
 
 说明：`src/transport/` 当前未启用，网络逻辑在 provider 内部实现。
 
@@ -79,6 +79,7 @@
 
 - `skillrunner`
 - `generic-http`
+- `pass-through`
 
 Provider 解析逻辑：
 
@@ -99,17 +100,26 @@ Provider runtime options：
 5. 根据 provider 结果调用 `applyResult`
 6. 汇总 succeeded/failed/skipped 消息
 
-## 8. 任务管理窗口
+## 8. 任务管理与日志窗口
 
-当前能力：
+任务管理窗口当前能力：
 
 - 展示任务名、workflow、状态
 - 打开窗口时清理已完成任务
 
-当前不支持：
+任务管理窗口当前不支持：
 
 - 取消任务
-- 日志/产物详情查看
+
+日志窗口当前能力：
+
+- 独立日志窗口（右键菜单可打开）
+- 运行时日志分级过滤（默认显示全部级别）
+- 支持复制可读 JSON/NDJSON 诊断信息用于 issue 与调试
+
+日志窗口边界：
+
+- 仅保留运行时内存日志（插件会话结束后自然清理）
 
 ## 9. 文档索引
 

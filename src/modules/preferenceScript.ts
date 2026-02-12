@@ -64,6 +64,7 @@ function bindPrefEvents() {
     workflowSettingsButton.addEventListener("command", () => {
       void addon.hooks.onPrefsEvent("openWorkflowSettings", {
         window: addon.data.prefs?.window,
+        source: "preferences",
       });
     });
   }

@@ -3,14 +3,15 @@ import { isWindowAlive } from "../utils/window";
 import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import { refreshWorkflowMenus } from "./workflowMenu";
 import {
-  getWorkflowSettings,
   listProviderProfilesForWorkflow,
+  resetRunOnceOverridesForSettingsOpen,
   setRunOnceWorkflowOverrides,
   updateWorkflowSettings,
 } from "./workflowSettings";
 import { getString } from "../utils/locale";
 import type { WorkflowParameterSchema } from "../workflows/types";
 import type { ProviderRuntimeOptionSchemaEntry } from "../providers/types";
+import type { LoadedWorkflow } from "../workflows/types";
 
 type FormSchemaType = "string" | "number" | "boolean";
 
@@ -584,7 +585,93 @@ function appendLabeledControlRow(args: {
   args.root.appendChild(row);
 }
 
-export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
+async function pickWorkflowIdForSettings(args: {
+  window?: Window;
+  workflows: LoadedWorkflow[];
+}) {
+  const workflows = args.workflows;
+  if (workflows.length === 0) {
+    return "";
+  }
+  if (workflows.length === 1) {
+    return workflows[0].manifest.id;
+  }
+  const dialogData: Record<string, unknown> = {
+    selectedWorkflowId: workflows[0].manifest.id,
+    loadCallback: () => {
+      const doc = addon.data.dialog?.window?.document;
+      if (!doc) {
+        return;
+      }
+      const root = doc.getElementById("zs-workflow-settings-picker-root");
+      if (!root) {
+        return;
+      }
+      root.innerHTML = "";
+      const panel = createHtmlElement(doc, "div");
+      panel.style.minWidth = "420px";
+      panel.style.padding = "8px";
+
+      const workflowSelect = createChoiceControl({
+        doc,
+        options: workflows.map((workflow) => ({
+          value: workflow.manifest.id,
+          label: workflow.manifest.label,
+        })),
+        selectedValue: workflows[0].manifest.id,
+      });
+      workflowSelect.setAttribute("id", "zs-workflow-settings-picker-workflow");
+      applySelectVisualStyle(workflowSelect, "360px");
+      appendLabeledControlRow({
+        doc,
+        root: panel,
+        label: getString("workflow-settings-workflow-label" as any),
+        control: workflowSelect,
+      });
+      workflowSelect.addEventListener("change", () => {
+        dialogData.selectedWorkflowId = getControlValue(workflowSelect);
+      });
+
+      root.appendChild(panel);
+    },
+    unloadCallback: () => {},
+  };
+
+  const pickerDialog = new ztoolkit.Dialog(1, 1)
+    .addCell(0, 0, {
+      tag: "div",
+      namespace: "html",
+      id: "zs-workflow-settings-picker-root",
+      styles: { padding: "6px" },
+    })
+    .addButton(getString("workflow-settings-open" as any), "open")
+    .addButton(getString("workflow-settings-cancel" as any), "cancel")
+    .setDialogData(dialogData)
+    .open(getString("workflow-settings-picker-title" as any));
+
+  addon.data.dialog = pickerDialog;
+  await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
+    ?.promise;
+  addon.data.dialog = undefined;
+
+  if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "open") {
+    return "";
+  }
+
+  const selected = String(dialogData.selectedWorkflowId || "").trim();
+  if (!selected) {
+    return "";
+  }
+  if (!workflows.some((entry) => entry.manifest.id === selected)) {
+    return "";
+  }
+  return selected;
+}
+
+export async function openWorkflowSettingsDialog(args?: {
+  window?: Window;
+  workflowId?: string;
+}) {
   if (isWindowAlive(addon.data.dialog?.window)) {
     addon.data.dialog?.window?.focus();
     return;
@@ -595,18 +682,49 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
     alertWindow?.alert?.(getString("workflow-settings-no-workflows" as any));
     return;
   }
-
-  const profileCache = new Map<string, Array<{ id: string; label: string }>>();
-  for (const workflow of workflows) {
-    const profiles = await listProviderProfilesForWorkflow(workflow);
-    profileCache.set(
-      workflow.manifest.id,
-      profiles.map((profile) => ({
-        id: profile.id,
-        label: `${profile.id} (${profile.baseUrl})`,
-      })),
-    );
+  let workflowId = String(args?.workflowId || "").trim();
+  if (!workflowId) {
+    workflowId = await pickWorkflowIdForSettings({
+      window: args?.window,
+      workflows,
+    });
+    if (!workflowId) {
+      return;
+    }
   }
+  const workflow = workflows.find((entry) => entry.manifest.id === workflowId);
+  if (!workflow) {
+    alertWindow?.alert?.(
+      getString("workflow-settings-error-workflow-not-found" as any, {
+        args: { workflowId },
+      }),
+    );
+    return;
+  }
+  const profiles = await listProviderProfilesForWorkflow(workflow);
+  const profileItems = profiles.map((profile) => ({
+    id: profile.id,
+    label: `${profile.id} (${profile.baseUrl})`,
+  }));
+  // Reset pending run-once override so every open starts from persisted snapshot.
+  const saved = resetRunOnceOverridesForSettingsOpen(workflowId);
+  const providerId = String(workflow.manifest.provider || "").trim();
+  const selectedProfile = String(saved.backendId || "").trim();
+  const savedWorkflowParams =
+    saved.workflowParams &&
+    typeof saved.workflowParams === "object" &&
+    !Array.isArray(saved.workflowParams)
+      ? (saved.workflowParams as Record<string, unknown>)
+      : {};
+  const savedProviderOptions =
+    saved.providerOptions &&
+    typeof saved.providerOptions === "object" &&
+    !Array.isArray(saved.providerOptions)
+      ? (saved.providerOptions as Record<string, unknown>)
+      : {};
+  const workflowSchemaEntries = fromWorkflowParameterSchema(
+    workflow.manifest.parameters,
+  );
 
   const dialogData: Record<string, unknown> = {
     loadCallback: () => {
@@ -623,28 +741,12 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
       panel.style.minWidth = "900px";
       panel.style.padding = "8px";
 
-      const workflowSelect = createChoiceControl({
-        doc,
-        options: workflows.map((workflow) => ({
-          value: workflow.manifest.id,
-          label: workflow.manifest.label,
-        })),
-        selectedValue: workflows[0]?.manifest.id || "",
-      });
-      workflowSelect.setAttribute("id", "zs-workflow-settings-workflow");
-      applySelectVisualStyle(workflowSelect, "360px");
-      appendLabeledControlRow({
-        doc,
-        root: panel,
-        label: getString("workflow-settings-workflow-label" as any),
-        control: workflowSelect,
-      });
-
       const providerInput = createHtmlElement(doc, "input");
       providerInput.id = "zs-workflow-settings-provider";
       providerInput.type = "text";
       providerInput.readOnly = true;
       providerInput.style.width = "360px";
+      providerInput.value = providerId;
       appendLabeledControlRow({
         doc,
         root: panel,
@@ -704,7 +806,7 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
       const onceProfileSelect = createChoiceControl({
         doc,
         options: [],
-        selectedValue: "",
+        selectedValue: selectedProfile,
         includeEmptyOption: {
           value: "",
           label: getString("workflow-settings-use-persisted-profile" as any),
@@ -735,7 +837,6 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
       root.appendChild(panel);
 
       if (
-        !workflowSelect ||
         !providerInput ||
         !profileSelect ||
         !onceProfileSelect ||
@@ -746,123 +847,81 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
       ) {
         return;
       }
+      setProfileSelectOptions({
+        control: profileSelect,
+        profileItems,
+        selectedId: selectedProfile,
+      });
+      setProfileSelectOptions({
+        control: onceProfileSelect,
+        profileItems,
+        selectedId: selectedProfile,
+        includePersistedFallback: true,
+      });
+      renderSchemaFields({
+        doc,
+        container: persistedWorkflowFields,
+        entries: workflowSchemaEntries,
+        values: savedWorkflowParams,
+        idPrefix: "zs-workflow-persisted-workflow-param",
+        emptyText: getString("workflow-settings-no-workflow-params" as any),
+      });
+      renderSchemaFields({
+        doc,
+        container: onceWorkflowFields,
+        entries: workflowSchemaEntries,
+        values: savedWorkflowParams,
+        idPrefix: "zs-workflow-once-workflow-param",
+        emptyText: getString("workflow-settings-no-workflow-params" as any),
+      });
 
-      const renderForWorkflow = (workflowId: string) => {
-        const workflow = workflows.find(
-          (entry) => entry.manifest.id === workflowId,
-        );
-        if (!workflow) {
-          return;
-        }
-        const saved = getWorkflowSettings(workflow.manifest.id);
-        const providerId = String(workflow.manifest.provider || "").trim();
-        providerInput.value = providerId;
-
-        const profileItems = profileCache.get(workflow.manifest.id) || [];
-        const selectedProfile = String(saved.backendId || "").trim();
-        setProfileSelectOptions({
-          control: profileSelect,
-          profileItems,
-          selectedId: selectedProfile,
-        });
-        setProfileSelectOptions({
-          control: onceProfileSelect,
-          profileItems,
-          selectedId: "",
-          includePersistedFallback: true,
-        });
-
-        const workflowSchemaEntries = fromWorkflowParameterSchema(
-          workflow.manifest.parameters,
-        );
-        const savedProviderOptions =
-          saved.providerOptions &&
-          typeof saved.providerOptions === "object" &&
-          !Array.isArray(saved.providerOptions)
-            ? (saved.providerOptions as Record<string, unknown>)
-            : {};
-
-        renderSchemaFields({
-          doc,
-          container: persistedWorkflowFields,
-          entries: workflowSchemaEntries,
-          values:
-            saved.workflowParams &&
-            typeof saved.workflowParams === "object" &&
-            !Array.isArray(saved.workflowParams)
-              ? (saved.workflowParams as Record<string, unknown>)
-              : {},
-          idPrefix: "zs-workflow-persisted-workflow-param",
-          emptyText: getString(
-            "workflow-settings-no-workflow-params" as any,
-          ),
-        });
-        const renderProviderOptionsFields = (args: {
-          container: HTMLElement;
-          idPrefix: string;
-          values: Record<string, unknown>;
-        }) => {
-          const mergedValues = {
-            ...args.values,
-            ...collectSchemaValues(args.container),
-          };
-          const providerSchemaEntries = getProviderSchemaEntries(
-            providerId,
-            mergedValues,
-          );
-          renderSchemaFields({
-            doc,
-            container: args.container,
-            entries: providerSchemaEntries,
-            values: mergedValues,
-            idPrefix: args.idPrefix,
-            emptyText: getString(
-              "workflow-settings-no-provider-options" as any,
-            ),
-          });
-          const engineControl = args.container.querySelector(
-            '[data-zs-option-key="engine"]',
-          ) as Element | null;
-          if (engineControl) {
-            engineControl.addEventListener("change", () => {
-              const currentValues = {
-                ...args.values,
-                ...collectSchemaValues(args.container),
-              };
-              renderProviderOptionsFields({
-                container: args.container,
-                idPrefix: args.idPrefix,
-                values: currentValues,
-              });
-            });
-          }
+      const renderProviderOptionsFields = (args: {
+        container: HTMLElement;
+        idPrefix: string;
+        values: Record<string, unknown>;
+      }) => {
+        const mergedValues = {
+          ...args.values,
+          ...collectSchemaValues(args.container),
         };
-        renderProviderOptionsFields({
-          container: persistedProviderFields,
-          idPrefix: "zs-workflow-persisted-provider-option",
-          values: savedProviderOptions,
-        });
-
+        const providerSchemaEntries = getProviderSchemaEntries(
+          providerId,
+          mergedValues,
+        );
         renderSchemaFields({
           doc,
-          container: onceWorkflowFields,
-          entries: workflowSchemaEntries,
-          values: {},
-          idPrefix: "zs-workflow-once-workflow-param",
-          emptyText: getString(
-            "workflow-settings-no-workflow-params" as any,
-          ),
+          container: args.container,
+          entries: providerSchemaEntries,
+          values: mergedValues,
+          idPrefix: args.idPrefix,
+          emptyText: getString("workflow-settings-no-provider-options" as any),
         });
-        renderProviderOptionsFields({
-          container: onceProviderFields,
-          idPrefix: "zs-workflow-once-provider-option",
-          values: {},
-        });
+        const engineControl = args.container.querySelector(
+          '[data-zs-option-key="engine"]',
+        ) as Element | null;
+        if (engineControl) {
+          engineControl.addEventListener("change", () => {
+            const currentValues = {
+              ...args.values,
+              ...collectSchemaValues(args.container),
+            };
+            renderProviderOptionsFields({
+              container: args.container,
+              idPrefix: args.idPrefix,
+              values: currentValues,
+            });
+          });
+        }
       };
-
-      renderForWorkflow(getControlValue(workflowSelect) || workflows[0].manifest.id);
-      workflowSelect.addEventListener("change", () => {
-        renderForWorkflow(getControlValue(workflowSelect));
+      renderProviderOptionsFields({
+        container: persistedProviderFields,
+        idPrefix: "zs-workflow-persisted-provider-option",
+        values: savedProviderOptions,
+      });
+      renderProviderOptionsFields({
+        container: onceProviderFields,
+        idPrefix: "zs-workflow-once-provider-option",
+        values: savedProviderOptions,
       });
     },
     unloadCallback: () => {},
@@ -879,7 +938,9 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
     .addButton(getString("workflow-settings-apply-run-once" as any), "run_once")
     .addButton(getString("workflow-settings-cancel" as any), "cancel")
     .setDialogData(dialogData)
-    .open(getString("workflow-settings-title" as any));
+    .open(
+      `${getString("workflow-settings-title" as any)}: ${workflow.manifest.label}`,
+    );
 
   addon.data.dialog = dialogHelper;
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
@@ -896,14 +957,6 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
     if (!doc) {
       throw new Error(getString("workflow-settings-error-window-unavailable" as any));
     }
-    const workflowId = (
-      doc.getElementById("zs-workflow-settings-workflow") as Element | null
-    );
-    const workflowIdValue = workflowId ? getControlValue(workflowId) : "";
-    if (!workflowIdValue) {
-      throw new Error(getString("workflow-settings-error-workflow-required" as any));
-    }
-
     const persistedProfileControl = doc.getElementById(
       "zs-workflow-settings-profile",
     ) as Element | null;
@@ -939,7 +992,7 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
     }
 
     if (clicked === "save") {
-      updateWorkflowSettings(workflowIdValue, {
+      updateWorkflowSettings(workflowId, {
         backendId: persistedProfile || undefined,
         workflowParams: collectSchemaValues(persistedWorkflowFields),
         providerOptions: collectSchemaValues(persistedProviderFields),
@@ -949,7 +1002,7 @@ export async function openWorkflowSettingsDialog(args?: { window?: Window }) {
       return;
     }
 
-    setRunOnceWorkflowOverrides(workflowIdValue, {
+    setRunOnceWorkflowOverrides(workflowId, {
       backendId: onceProfile || undefined,
       workflowParams: collectSchemaValues(onceWorkflowFields),
       providerOptions: collectSchemaValues(onceProviderFields),

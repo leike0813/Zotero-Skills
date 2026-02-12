@@ -17,6 +17,13 @@ function parseNoteKind(noteContent: string) {
   return match ? match[2] : "";
 }
 
+function parseSourceMarkdownItemKey(noteContent: string) {
+  const match = String(noteContent || "").match(
+    /data-zs-source_markdown_item_key=(["'])([^"']+)\1/i,
+  );
+  return match ? match[2] : "";
+}
+
 describe("workflow: literature-digest", function () {
   it("loads literature-digest workflow manifest from workflows directory", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -309,6 +316,95 @@ describe("workflow: literature-digest", function () {
     assert.include(parentNotes, secondNote.id);
   });
 
+  it("writes hidden source metadata with markdown attachment itemKey when request is provided", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Source Metadata Parent" },
+    });
+
+    const mdFile = fixturePath("literature-digest", "example.md");
+    const attachment = await handlers.attachment.createFromPath({
+      parent,
+      path: mdFile,
+      title: "example.md",
+      mimeType: "text/markdown",
+    });
+    const context = await buildSelectionContext([attachment]);
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    const requests = (await executeBuildRequests({
+      workflow: workflow!,
+      selectionContext: context,
+    })) as Array<{
+      kind: string;
+      targetParentID: number;
+      sourceAttachmentPaths?: string[];
+      upload_files?: Array<{ key: string; path: string }>;
+    }>;
+    assert.lengthOf(requests, 1);
+
+    const bundle = new ZipBundleReader(
+      fixturePath("literature-digest", "run_bundle.zip"),
+    );
+    const applied = (await executeApplyResult({
+      workflow: workflow!,
+      parent,
+      bundleReader: bundle,
+      request: requests[0],
+    })) as { notes: Zotero.Item[] };
+
+    assert.lengthOf(applied.notes, 2);
+    const digestNote = Zotero.Items.get(applied.notes[0].id)!;
+    const referencesNote = Zotero.Items.get(applied.notes[1].id)!;
+    assert.match(digestNote.getNote(), /data-zs-block="meta"/);
+    assert.match(digestNote.getNote(), /data-zs-meta="source-markdown"/);
+    assert.equal(
+      parseSourceMarkdownItemKey(digestNote.getNote()),
+      attachment.key,
+    );
+    assert.match(digestNote.getNote(), /data-zs-payload="digest-markdown"/);
+    assert.match(referencesNote.getNote(), /data-zs-payload="references-json"/);
+  });
+
+  it("continues apply when source markdown itemKey cannot be resolved", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Source Metadata Fallback Parent" },
+    });
+
+    const bundle = new ZipBundleReader(
+      fixturePath("literature-digest", "run_bundle.zip"),
+    );
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    const applied = (await executeApplyResult({
+      workflow: workflow!,
+      parent,
+      bundleReader: bundle,
+      request: {
+        targetParentID: parent.id,
+        sourceAttachmentPaths: ["D:/not-found/example.md"],
+        upload_files: [{ key: "md_path", path: "D:/not-found/example.md" }],
+      },
+    })) as { notes: Zotero.Item[] };
+
+    assert.lengthOf(applied.notes, 2);
+    const digestNote = Zotero.Items.get(applied.notes[0].id)!;
+    const referencesNote = Zotero.Items.get(applied.notes[1].id)!;
+    assert.notMatch(digestNote.getNote(), /data-zs-source_markdown_item_key=/);
+    assert.match(digestNote.getNote(), /data-zs-payload="digest-markdown"/);
+    assert.match(referencesNote.getNote(), /data-zs-payload="references-json"/);
+  });
+
   it("upserts existing generated notes and keeps each kind unique", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -425,6 +521,81 @@ describe("workflow: literature-digest", function () {
     assert.include(alerts[0], "succeeded=0");
     assert.include(alerts[0], "failed=0");
     assert.include(alerts[0], "skipped=1");
+  });
+
+  it("reports real skipped count when all selected inputs are filtered out", async function () {
+    const parentA = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Execute Skip Parent A" },
+    });
+    const parentB = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Execute Skip Parent B" },
+    });
+
+    const mdFile = fixturePath("literature-digest", "example.md");
+    await handlers.attachment.createFromPath({
+      parent: parentA,
+      path: mdFile,
+      title: "a.md",
+      mimeType: "text/markdown",
+    });
+    await handlers.attachment.createFromPath({
+      parent: parentB,
+      path: mdFile,
+      title: "b.md",
+      mimeType: "text/markdown",
+    });
+
+    for (const parent of [parentA, parentB]) {
+      await handlers.parent.addNote(parent, {
+        content:
+          '<div data-zs-note-kind="digest"><h1>Digest</h1></div>',
+      });
+      await handlers.parent.addNote(parent, {
+        content:
+          '<div data-zs-note-kind="references"><h1>References</h1></div>',
+      });
+    }
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    const runtime = globalThis as { fetch?: typeof fetch };
+    const originalFetch = runtime.fetch;
+    let fetchCalls = 0;
+    runtime.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called when skipped");
+    }) as typeof fetch;
+
+    const alerts: string[] = [];
+    const fakeWindow = {
+      ZoteroPane: {
+        getSelectedItems: () => [parentA, parentB],
+      },
+      alert: (message: string) => {
+        alerts.push(message);
+      },
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win: fakeWindow,
+        workflow: workflow!,
+      });
+    } finally {
+      runtime.fetch = originalFetch;
+    }
+
+    assert.equal(fetchCalls, 0, "backend fetch should be skipped");
+    assert.lengthOf(alerts, 1);
+    assert.include(alerts[0], "succeeded=0");
+    assert.include(alerts[0], "failed=0");
+    assert.include(alerts[0], "skipped=2");
   });
 
   it("skips build for selected parent item when idempotent notes already exist", async function () {

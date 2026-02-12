@@ -1,0 +1,11 @@
+{
+  "id": "reference-note-editor",
+  "label": "Reference Note Editor",
+  "version": "0.1.0",
+  "provider": "pass-through",
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.js",
+    "applyResult": "hooks/applyResult.js"
+  }
+}
+

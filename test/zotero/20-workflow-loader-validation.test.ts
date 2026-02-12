@@ -70,6 +70,31 @@ describe("workflow loader validation", function () {
     );
   });
 
+  it("accepts pass-through workflow without buildRequest and request", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "pass-through-minimal",
+      {
+        id: "pass-through-minimal",
+        label: "Pass Through Minimal",
+        provider: "pass-through",
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(
+      loaded.workflows,
+      1,
+      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+    );
+    assert.equal(loaded.workflows[0].buildStrategy, "declarative");
+  });
+
   it("rejects workflow when applyResult hook is missing", async function () {
     const tmpRoot = await mkTempDir("zotero-skills-wf");
     await makeWorkflow(

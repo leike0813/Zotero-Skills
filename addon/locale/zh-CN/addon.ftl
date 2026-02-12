@@ -8,6 +8,7 @@ menu-workflows-empty = 未加载任何 Workflow
 menu-workflows-rescan = 重新扫描 Workflow
 menu-workflows-settings = Workflow 设置...
 menu-workflows-task-manager = 打开任务管理窗口...
+menu-workflows-open-logs = 打开日志窗口...
 menu-workflow-no-selection = 未选择条目
 task-manager-title = 任务管理窗口
 task-manager-close = 关闭
@@ -18,6 +19,26 @@ task-manager-column-status = 状态
 task-manager-status-queued = 排队中
 task-manager-status-running = 运行中
 task-manager-status-completed = 已完成
+log-viewer-title = Workflow 日志
+log-viewer-close = 关闭
+log-viewer-level-filter-label = 级别：
+log-viewer-column-time = 时间
+log-viewer-column-level = 级别
+log-viewer-column-scope = 范围
+log-viewer-column-stage = 阶段
+log-viewer-column-message = 消息
+log-viewer-details = 详情
+log-viewer-empty = 当前没有日志记录。
+log-viewer-copy-selected = 复制选中
+log-viewer-copy-visible = 复制可见
+log-viewer-copy-all = 复制全部
+log-viewer-copy-visible-ndjson = 复制可见（NDJSON）
+log-viewer-clear = 清空
+log-viewer-copy-empty = 没有可复制的日志。
+log-viewer-copy-success = 已复制 { $count } 条日志。
+log-viewer-copy-failed = 复制失败：{ $error }
+log-viewer-stats = 可见 { $visible } / 总计 { $total }
+log-viewer-truncated = 旧日志已截断。丢弃={ $dropped }，上限={ $maxEntries }
 sample-output-dir-missing = 请在首选项中设置采样输出目录。
 sample-output-saved = 已保存选区上下文：{ $path }
 sample-output-dir-title = 选择采样输出目录
@@ -54,10 +75,25 @@ workflow-settings-apply-run-once = 仅应用到下一次运行
 workflow-settings-cancel = 取消
 workflow-settings-error-window-unavailable = Workflow 设置窗口不可用
 workflow-settings-error-workflow-required = 必须选择 Workflow
+workflow-settings-error-workflow-not-found = 未找到 Workflow：{ $workflowId }
 workflow-settings-error-controls-unavailable = Workflow 设置控件不可用
 workflow-settings-saved = Workflow 设置已保存。
 workflow-settings-run-once-saved = 一次性覆盖项已保存，将在下次执行时生效并自动清除。
 workflow-settings-save-failed = 保存 Workflow 设置失败：{ $error }
+workflow-settings-picker-title = 选择 Workflow 设置
+workflow-settings-open = 打开
+
+workflow-execute-summary = Workflow { $workflowLabel } 执行完成。成功={ $succeeded }，失败={ $failed }
+workflow-execute-summary-with-skipped = Workflow { $workflowLabel } 执行完成。成功={ $succeeded }，失败={ $failed }，跳过={ $skipped }
+workflow-execute-failure-reasons-title = 失败原因：
+workflow-execute-failure-overflow = ...还有 { $count } 条
+workflow-execute-unknown-error = 未知错误
+workflow-execute-toast-start = Workflow { $workflowLabel } 已开始执行，任务数={ $totalJobs }
+workflow-execute-toast-job-success = Workflow { $workflowLabel } 任务 { $index }/{ $total } 成功：{ $taskLabel }
+workflow-execute-toast-job-failed = Workflow { $workflowLabel } 任务 { $index }/{ $total } 失败：{ $taskLabel }（{ $reason }）
+workflow-execute-no-selection = 未选择任何条目。
+workflow-execute-cannot-run = Workflow { $workflowLabel } 无法执行：{ $reason }
+workflow-execute-cannot-run-context-unavailable = Workflow { $workflowLabel } 无法执行：执行上下文不可用
 
 backend-manager-title = 后端管理器
 backend-manager-provider-skillrunner = SkillRunner

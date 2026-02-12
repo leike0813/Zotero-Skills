@@ -30,6 +30,7 @@ export type ProviderRuntimeOptionSchema = Record<
 
 export type Provider = {
   id: string;
+  requiresBackendProfile?: boolean;
   supports: (args: ProviderSupportsArgs) => boolean;
   execute: (args: ProviderExecuteArgs) => Promise<ProviderExecutionResult>;
   getRuntimeOptionSchema?: () => ProviderRuntimeOptionSchema;

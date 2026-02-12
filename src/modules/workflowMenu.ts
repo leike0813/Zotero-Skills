@@ -6,6 +6,7 @@ import { executeWorkflowFromCurrentSelection } from "./workflowExecute";
 import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import { resolveProvider } from "../providers/registry";
 import { resolveWorkflowExecutionContext } from "./workflowSettings";
+import type { LoadedWorkflow } from "../workflows/types";
 
 const ROOT_MENU_ID = `${config.addonRef}-workflows-menu`;
 const ROOT_POPUP_ID = `${config.addonRef}-workflows-popup`;
@@ -53,16 +54,35 @@ function appendRescanItem(win: _ZoteroTypes.MainWindow, popup: XULElement) {
 function appendWorkflowSettingsItem(
   win: _ZoteroTypes.MainWindow,
   popup: XULElement,
+  workflows: LoadedWorkflow[],
 ) {
-  const item = win.document.createXULElement("menuitem");
-  item.setAttribute(
+  const menu = win.document.createXULElement("menu");
+  menu.setAttribute(
     "label",
     getMenuLabel("menu-workflows-settings", "Workflow Settings..."),
   );
-  item.addEventListener("command", () => {
-    void addon.hooks.onPrefsEvent("openWorkflowSettings", { window: win });
-  });
-  popup.appendChild(item);
+  const subPopup = win.document.createXULElement("menupopup") as XULElement;
+  if (workflows.length === 0) {
+    appendDisabledItem(
+      win,
+      subPopup,
+      getMenuLabel("menu-workflows-empty", "No workflows loaded"),
+    );
+  } else {
+    for (const workflow of workflows) {
+      const item = win.document.createXULElement("menuitem");
+      item.setAttribute("label", workflow.manifest.label);
+      item.addEventListener("command", () => {
+        void addon.hooks.onPrefsEvent("openWorkflowSettings", {
+          window: win,
+          workflowId: workflow.manifest.id,
+        });
+      });
+      subPopup.appendChild(item);
+    }
+  }
+  menu.appendChild(subPopup);
+  popup.appendChild(menu);
 }
 
 function appendTaskManagerItem(win: _ZoteroTypes.MainWindow, popup: XULElement) {
@@ -73,6 +93,18 @@ function appendTaskManagerItem(win: _ZoteroTypes.MainWindow, popup: XULElement) 
   );
   item.addEventListener("command", () => {
     void addon.hooks.onPrefsEvent("openTaskManager", { window: win });
+  });
+  popup.appendChild(item);
+}
+
+function appendLogViewerItem(win: _ZoteroTypes.MainWindow, popup: XULElement) {
+  const item = win.document.createXULElement("menuitem");
+  item.setAttribute(
+    "label",
+    getMenuLabel("menu-workflows-open-logs", "Open Logs..."),
+  );
+  item.addEventListener("command", () => {
+    void addon.hooks.onPrefsEvent("openLogViewer", { window: win });
   });
   popup.appendChild(item);
 }
@@ -95,11 +127,12 @@ async function rebuildWorkflowPopup(
   popup: XULElement,
 ) {
   clearPopupChildren(popup);
-  appendRescanItem(win, popup);
-  appendWorkflowSettingsItem(win, popup);
-  appendTaskManagerItem(win, popup);
-  appendMenuSeparator(win, popup);
   const workflows = getLoadedWorkflowEntries();
+  appendRescanItem(win, popup);
+  appendWorkflowSettingsItem(win, popup, workflows);
+  appendTaskManagerItem(win, popup);
+  appendLogViewerItem(win, popup);
+  appendMenuSeparator(win, popup);
   if (workflows.length === 0) {
     appendDisabledItem(
       win,
@@ -185,7 +218,10 @@ export function ensureWorkflowMenuForWindow(win: _ZoteroTypes.MainWindow) {
   menu.setAttribute("image", MENU_ICON_URI);
   const popup = win.document.createXULElement("menupopup") as XULElement;
   popup.id = ROOT_POPUP_ID;
-  popup.addEventListener("popupshowing", () => {
+  popup.addEventListener("popupshowing", (event: Event) => {
+    if (event.target !== popup) {
+      return;
+    }
     void rebuildWorkflowPopup(win, popup);
   });
   menu.appendChild(popup);

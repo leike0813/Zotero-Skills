@@ -132,6 +132,15 @@ async function flushTasks() {
   await Promise.resolve();
 }
 
+function assertMenuLabel(
+  actual: string | null,
+  options: readonly string[],
+  context: string,
+) {
+  assert.isString(actual, `${context} should be a string`);
+  assert.include(options, actual as string, `${context} should match locale`);
+}
+
 describe("startup workflow scan + menu init", function () {
   const workflowDirPrefKey = `${config.prefsPrefix}.workflowDir`;
 
@@ -234,19 +243,38 @@ describe("startup workflow scan + menu init", function () {
 
     popup!.dispatch("popupshowing");
     await flushTasks();
-    assert.lengthOf(popup!.children, 5);
-    assert.equal(popup!.children[0].getAttribute("label"), "Rescan Workflows");
+    assert.lengthOf(popup!.children, 6);
+    assertMenuLabel(
+      popup!.children[0].getAttribute("label"),
+      ["Rescan Workflows", "重新扫描 Workflow"],
+      "rescan label",
+    );
     assert.equal(popup!.children[0].getAttribute("disabled"), null);
-    assert.equal(popup!.children[1].getAttribute("label"), "Workflow Settings...");
+    assertMenuLabel(
+      popup!.children[1].getAttribute("label"),
+      ["Workflow Settings...", "Workflow 设置..."],
+      "settings label",
+    );
     assert.equal(popup!.children[1].getAttribute("disabled"), null);
-    assert.equal(
+    assertMenuLabel(
       popup!.children[2].getAttribute("label"),
-      "Open Task Manager...",
+      ["Open Task Manager...", "打开任务管理窗口..."],
+      "task-manager label",
     );
     assert.equal(popup!.children[2].getAttribute("disabled"), null);
-    assert.equal(popup!.children[3].getAttribute("label"), null);
-    assert.equal(popup!.children[4].getAttribute("disabled"), "true");
-    assert.equal(popup!.children[4].getAttribute("label"), "No workflows loaded");
+    assertMenuLabel(
+      popup!.children[3].getAttribute("label"),
+      ["Open Logs...", "打开日志窗口..."],
+      "logs label",
+    );
+    assert.equal(popup!.children[3].getAttribute("disabled"), null);
+    assert.equal(popup!.children[4].getAttribute("label"), null);
+    assert.equal(popup!.children[5].getAttribute("disabled"), "true");
+    assertMenuLabel(
+      popup!.children[5].getAttribute("label"),
+      ["No workflows loaded", "未加载任何 Workflow"],
+      "empty label",
+    );
   });
 
   it("retries menu initialization when item menu appears late", async function () {

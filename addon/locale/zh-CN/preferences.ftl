@@ -13,4 +13,7 @@ pref-backend-manage =
     .label = 打开后端管理器
 pref-backend-manage-help = 按 provider 分组添加和编辑后端 profile。
 pref-section-about = 关于
+pref-about-author = 作者信息：Ghost in the bucket (leike0813@gmail.com)
+pref-about-github-label = GitHub 仓库：
+pref-about-welcome = 欢迎提交 issue 和 pull request。
 pref-help = { $name } Build { $version } { $time }

@@ -1,8 +1,11 @@
 import { getBaseName } from "../utils/path";
 import type {
   GenericHttpRequestV1,
+  GenericHttpStepsRequestV1,
+  PassThroughRunRequestV1,
   SkillRunnerJobRequestV1,
 } from "../providers/contracts";
+import { PASS_THROUGH_REQUEST_KIND } from "../config/defaults";
 import type { WorkflowManifest, WorkflowRequestSpec } from "./types";
 
 type AttachmentLike = {
@@ -10,6 +13,8 @@ type AttachmentLike = {
   mimeType?: string | null;
   parent?: { id?: number | null; title?: string; data?: { title?: string } } | null;
   item?: {
+    id?: number;
+    key?: string;
     title?: string;
     parentItemID?: number | null;
     data?: {
@@ -24,6 +29,10 @@ type SelectionLike = {
     attachments?: AttachmentLike[];
     parents?: Array<{ item?: { id?: number; title?: string; data?: { title?: string } } }>;
     children?: Array<{
+      parent?: { id?: number | null; title?: string; data?: { title?: string } } | null;
+      item?: { id?: number; title?: string; data?: { title?: string } };
+    }>;
+    notes?: Array<{
       parent?: { id?: number | null; title?: string; data?: { title?: string } } | null;
       item?: { id?: number; title?: string; data?: { title?: string } };
     }>;
@@ -129,6 +138,14 @@ function resolveTargetParentID(selectionContext: unknown) {
   if (childID) {
     return childID;
   }
+  const noteParentID = selection?.items?.notes?.[0]?.parent?.id;
+  if (noteParentID) {
+    return noteParentID;
+  }
+  const noteID = selection?.items?.notes?.[0]?.item?.id;
+  if (noteID) {
+    return noteID;
+  }
   throw new Error("Cannot resolve target parent item from selection context");
 }
 
@@ -142,6 +159,25 @@ function resolveSourceAttachmentPaths(attachments: AttachmentLike[]) {
     .map((entry) => String(entry.filePath || "").trim())
     .filter(Boolean);
   return Array.from(new Set(paths));
+}
+
+function getFileStem(filePath: string) {
+  const name = getBaseName(filePath);
+  if (!name) {
+    return "";
+  }
+  return name.replace(/\.[^.]+$/, "");
+}
+
+function resolveSingleSourceAttachment(
+  attachments: AttachmentLike[],
+  sourceAttachmentPaths: string[],
+) {
+  const targetPath = sourceAttachmentPaths[0] || "";
+  const matched = attachments.find(
+    (entry) => String(entry.filePath || "").trim() === targetPath,
+  );
+  return matched || attachments[0] || null;
 }
 
 function resolveTaskName(args: {
@@ -162,6 +198,10 @@ function resolveTaskName(args: {
     selection?.items?.children?.[0]?.parent?.data?.title ||
     selection?.items?.children?.[0]?.item?.title ||
     selection?.items?.children?.[0]?.item?.data?.title ||
+    selection?.items?.notes?.[0]?.parent?.title ||
+    selection?.items?.notes?.[0]?.parent?.data?.title ||
+    selection?.items?.notes?.[0]?.item?.title ||
+    selection?.items?.notes?.[0]?.item?.data?.title ||
     "";
   if (String(parentTitle || "").trim()) {
     return String(parentTitle).trim();
@@ -311,6 +351,113 @@ function buildGenericHttpRequest(args: {
   return requestPayload;
 }
 
+function buildPassThroughRequest(args: {
+  selectionContext: unknown;
+  manifest: WorkflowManifest;
+  executionOptions?: {
+    workflowParams?: Record<string, unknown>;
+  };
+}) {
+  const attachments = resolveSelectionAttachments(args.selectionContext);
+  const targetParentID = resolveTargetParentID(args.selectionContext);
+  const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
+  const taskName = resolveTaskName({
+    sourceAttachmentPaths,
+    selectionContext: args.selectionContext,
+    targetParentID,
+  });
+  const workflowParams = resolveWorkflowParams({
+    manifest: args.manifest,
+    executionOptions: args.executionOptions,
+  });
+
+  const requestPayload: PassThroughRunRequestV1 = {
+    kind: PASS_THROUGH_REQUEST_KIND,
+    targetParentID,
+    taskName,
+    sourceAttachmentPaths,
+    selectionContext: args.selectionContext,
+    parameter: workflowParams,
+  };
+  return requestPayload;
+}
+
+function buildGenericHttpStepsRequest(args: {
+  selectionContext: unknown;
+  manifest: WorkflowManifest;
+  executionOptions?: {
+    workflowParams?: Record<string, unknown>;
+  };
+}) {
+  const requestSpec = args.manifest.request as {
+    steps?: unknown;
+    poll?: {
+      interval_ms?: number;
+      timeout_ms?: number;
+    };
+    context?: Record<string, unknown>;
+  } | null;
+  const declaredSteps = Array.isArray(requestSpec?.steps)
+    ? requestSpec?.steps || []
+    : [];
+  if (declaredSteps.length === 0) {
+    throw new Error(
+      `Workflow ${args.manifest.id} generic-http.steps.v1 requires request.steps[]`,
+    );
+  }
+
+  const attachments = resolveSelectionAttachments(args.selectionContext);
+  const targetParentID = resolveTargetParentID(args.selectionContext);
+  const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
+  const taskName = resolveTaskName({
+    sourceAttachmentPaths,
+    selectionContext: args.selectionContext,
+    targetParentID,
+  });
+  const workflowParams = resolveWorkflowParams({
+    manifest: args.manifest,
+    executionOptions: args.executionOptions,
+  });
+  const sourceAttachment = resolveSingleSourceAttachment(
+    attachments,
+    sourceAttachmentPaths,
+  );
+  const sourceAttachmentPath = sourceAttachmentPaths[0] || "";
+
+  const context = {
+    ...workflowParams,
+    workflow_id: args.manifest.id,
+    workflow_label: args.manifest.label,
+    target_parent_id: targetParentID,
+    source_attachment_path: sourceAttachmentPath,
+    source_attachment_name: sourceAttachmentPath
+      ? getBaseName(sourceAttachmentPath)
+      : "",
+    source_attachment_stem: sourceAttachmentPath
+      ? getFileStem(sourceAttachmentPath)
+      : "",
+    source_attachment_item_id: sourceAttachment?.item?.id || null,
+    source_attachment_item_key: sourceAttachment?.item?.key || "",
+    ...(isObject(requestSpec?.context) ? requestSpec?.context || {} : {}),
+  };
+
+  const requestPayload: GenericHttpStepsRequestV1 = {
+    kind: "generic-http.steps.v1",
+    targetParentID,
+    taskName,
+    sourceAttachmentPaths,
+    context,
+    steps: declaredSteps as GenericHttpStepsRequestV1["steps"],
+    poll: {
+      interval_ms:
+        requestSpec?.poll?.interval_ms || args.manifest.execution?.poll_interval_ms,
+      timeout_ms:
+        requestSpec?.poll?.timeout_ms || args.manifest.execution?.timeout_ms,
+    },
+  };
+  return requestPayload;
+}
+
 export function compileDeclarativeRequest(args: {
   kind: string;
   selectionContext: unknown;
@@ -326,6 +473,12 @@ export function compileDeclarativeRequest(args: {
   }
   if (kind === "generic-http.request.v1") {
     return buildGenericHttpRequest(args);
+  }
+  if (kind === "generic-http.steps.v1") {
+    return buildGenericHttpStepsRequest(args);
+  }
+  if (kind === PASS_THROUGH_REQUEST_KIND) {
+    return buildPassThroughRequest(args);
   }
   throw new Error(`Unsupported declarative request kind: ${kind}`);
 }

@@ -8,7 +8,10 @@ import type {
   WorkflowManifest,
 } from "./types";
 import { getBaseName, joinPath } from "../utils/path";
-import { DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE } from "../config/defaults";
+import {
+  DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
+  PASS_THROUGH_BACKEND_TYPE,
+} from "../config/defaults";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -329,6 +332,9 @@ function resolveBuildStrategy(manifest: WorkflowManifest) {
     return "hook" as const;
   }
   if (manifest.request) {
+    return "declarative" as const;
+  }
+  if (manifest.provider === PASS_THROUGH_BACKEND_TYPE) {
     return "declarative" as const;
   }
   return null;

@@ -19,6 +19,8 @@ type ZoteroMock = {
   Items: {
     get: (id: number) => MockItem | undefined;
     getByLibraryAndKey: (libraryID: number, key: string) => MockItem | undefined;
+    getAsync?: (id: number) => Promise<MockItem | undefined>;
+    trashTx?: (ids: number[]) => Promise<void>;
   };
   Attachments: {
     linkFromFile: (opts: {
@@ -106,7 +108,13 @@ class MockItem {
   private collections: Array<number | string> = [];
   relatedItems: string[] = [];
   private filePath: string | null = null;
-  firstCreator = "";
+  private creators: Array<{
+    firstName?: string;
+    lastName?: string;
+    name?: string;
+    creatorType?: string;
+  }> = [];
+  private deletedFlag = false;
 
   constructor(itemType: string) {
     this.itemType = itemType;
@@ -131,6 +139,21 @@ class MockItem {
 
   getDisplayTitle() {
     return String(this.getField("title") || "");
+  }
+
+  get firstCreator() {
+    const creator = this.creators[0];
+    if (!creator) {
+      return "";
+    }
+    const preferred = String(
+      creator.lastName || creator.name || creator.firstName || "",
+    ).trim();
+    return preferred;
+  }
+
+  get deleted() {
+    return this.deletedFlag;
   }
 
   isNote() {
@@ -197,6 +220,27 @@ class MockItem {
     return [...this.collections];
   }
 
+  setCreators(
+    creators: Array<{
+      firstName?: string;
+      lastName?: string;
+      name?: string;
+      creatorType?: string;
+    }>,
+  ) {
+    this.creators = Array.isArray(creators)
+      ? creators.map((entry) => ({ ...(entry || {}) }))
+      : [];
+  }
+
+  getCreators() {
+    return this.creators.map((entry) => ({ ...entry }));
+  }
+
+  markDeleted(next = true) {
+    this.deletedFlag = !!next;
+  }
+
   addRelatedItem(item: MockItem) {
     if (!this.relatedItems.includes(item.key)) {
       this.relatedItems.push(item.key);
@@ -232,6 +276,12 @@ class MockItem {
     }
     if (this.filePath) {
       data.path = this.filePath;
+    }
+    if (this.creators.length > 0) {
+      data.creators = this.getCreators();
+    }
+    if (this.deletedFlag) {
+      data.deleted = true;
     }
     for (const [field, value] of Object.entries(this.fields)) {
       if (field in data) {
@@ -2129,6 +2179,18 @@ function createZoteroMock(): ZoteroMock {
       getByLibraryAndKey: (_libraryID: number, key: string) =>
         itemsByKey.get(key),
       getAsync: async (id: number) => itemsById.get(id),
+      trashTx: async (ids: number[]) => {
+        for (const rawId of ids || []) {
+          const id = Number(rawId);
+          if (!Number.isFinite(id)) {
+            continue;
+          }
+          const item = itemsById.get(id);
+          if (item) {
+            item.markDeleted(true);
+          }
+        }
+      },
     },
     Attachments: {
       linkFromFile: async ({

@@ -13,6 +13,57 @@ const ajvLogger = {
 };
 let validateSelectionSchema: ValidateFunction<SelectionContext> | null = null;
 
+type RuntimeToolkit = {
+  Menu?: {
+    register: (
+      scope: string,
+      options: {
+        tag: string;
+        id: string;
+        label: string;
+        commandListener: () => void;
+      },
+    ) => unknown;
+  };
+  ProgressWindow?: new (title: string) => {
+    createLine: (options: {
+      text: string;
+      type?: string;
+      progress?: number;
+    }) => {
+      show: () => unknown;
+    };
+  };
+  getGlobal?: (name: string) => unknown;
+};
+
+function getRuntimeToolkit(): RuntimeToolkit | null {
+  const runtime = globalThis as { ztoolkit?: RuntimeToolkit };
+  const fromLegacyGlobal =
+    typeof ztoolkit !== "undefined" ? (ztoolkit as RuntimeToolkit) : undefined;
+  return (
+    (addon?.data?.ztoolkit as RuntimeToolkit | undefined) ||
+    fromLegacyGlobal ||
+    runtime.ztoolkit ||
+    null
+  );
+}
+
+function showProgress(text: string, type: "success" | "default", progress = 100) {
+  const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
+  if (!ProgressWindow) {
+    showAlert(text);
+    return;
+  }
+  new ProgressWindow(config.addonName)
+    .createLine({
+      text,
+      type,
+      progress,
+    })
+    .show();
+}
+
 function getSelectionValidator() {
   if (!validateSelectionSchema) {
     const ajv = new Ajv({ allErrors: true, strict: true, logger: ajvLogger });
@@ -23,7 +74,11 @@ function getSelectionValidator() {
 }
 
 export function registerSelectionSampleMenu() {
-  ztoolkit.Menu.register("item", {
+  const menu = getRuntimeToolkit()?.Menu;
+  if (!menu?.register) {
+    return;
+  }
+  menu.register("item", {
     tag: "menuitem",
     id: `${config.addonRef}-sample-selection`,
     label: getString("menuitem-sample-selection"),
@@ -31,7 +86,7 @@ export function registerSelectionSampleMenu() {
       void sampleSelectionContext();
     },
   });
-  ztoolkit.Menu.register("item", {
+  menu.register("item", {
     tag: "menuitem",
     id: `${config.addonRef}-validate-selection`,
     label: getString("menuitem-validate-selection"),
@@ -61,13 +116,10 @@ export async function sampleSelectionContext() {
       filePath,
       JSON.stringify(context, null, 2),
     );
-    new ztoolkit.ProgressWindow(config.addonName)
-      .createLine({
-        text: getString("sample-output-saved", { args: { path: filePath } }),
-        type: "success",
-        progress: 100,
-      })
-      .show();
+    showProgress(
+      getString("sample-output-saved", { args: { path: filePath } }),
+      "success",
+    );
   } catch (error) {
     showAlert(`${config.addonName} sample failed: ${String(error)}`);
   }
@@ -79,8 +131,9 @@ function showAlert(message: string) {
     win.alert(message);
     return;
   }
-  if (typeof ztoolkit !== "undefined" && ztoolkit.getGlobal) {
-    ztoolkit.getGlobal("alert")?.(message);
+  const alertFn = getRuntimeToolkit()?.getGlobal?.("alert");
+  if (typeof alertFn === "function") {
+    alertFn(message);
   }
 }
 
@@ -103,13 +156,7 @@ async function validateSelectionContext() {
     const validate = getSelectionValidator();
     const valid = validate(context);
     if (valid) {
-      new ztoolkit.ProgressWindow(config.addonName)
-        .createLine({
-          text: getString("validate-selection-ok"),
-          type: "success",
-          progress: 100,
-        })
-        .show();
+      showProgress(getString("validate-selection-ok"), "success");
       return;
     }
     const errors = (validate.errors || [])

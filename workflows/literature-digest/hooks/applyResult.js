@@ -151,51 +151,134 @@ function normalizeReferences(parsed) {
   return [];
 }
 
-function asArray(value) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim().length > 0) {
-    return [value.trim()];
-  }
-  return [];
-}
-
-function renderReferencesTable(references) {
-  const headers = ["#", "Citekey", "Year", "Title", "Authors"];
-  const rows = references.map((entry, index) => {
-    const citekey = String(entry?.citekey || entry?.citeKey || "").trim();
-    const year = String(entry?.year || "");
-    const title = String(entry?.title || "");
-    const authors = asArray(entry?.author || entry?.authors).join("; ");
-
-    return `<tr>
-<td>${index + 1}</td>
-<td>${escapeHtml(citekey)}</td>
-<td>${escapeHtml(year)}</td>
-<td>${escapeHtml(title)}</td>
-<td>${escapeHtml(authors)}</td>
-</tr>`;
-  });
-
-  return [
-    '<table data-zs-view="references-table">',
-    "<thead>",
-    "<tr>",
-    ...headers.map((header) => `<th>${escapeHtml(header)}</th>`),
-    "</tr>",
-    "</thead>",
-    "<tbody>",
-    rows.join("\n"),
-    "</tbody>",
-    "</table>",
-  ].join("\n");
-}
-
 function renderPayloadBlock(payloadType, payload) {
   const json = JSON.stringify(payload);
   const encoded = encodeBase64Utf8(json);
   return `<span data-zs-block="payload" data-zs-payload="${escapeAttribute(payloadType)}" data-zs-version="1" data-zs-encoding="base64" data-zs-value="${escapeAttribute(encoded)}"></span>`;
+}
+
+function renderSourceMetadataBlock(sourceMarkdownItemKey) {
+  const itemKey = String(sourceMarkdownItemKey || "").trim();
+  if (!itemKey) {
+    return "";
+  }
+  return `<span data-zs-block="meta" data-zs-meta="source-markdown" data-zs-source_markdown_item_key="${escapeAttribute(itemKey)}" hidden="hidden"></span>`;
+}
+
+function normalizePathForCompare(targetPath) {
+  const text = String(targetPath || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text
+    .replace(/^file:\/\/+/, "")
+    .replaceAll("\\", "/")
+    .replace(/\/+/g, "/");
+}
+
+function getBaseNameFromPath(targetPath) {
+  const normalized = normalizePathForCompare(targetPath);
+  if (!normalized) {
+    return "";
+  }
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : "";
+}
+
+function collectSourceAttachmentPathsFromRequest(request) {
+  if (!request || typeof request !== "object") {
+    return [];
+  }
+
+  const typed = request;
+  const fromSource = Array.isArray(typed.sourceAttachmentPaths)
+    ? typed.sourceAttachmentPaths
+    : [];
+  const fromUploadFiles = Array.isArray(typed.upload_files)
+    ? typed.upload_files.map((entry) => entry?.path)
+    : [];
+  const fromNestedUploadFiles = Array.isArray(typed?.request?.json?.upload_files)
+    ? typed.request.json.upload_files.map((entry) => entry?.path)
+    : [];
+
+  const combined = [...fromSource, ...fromUploadFiles, ...fromNestedUploadFiles]
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(combined));
+}
+
+async function resolveSourceMarkdownItemKey({ parentItem, request, runtime }) {
+  if (!parentItem) {
+    return "";
+  }
+
+  const sourcePaths = collectSourceAttachmentPathsFromRequest(request);
+  if (sourcePaths.length === 0) {
+    return "";
+  }
+
+  const sourcePathSet = new Set(
+    sourcePaths.map(normalizePathForCompare).filter(Boolean),
+  );
+  const sourcePathInsensitiveSet = new Set(
+    Array.from(sourcePathSet).map((entry) => entry.toLowerCase()),
+  );
+  const sourceBasenames = new Set(
+    sourcePaths.map(getBaseNameFromPath).filter(Boolean),
+  );
+
+  const basenameMatchKeys = new Set();
+  const attachmentRefs = parentItem.getAttachments?.() || [];
+  for (const attachmentRef of attachmentRefs) {
+    let attachment = null;
+    try {
+      attachment = runtime.helpers.resolveItemRef(attachmentRef);
+    } catch {
+      attachment = null;
+    }
+    if (!attachment) {
+      continue;
+    }
+
+    const attachmentKey = String(attachment.key || "").trim();
+    if (!attachmentKey) {
+      continue;
+    }
+
+    let attachmentPath = "";
+    try {
+      attachmentPath = String((await attachment.getFilePathAsync?.()) || "").trim();
+    } catch {
+      attachmentPath = "";
+    }
+
+    if (!attachmentPath) {
+      attachmentPath = String(attachment.getField?.("path") || "").trim();
+    }
+
+    const normalizedAttachmentPath = normalizePathForCompare(attachmentPath);
+    if (
+      normalizedAttachmentPath &&
+      (sourcePathSet.has(normalizedAttachmentPath) ||
+        sourcePathInsensitiveSet.has(normalizedAttachmentPath.toLowerCase()))
+    ) {
+      return attachmentKey;
+    }
+
+    const attachmentBasename =
+      getBaseNameFromPath(attachmentPath) ||
+      getBaseNameFromPath(String(attachment.getField?.("title") || ""));
+    if (attachmentBasename && sourceBasenames.has(attachmentBasename)) {
+      basenameMatchKeys.add(attachmentKey);
+    }
+  }
+
+  if (basenameMatchKeys.size === 1) {
+    return Array.from(basenameMatchKeys)[0];
+  }
+
+  return "";
 }
 
 function parseGeneratedNoteKind(noteContent) {
@@ -292,7 +375,7 @@ async function upsertUniqueGeneratedNote(args) {
   return primary;
 }
 
-export async function applyResult({ parent, bundleReader, runtime }) {
+export async function applyResult({ parent, bundleReader, request, runtime }) {
   const helpers = runtime.helpers;
   const parentItem = helpers.resolveItemRef(parent);
   const resultJsonText = await bundleReader.readText("result/result.json");
@@ -317,9 +400,15 @@ export async function applyResult({ parent, bundleReader, runtime }) {
     parsedReferences = [];
   }
   const references = normalizeReferences(parsedReferences);
+  const sourceMarkdownItemKey = await resolveSourceMarkdownItemKey({
+    parentItem,
+    request,
+    runtime,
+  });
 
   const digestNoteContent = [
     '<div data-zs-note-kind="digest">',
+    renderSourceMetadataBlock(sourceMarkdownItemKey),
     "<h1>Digest</h1>",
     '<div data-zs-view="digest-html">',
     renderMarkdownToHtml(digestMarkdown),
@@ -336,7 +425,7 @@ export async function applyResult({ parent, bundleReader, runtime }) {
   const referencesNoteContent = [
     '<div data-zs-note-kind="references">',
     "<h1>References</h1>",
-    renderReferencesTable(references),
+    runtime.helpers.renderReferencesTable(references),
     renderPayloadBlock("references-json", {
       version: 1,
       entry: referencesEntry,

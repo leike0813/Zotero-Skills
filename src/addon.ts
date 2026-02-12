@@ -2,7 +2,13 @@ import { config } from "../package.json";
 import { DialogHelper } from "zotero-plugin-toolkit";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
+import { resolveAddonRuntimeEnv } from "./utils/env";
 import type { LoadedWorkflows } from "./workflows/types";
+import type {
+  WorkflowEditorOpenArgs,
+  WorkflowEditorOpenResult,
+  WorkflowEditorRenderer,
+} from "./modules/workflowEditorHost";
 
 class Addon {
   public data: {
@@ -22,6 +28,14 @@ class Addon {
       workflowsDir: string;
       loaded: LoadedWorkflows;
     };
+    workflowEditorHost?: {
+      open: (args: WorkflowEditorOpenArgs) => Promise<WorkflowEditorOpenResult>;
+      registerRenderer: (
+        rendererId: string,
+        renderer: WorkflowEditorRenderer,
+      ) => void;
+      unregisterRenderer: (rendererId: string) => void;
+    };
     dialog?: DialogHelper;
   };
   // Lifecycle hooks
@@ -33,7 +47,7 @@ class Addon {
     this.data = {
       alive: true,
       config,
-      env: __env__,
+      env: resolveAddonRuntimeEnv(),
       initialized: false,
       ztoolkit: createZToolkit(),
     };

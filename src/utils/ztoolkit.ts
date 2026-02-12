@@ -1,5 +1,6 @@
 import { ZoteroToolkit } from "zotero-plugin-toolkit";
 import { config } from "../../package.json";
+import { resolveAddonRuntimeEnv } from "./env";
 
 export { createZToolkit };
 
@@ -15,11 +16,11 @@ function createZToolkit() {
 }
 
 function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
-  const env = __env__;
+  const env = resolveAddonRuntimeEnv();
   _ztoolkit.basicOptions.log.prefix = `[${config.addonName}]`;
   _ztoolkit.basicOptions.log.disableConsole = env === "production";
-  _ztoolkit.UI.basicOptions.ui.enableElementJSONLog = __env__ === "development";
-  _ztoolkit.UI.basicOptions.ui.enableElementDOMLog = __env__ === "development";
+  _ztoolkit.UI.basicOptions.ui.enableElementJSONLog = env === "development";
+  _ztoolkit.UI.basicOptions.ui.enableElementDOMLog = env === "development";
   // Getting basicOptions.debug will load global modules like the debug bridge.
   // since we want to deprecate it, should avoid using it unless necessary.
   // _ztoolkit.basicOptions.debug.disableDebugBridgePassword =

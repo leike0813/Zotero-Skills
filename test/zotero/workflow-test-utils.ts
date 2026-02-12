@@ -150,3 +150,133 @@ export async function writeUtf8(filePath: string, content: string) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, "utf8");
 }
+
+export async function ensureDir(dirPath: string) {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        makeDirectory: (
+          path: string,
+          options?: Record<string, unknown>,
+        ) => Promise<void>;
+      };
+    };
+    await runtime.IOUtils.makeDirectory(dirPath, { createAncestors: true });
+    return;
+  }
+  const fs = await dynamicImport("fs/promises");
+  await fs.mkdir(dirPath, { recursive: true });
+}
+
+export async function writeBytes(filePath: string, data: Uint8Array) {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        makeDirectory: (
+          path: string,
+          options?: Record<string, unknown>,
+        ) => Promise<void>;
+        write: (path: string, data: Uint8Array) => Promise<void>;
+      };
+    };
+    const parent = dirnamePath(filePath);
+    if (parent) {
+      await runtime.IOUtils.makeDirectory(parent, { createAncestors: true });
+    }
+    await runtime.IOUtils.write(filePath, data);
+    return;
+  }
+  const fs = await dynamicImport("fs/promises");
+  const path = await dynamicImport("path");
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, data);
+}
+
+export async function readBytes(filePath: string): Promise<Uint8Array> {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        read: (path: string) => Promise<Uint8Array>;
+      };
+    };
+    return runtime.IOUtils.read(filePath);
+  }
+  const fs = await dynamicImport("fs/promises");
+  return fs.readFile(filePath) as Promise<Uint8Array>;
+}
+
+export async function readUtf8(filePath: string): Promise<string> {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        readUTF8: (path: string) => Promise<string>;
+      };
+    };
+    return runtime.IOUtils.readUTF8(filePath);
+  }
+  const fs = await dynamicImport("fs/promises");
+  return fs.readFile(filePath, "utf8") as Promise<string>;
+}
+
+export async function existsPath(targetPath: string): Promise<boolean> {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        stat: (path: string) => Promise<unknown>;
+      };
+    };
+    try {
+      await runtime.IOUtils.stat(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const fs = await dynamicImport("fs/promises");
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function encodeBase64Utf8(text: string): string {
+  const source = String(text || "");
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(source, "utf8").toString("base64");
+  }
+  if (typeof TextEncoder !== "undefined" && typeof btoa === "function") {
+    const bytes = new TextEncoder().encode(source);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+  if (typeof btoa === "function") {
+    return btoa(unescape(encodeURIComponent(source)));
+  }
+  throw new Error("No base64 encoder available in current runtime");
+}
+
+export function decodeBase64Utf8(text: string): string {
+  const encoded = String(text || "").trim();
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(encoded, "base64").toString("utf8");
+  }
+  if (typeof TextDecoder !== "undefined" && typeof atob === "function") {
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+  if (typeof atob === "function") {
+    return decodeURIComponent(escape(atob(encoded)));
+  }
+  throw new Error("No base64 decoder available in current runtime");
+}

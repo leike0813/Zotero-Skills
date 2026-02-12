@@ -1,3 +1,5 @@
+import { appendRuntimeLog } from "../modules/runtimeLogManager";
+
 export type JobState =
   | "queued"
   | "running"
@@ -64,6 +66,17 @@ export class JobQueueManager {
     };
     this.jobs.set(id, job);
     this.emitJobUpdated(job);
+    appendRuntimeLog({
+      level: "info",
+      scope: "job",
+      workflowId: job.workflowId,
+      jobId: job.id,
+      stage: "queue-queued",
+      message: "job queued",
+      details: {
+        runId: String(job.meta.runId || ""),
+      },
+    });
     this.pendingIds.push(id);
     void this.drain();
     return id;
@@ -123,19 +136,68 @@ export class JobQueueManager {
     job.state = "running";
     this.touch(job);
     this.emitJobUpdated(job);
+    appendRuntimeLog({
+      level: "info",
+      scope: "job",
+      workflowId: job.workflowId,
+      jobId: job.id,
+      stage: "dispatch-start",
+      message: "provider dispatch started",
+    });
     this.runningCount += 1;
     try {
       job.result = await this.executeJob({ ...job });
       job.state = "succeeded";
       this.touch(job);
       this.emitJobUpdated(job);
+      const requestId = String(
+        (job.result as { requestId?: unknown })?.requestId || "",
+      ).trim();
+      appendRuntimeLog({
+        level: "info",
+        scope: "job",
+        workflowId: job.workflowId,
+        jobId: job.id,
+        requestId: requestId || undefined,
+        stage: "dispatch-succeeded",
+        message: "provider dispatch finished",
+      });
     } catch (error) {
+      this.logJobError(job, error);
       job.state = "failed";
       job.error = error instanceof Error ? error.message : String(error);
       this.touch(job);
       this.emitJobUpdated(job);
+      appendRuntimeLog({
+        level: "error",
+        scope: "job",
+        workflowId: job.workflowId,
+        jobId: job.id,
+        stage: "dispatch-failed",
+        message: "provider dispatch failed",
+        error,
+      });
     } finally {
       this.runningCount -= 1;
+    }
+  }
+
+  private logJobError(job: JobRecord, error: unknown) {
+    const label = `[workflow-job-error] workflow=${job.workflowId} job=${job.id}`;
+    const runtime = globalThis as {
+      Zotero?: { logError?: (err: unknown) => void };
+    };
+    try {
+      if (typeof console !== "undefined" && typeof console.error === "function") {
+        console.error(label, error);
+      }
+    } catch {
+      // ignore logging failures
+    }
+    if (typeof runtime.Zotero?.logError === "function") {
+      const normalized =
+        error instanceof Error ? error : new Error(String(error));
+      runtime.Zotero.logError(normalized);
     }
   }
 

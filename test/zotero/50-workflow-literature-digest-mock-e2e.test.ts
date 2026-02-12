@@ -139,6 +139,7 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
         skill_id?: string;
         parameter?: { language?: string };
         upload_files?: Array<{ key: string; path: string }>;
+        sourceAttachmentPaths?: string[];
       }>;
       assert.lengthOf(requests, 1);
       assert.equal(requests[0].kind, "skillrunner.job.v1");
@@ -193,6 +194,7 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
         workflow: workflow!,
         parent,
         bundleReader,
+        request: requests[0],
       })) as { notes: Zotero.Item[] };
       assert.lengthOf(applyResult.notes, 2);
       const firstNote = Zotero.Items.get(applyResult.notes[0].id)!;
@@ -201,6 +203,10 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
       assert.equal(secondNote.parentItemID, parent.id);
       assert.match(firstNote.getNote(), /<h1>Digest<\/h1>/);
       assert.match(firstNote.getNote(), /data-zs-payload="digest-markdown"/);
+      assert.include(
+        firstNote.getNote(),
+        `data-zs-source_markdown_item_key="${attachment.key}"`,
+      );
       assert.match(firstNote.getNote(), /data-zs-value="/);
       assert.match(secondNote.getNote(), /<h1>References<\/h1>/);
       assert.match(secondNote.getNote(), /<table data-zs-view="references-table">/);

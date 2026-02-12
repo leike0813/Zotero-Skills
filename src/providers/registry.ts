@@ -1,10 +1,15 @@
 import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
 import { GenericHttpProvider } from "./generic-http/provider";
+import { PassThroughProvider } from "./pass-through/provider";
 import { SkillRunnerProvider } from "./skillrunner/provider";
 import type { Provider } from "./types";
 
-const providers: Provider[] = [new SkillRunnerProvider(), new GenericHttpProvider()];
+const providers: Provider[] = [
+  new SkillRunnerProvider(),
+  new GenericHttpProvider(),
+  new PassThroughProvider(),
+];
 
 export function registerProvider(provider: Provider) {
   const existingIndex = providers.findIndex((entry) => entry.id === provider.id);

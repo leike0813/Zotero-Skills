@@ -51,6 +51,49 @@ export type GenericHttpRequestV1 = ProviderExecutionRequestMeta & {
   timeout_ms?: number;
 };
 
+export type GenericHttpStepRequestDefinition = {
+  method: string;
+  path?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  json?: unknown;
+  binary_from?: string;
+  response_type?: "json" | "bytes" | "text";
+};
+
+export type GenericHttpStepDefinitionV1 = {
+  id: string;
+  request: GenericHttpStepRequestDefinition;
+  extract?: Record<string, string>;
+  repeat_until?: {
+    json_path: string;
+    in: unknown[];
+  };
+  fail_when?: {
+    json_path: string;
+    equals?: unknown;
+    in?: unknown[];
+    message?: string;
+    message_path?: string;
+  };
+};
+
+export type GenericHttpStepsRequestV1 = ProviderExecutionRequestMeta & {
+  kind: "generic-http.steps.v1";
+  context?: Record<string, unknown>;
+  steps: GenericHttpStepDefinitionV1[];
+  poll?: {
+    interval_ms?: number;
+    timeout_ms?: number;
+  };
+};
+
+export type PassThroughRunRequestV1 = ProviderExecutionRequestMeta & {
+  kind: "pass-through.run.v1";
+  selectionContext: unknown;
+  parameter?: Record<string, unknown>;
+};
+
 export type ProviderExecutionResult = {
   status: "succeeded";
   requestId: string;

@@ -93,6 +93,20 @@ export type HookHelpers = {
   resolveItemRef: (ref: Zotero.Item | number | string) => Zotero.Item;
   basenameOrFallback: (targetPath: string | undefined, fallback: string) => string;
   toHtmlNote: (title: string, body: string) => string;
+  normalizeReferenceAuthors: (value: unknown) => string[];
+  normalizeReferenceEntry: (
+    entry: unknown,
+    index: number,
+  ) => Record<string, unknown>;
+  normalizeReferencesArray: (value: unknown) => Record<string, unknown>[];
+  normalizeReferencesPayload: (payload: unknown) => Record<string, unknown>[];
+  replacePayloadReferences: (
+    payload: unknown,
+    references: Record<string, unknown>[],
+  ) => unknown;
+  resolveReferenceSource: (entry: unknown) => string;
+  renderReferenceLocator: (entry: unknown) => string;
+  renderReferencesTable: (references: unknown) => string;
 };
 
 export type WorkflowRuntimeContext = {
@@ -113,7 +127,11 @@ export type BuildRequestHook = (args: {
 
 export type ApplyResultHook = (args: {
   parent: Zotero.Item | number | string;
-  bundleReader: { readText: (entryPath: string) => Promise<string> };
+  bundleReader: {
+    readText: (entryPath: string) => Promise<string>;
+    getExtractedDir?: () => Promise<string>;
+  };
+  request?: unknown;
   runResult?: unknown;
   manifest: WorkflowManifest;
   runtime: WorkflowRuntimeContext;

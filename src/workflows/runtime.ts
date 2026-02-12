@@ -2,6 +2,10 @@ import { handlers } from "../handlers";
 import { getBaseName } from "../utils/path";
 import { createHookHelpers } from "./helpers";
 import { compileDeclarativeRequest } from "./declarativeRequestCompiler";
+import {
+  PASS_THROUGH_BACKEND_TYPE,
+  PASS_THROUGH_REQUEST_KIND,
+} from "../config/defaults";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -24,7 +28,8 @@ type ParentLike = {
 };
 
 type NoteLike = {
-  item?: { id?: number };
+  item?: { id?: number; title?: string };
+  parent?: { id?: number | null; title?: string } | null;
 };
 
 type SelectionLike = {
@@ -61,6 +66,28 @@ type BuildRequestsResult = unknown[] & {
   __stats?: BuildRequestStats;
 };
 
+type NoValidInputUnitsError = Error & {
+  code: "NO_VALID_INPUT_UNITS";
+  workflowId: string;
+  totalUnits: number;
+  skippedUnits: number;
+};
+
+function createNoValidInputUnitsError(args: {
+  workflowId: string;
+  totalUnits: number;
+}): NoValidInputUnitsError {
+  const error = new Error(
+    `Workflow ${args.workflowId} has no valid input units after filtering`,
+  ) as NoValidInputUnitsError;
+  error.name = "NoValidInputUnitsError";
+  error.code = "NO_VALID_INPUT_UNITS";
+  error.workflowId = args.workflowId;
+  error.totalUnits = Math.max(0, Number(args.totalUnits || 0));
+  error.skippedUnits = error.totalUnits;
+  return error;
+}
+
 function resolveTargetParentIDFromSelection(selectionContext: SelectionLike) {
   const attachmentParentID = selectionContext?.items?.attachments?.[0]?.parent?.id;
   if (attachmentParentID) {
@@ -77,6 +104,14 @@ function resolveTargetParentIDFromSelection(selectionContext: SelectionLike) {
   const childID = selectionContext?.items?.children?.[0]?.item?.id;
   if (childID) {
     return childID;
+  }
+  const noteParentID = selectionContext?.items?.notes?.[0]?.parent?.id;
+  if (noteParentID) {
+    return noteParentID;
+  }
+  const noteID = selectionContext?.items?.notes?.[0]?.item?.id;
+  if (noteID) {
+    return noteID;
   }
   return null;
 }
@@ -101,6 +136,8 @@ function resolveTaskNameFromSelection(args: {
     args.selectionContext?.items?.parents?.[0]?.item?.title ||
     args.selectionContext?.items?.children?.[0]?.parent?.title ||
     args.selectionContext?.items?.children?.[0]?.item?.title ||
+    args.selectionContext?.items?.notes?.[0]?.parent?.title ||
+    args.selectionContext?.items?.notes?.[0]?.item?.title ||
     "";
   if (String(parentTitle || "").trim()) {
     return String(parentTitle).trim();
@@ -166,6 +203,80 @@ function copySelection(selectionContext: unknown): SelectionLike {
     return {};
   }
   return JSON.parse(JSON.stringify(selectionContext)) as SelectionLike;
+}
+
+function hasAnySelectionItems(selectionContext: SelectionLike) {
+  const items = selectionContext?.items || {};
+  const attachmentCount = Array.isArray(items.attachments)
+    ? items.attachments.length
+    : 0;
+  const parentCount = Array.isArray(items.parents) ? items.parents.length : 0;
+  const childCount = Array.isArray(items.children) ? items.children.length : 0;
+  const noteCount = Array.isArray(items.notes) ? items.notes.length : 0;
+  return attachmentCount + parentCount + childCount + noteCount > 0;
+}
+
+function getSelectionItemCounts(selectionContext: SelectionLike) {
+  const items = selectionContext?.items || {};
+  return {
+    attachments: Array.isArray(items.attachments) ? items.attachments.length : 0,
+    parents: Array.isArray(items.parents) ? items.parents.length : 0,
+    children: Array.isArray(items.children) ? items.children.length : 0,
+    notes: Array.isArray(items.notes) ? items.notes.length : 0,
+  };
+}
+
+function countNonZeroKinds(counts: {
+  attachments: number;
+  parents: number;
+  children: number;
+  notes: number;
+}) {
+  return [
+    counts.attachments > 0,
+    counts.parents > 0,
+    counts.children > 0,
+    counts.notes > 0,
+  ].filter(Boolean).length;
+}
+
+function estimatePassThroughTotalUnits(selectionContext: SelectionLike) {
+  const counts = getSelectionItemCounts(selectionContext);
+  const nonZeroKinds = countNonZeroKinds(counts);
+  if (nonZeroKinds === 0) {
+    return 1;
+  }
+  if (nonZeroKinds > 1) {
+    return 1;
+  }
+  if (counts.notes > 0) {
+    return counts.notes;
+  }
+  if (counts.parents > 0) {
+    return counts.parents;
+  }
+  if (counts.children > 0) {
+    return counts.children;
+  }
+  if (counts.attachments > 0) {
+    return counts.attachments;
+  }
+  return 1;
+}
+
+function splitPassThroughSelectionUnits(selection: SelectionLike) {
+  const counts = getSelectionItemCounts(selection);
+  const nonZeroKinds = countNonZeroKinds(counts);
+  if (nonZeroKinds !== 1) {
+    return [selection];
+  }
+  if (counts.notes > 1) {
+    return buildNoteSelectionUnits(selection);
+  }
+  if (counts.parents > 1) {
+    return buildParentSelectionUnits(selection);
+  }
+  return [selection];
 }
 
 function flattenAttachments(selection: SelectionLike) {
@@ -397,6 +508,41 @@ async function resolveSelectionContexts(args: {
   selectionContext: unknown;
   runtime: WorkflowRuntimeContext;
 }): Promise<ResolvedSelectionContexts> {
+  const isPassThroughWorkflow =
+    String(args.workflow.manifest.provider || "").trim() ===
+    PASS_THROUGH_BACKEND_TYPE;
+  if (isPassThroughWorkflow && !args.workflow.manifest.inputs?.unit) {
+    const passThroughTotalBeforeHook = estimatePassThroughTotalUnits(
+      copySelection(args.selectionContext),
+    );
+    let scopedSelection = copySelection(args.selectionContext);
+    if (args.workflow.hooks.filterInputs) {
+      const filtered = await args.workflow.hooks.filterInputs({
+        selectionContext: scopedSelection,
+        manifest: args.workflow.manifest,
+        runtime: args.runtime,
+      });
+      scopedSelection = copySelection(filtered);
+    }
+    if (!scopedSelection || typeof scopedSelection !== "object") {
+      return {
+        contexts: [],
+        totalUnits: passThroughTotalBeforeHook,
+      };
+    }
+    if (!hasAnySelectionItems(scopedSelection)) {
+      return {
+        contexts: [],
+        totalUnits: passThroughTotalBeforeHook,
+      };
+    }
+    const contexts = splitPassThroughSelectionUnits(scopedSelection);
+    return {
+      contexts,
+      totalUnits: Math.max(passThroughTotalBeforeHook, contexts.length),
+    };
+  }
+
   const unit = args.workflow.manifest.inputs?.unit || "attachment";
   if (unit === "parent") {
     const contexts = buildParentSelectionUnits(copySelection(args.selectionContext));
@@ -433,9 +579,10 @@ export async function executeBuildRequests(args: {
   const resolvedSelections = resolved.contexts;
 
   if (resolvedSelections.length === 0) {
-    throw new Error(
-      `Workflow ${args.workflow.manifest.id} has no valid input units after filtering`,
-    );
+    throw createNoValidInputUnitsError({
+      workflowId: args.workflow.manifest.id,
+      totalUnits: resolved.totalUnits,
+    });
   }
 
   const requests: BuildRequestsResult = [];
@@ -456,7 +603,13 @@ export async function executeBuildRequests(args: {
     }
 
     const request = args.workflow.manifest.request;
-    if (!request?.kind) {
+    const passThroughFallbackKind =
+      String(args.workflow.manifest.provider || "").trim() ===
+      PASS_THROUGH_BACKEND_TYPE
+        ? PASS_THROUGH_REQUEST_KIND
+        : "";
+    const requestKind = String(request?.kind || passThroughFallbackKind).trim();
+    if (!requestKind) {
       throw new Error(
         `Workflow ${args.workflow.manifest.id} missing buildRequest hook and request declaration`,
       );
@@ -465,7 +618,7 @@ export async function executeBuildRequests(args: {
     requests.push(
       enrichRequestWithSelectionMeta(
         compileDeclarativeRequest({
-          kind: request.kind,
+          kind: requestKind,
           selectionContext,
           manifest: args.workflow.manifest,
           executionOptions: args.executionOptions,
@@ -492,7 +645,11 @@ export async function executeBuildRequests(args: {
 export async function executeApplyResult(args: {
   workflow: LoadedWorkflow;
   parent: Zotero.Item | number | string;
-  bundleReader: { readText: (entryPath: string) => Promise<string> };
+  bundleReader: {
+    readText: (entryPath: string) => Promise<string>;
+    getExtractedDir?: () => Promise<string>;
+  };
+  request?: unknown;
   runResult?: unknown;
   runtime?: Partial<WorkflowRuntimeContext>;
 }) {
@@ -500,6 +657,7 @@ export async function executeApplyResult(args: {
   return args.workflow.hooks.applyResult({
     parent: args.parent,
     bundleReader: args.bundleReader,
+    request: args.request,
     runResult: args.runResult,
     manifest: args.workflow.manifest,
     runtime,

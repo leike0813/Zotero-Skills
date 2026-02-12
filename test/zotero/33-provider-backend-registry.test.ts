@@ -8,6 +8,7 @@ import { resolveProvider } from "../../src/providers/registry";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import type { LoadedWorkflow } from "../../src/workflows/types";
 import { workflowsPath } from "./workflow-test-utils";
+import { PASS_THROUGH_REQUEST_KIND } from "../../src/config/defaults";
 
 function buildWorkflow(args: {
   id: string;
@@ -144,6 +145,54 @@ describe("provider/backend registry", function () {
           backend,
         }),
       /No provider found/,
+    );
+  });
+
+  it("resolves and executes pass-through provider with unified result model", async function () {
+    const provider = resolveProvider({
+      requestKind: PASS_THROUGH_REQUEST_KIND,
+      backend: {
+        id: "pass-through-local",
+        type: "pass-through",
+        baseUrl: "local://pass-through",
+        auth: { kind: "none" },
+      },
+    });
+    assert.equal(provider.id, "pass-through");
+
+    const result = await provider.execute({
+      requestKind: PASS_THROUGH_REQUEST_KIND,
+      backend: {
+        id: "pass-through-local",
+        type: "pass-through",
+        baseUrl: "local://pass-through",
+        auth: { kind: "none" },
+      },
+      request: {
+        kind: PASS_THROUGH_REQUEST_KIND,
+        targetParentID: 10,
+        taskName: "pass-through-test",
+        sourceAttachmentPaths: [],
+        selectionContext: {
+          selectionType: "parent",
+          items: { parents: [{ item: { id: 10 } }] },
+        },
+        parameter: {
+          foo: "bar",
+        },
+      },
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.fetchType, "result");
+    assert.isObject(result.resultJson);
+    assert.equal(
+      (result.resultJson as { kind?: string }).kind,
+      PASS_THROUGH_REQUEST_KIND,
+    );
+    assert.deepEqual(
+      (result.resultJson as { parameter?: Record<string, unknown> }).parameter,
+      { foo: "bar" },
     );
   });
 

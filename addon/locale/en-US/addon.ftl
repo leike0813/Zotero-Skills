@@ -8,6 +8,7 @@ menu-workflows-empty = No workflows loaded
 menu-workflows-rescan = Rescan Workflows
 menu-workflows-settings = Workflow Settings...
 menu-workflows-task-manager = Open Task Manager...
+menu-workflows-open-logs = Open Logs...
 menu-workflow-no-selection = no selection
 task-manager-title = Task Manager
 task-manager-close = Close
@@ -18,6 +19,26 @@ task-manager-column-status = Status
 task-manager-status-queued = Queued
 task-manager-status-running = Running
 task-manager-status-completed = Completed
+log-viewer-title = Workflow Logs
+log-viewer-close = Close
+log-viewer-level-filter-label = Levels:
+log-viewer-column-time = Time
+log-viewer-column-level = Level
+log-viewer-column-scope = Scope
+log-viewer-column-stage = Stage
+log-viewer-column-message = Message
+log-viewer-details = Details
+log-viewer-empty = No logs recorded.
+log-viewer-copy-selected = Copy Selected
+log-viewer-copy-visible = Copy Visible
+log-viewer-copy-all = Copy All
+log-viewer-copy-visible-ndjson = Copy Visible (NDJSON)
+log-viewer-clear = Clear
+log-viewer-copy-empty = No entries to copy.
+log-viewer-copy-success = Copied { $count } entries.
+log-viewer-copy-failed = Copy failed: { $error }
+log-viewer-stats = Visible { $visible } / Total { $total }
+log-viewer-truncated = Older logs were truncated. dropped={ $dropped }, cap={ $maxEntries }
 sample-output-dir-missing = Please set the sample output directory in preferences.
 sample-output-saved = Saved selection context: { $path }
 sample-output-dir-title = Select Sample Output Directory
@@ -54,10 +75,25 @@ workflow-settings-apply-run-once = Apply To Next Run
 workflow-settings-cancel = Cancel
 workflow-settings-error-window-unavailable = Workflow settings window is unavailable
 workflow-settings-error-workflow-required = Workflow is required
+workflow-settings-error-workflow-not-found = Workflow not found: { $workflowId }
 workflow-settings-error-controls-unavailable = Workflow settings controls are unavailable
 workflow-settings-saved = Workflow settings saved.
 workflow-settings-run-once-saved = Run-once overrides saved. They will be consumed on the next execution.
 workflow-settings-save-failed = Failed to save workflow settings: { $error }
+workflow-settings-picker-title = Select Workflow Settings
+workflow-settings-open = Open
+
+workflow-execute-summary = Workflow { $workflowLabel } finished. succeeded={ $succeeded }, failed={ $failed }
+workflow-execute-summary-with-skipped = Workflow { $workflowLabel } finished. succeeded={ $succeeded }, failed={ $failed }, skipped={ $skipped }
+workflow-execute-failure-reasons-title = Failure reasons:
+workflow-execute-failure-overflow = ...and { $count } more
+workflow-execute-unknown-error = unknown error
+workflow-execute-toast-start = Workflow { $workflowLabel } started. jobs={ $totalJobs }
+workflow-execute-toast-job-success = Workflow { $workflowLabel } job { $index }/{ $total } succeeded: { $taskLabel }
+workflow-execute-toast-job-failed = Workflow { $workflowLabel } job { $index }/{ $total } failed: { $taskLabel } ({ $reason })
+workflow-execute-no-selection = No items selected.
+workflow-execute-cannot-run = Workflow { $workflowLabel } cannot run: { $reason }
+workflow-execute-cannot-run-context-unavailable = Workflow { $workflowLabel } cannot run: execution context is unavailable
 
 backend-manager-title = Backend Manager
 backend-manager-provider-skillrunner = SkillRunner

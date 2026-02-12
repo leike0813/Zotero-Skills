@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
+import { handlers } from "../../src/handlers";
 import { registerPrefsScripts } from "../../src/modules/preferenceScript";
 import { ensureWorkflowMenuForWindow } from "../../src/modules/workflowMenu";
 import {
@@ -145,6 +146,24 @@ function makeLoadedWorkflow(id: string, label: string): LoadedWorkflow {
   };
 }
 
+function makePassThroughWorkflow(id: string, label: string): LoadedWorkflow {
+  return {
+    manifest: {
+      id,
+      label,
+      provider: "pass-through",
+      hooks: {
+        applyResult: "hooks/applyResult.js",
+      },
+    },
+    rootDir: joinPath("workflows", id),
+    hooks: {
+      applyResult: async () => ({ ok: true }),
+    },
+    buildStrategy: "declarative",
+  };
+}
+
 function setWorkflowState(workflows: LoadedWorkflow[]) {
   const runtime = globalThis as {
     addon: {
@@ -211,6 +230,15 @@ function createMainWindow(selectedItems: unknown[]) {
 async function flushTasks() {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function assertMenuLabel(
+  actual: string | null,
+  options: readonly string[],
+  context: string,
+) {
+  assert.isString(actual, `${context} should be a string`);
+  assert.include(options, actual as string, `${context} should match locale`);
 }
 
 describe("gui: preference scripts", function () {
@@ -296,6 +324,7 @@ describe("gui: preference scripts", function () {
     assert.equal(calls[2].type, "openWorkflowSettings");
     assert.deepEqual(calls[2].data, {
       window,
+      source: "preferences",
     });
 
     backendManageButton.dispatch("command");
@@ -419,25 +448,44 @@ describe("gui: workflow context menu", function () {
     popup!.dispatch("popupshowing");
     await flushTasks();
 
-    assert.lengthOf(popup!.children, 5);
-    assert.equal(
+    assert.lengthOf(popup!.children, 6);
+    assertMenuLabel(
       popup!.children[0].getAttribute("label"),
-      "Rescan Workflows",
+      ["Rescan Workflows", "重新扫描 Workflow"],
+      "rescan label",
     );
     assert.equal(popup!.children[0].getAttribute("disabled"), null);
-    assert.equal(
+    assertMenuLabel(
       popup!.children[1].getAttribute("label"),
-      "Workflow Settings...",
+      ["Workflow Settings...", "Workflow 设置..."],
+      "settings label",
     );
-    assert.equal(
+    assert.equal(popup!.children[1].tagName, "menu");
+    const settingsPopup = popup!.children[1].children[0] as FakeXULElement;
+    assert.isOk(settingsPopup);
+    assert.lengthOf(settingsPopup.children, 1);
+    assertMenuLabel(
+      settingsPopup.children[0].getAttribute("label"),
+      ["No workflows loaded", "未加载任何 Workflow"],
+      "settings empty label",
+    );
+    assert.equal(settingsPopup.children[0].getAttribute("disabled"), "true");
+    assertMenuLabel(
       popup!.children[2].getAttribute("label"),
-      "Open Task Manager...",
+      ["Open Task Manager...", "打开任务管理窗口..."],
+      "task-manager label",
     );
-    assert.equal(popup!.children[3].tagName, "menuseparator");
-    assert.equal(popup!.children[4].getAttribute("disabled"), "true");
-    assert.equal(
-      popup!.children[4].getAttribute("label"),
-      "No workflows loaded",
+    assertMenuLabel(
+      popup!.children[3].getAttribute("label"),
+      ["Open Logs...", "打开日志窗口..."],
+      "logs label",
+    );
+    assert.equal(popup!.children[4].tagName, "menuseparator");
+    assert.equal(popup!.children[5].getAttribute("disabled"), "true");
+    assertMenuLabel(
+      popup!.children[5].getAttribute("label"),
+      ["No workflows loaded", "未加载任何 Workflow"],
+      "root empty label",
     );
   });
 
@@ -455,23 +503,42 @@ describe("gui: workflow context menu", function () {
     popup.dispatch("popupshowing");
     await flushTasks();
 
-    assert.lengthOf(popup.children, 6);
-    assert.equal(popup.children[0].getAttribute("label"), "Rescan Workflows");
-    assert.equal(popup.children[1].getAttribute("label"), "Workflow Settings...");
-    assert.equal(
+    assert.lengthOf(popup.children, 7);
+    assertMenuLabel(
+      popup.children[0].getAttribute("label"),
+      ["Rescan Workflows", "重新扫描 Workflow"],
+      "rescan label",
+    );
+    assertMenuLabel(
+      popup.children[1].getAttribute("label"),
+      ["Workflow Settings...", "Workflow 设置..."],
+      "settings label",
+    );
+    assert.equal(popup.children[1].tagName, "menu");
+    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
+    assert.lengthOf(settingsPopup.children, 2);
+    assert.equal(settingsPopup.children[0].getAttribute("label"), "Workflow A");
+    assert.equal(settingsPopup.children[1].getAttribute("label"), "Workflow B");
+    assertMenuLabel(
       popup.children[2].getAttribute("label"),
-      "Open Task Manager...",
+      ["Open Task Manager...", "打开任务管理窗口..."],
+      "task-manager label",
     );
-    assert.equal(popup.children[3].tagName, "menuseparator");
-    assert.equal(popup.children[4].getAttribute("disabled"), "true");
+    assertMenuLabel(
+      popup.children[3].getAttribute("label"),
+      ["Open Logs...", "打开日志窗口..."],
+      "logs label",
+    );
+    assert.equal(popup.children[4].tagName, "menuseparator");
     assert.equal(popup.children[5].getAttribute("disabled"), "true");
-    assert.match(
-      popup.children[4].getAttribute("label") || "",
-      /^Workflow A \(no selection\)$/,
-    );
+    assert.equal(popup.children[6].getAttribute("disabled"), "true");
     assert.match(
       popup.children[5].getAttribute("label") || "",
-      /^Workflow B \(no selection\)$/,
+      /^Workflow A \((no selection|未选择条目)\)$/,
+    );
+    assert.match(
+      popup.children[6].getAttribute("label") || "",
+      /^Workflow B \((no selection|未选择条目)\)$/,
     );
   });
 
@@ -504,8 +571,11 @@ describe("gui: workflow context menu", function () {
     assert.deepEqual(calls[0].data, { window: win });
   });
 
-  it("dispatches openWorkflowSettings from context-menu settings action", async function () {
-    setWorkflowState([]);
+  it("dispatches openWorkflowSettings with workflowId from context-menu settings submenu", async function () {
+    setWorkflowState([
+      makeLoadedWorkflow("workflow-a", "Workflow A"),
+      makeLoadedWorkflow("workflow-b", "Workflow B"),
+    ]);
     const calls: Array<{ type: string; data: unknown }> = [];
     (
       globalThis as {
@@ -526,11 +596,40 @@ describe("gui: workflow context menu", function () {
     ) as FakeXULElement;
     popup.dispatch("popupshowing");
     await flushTasks();
-    popup.children[1].dispatch("command");
+    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
+    settingsPopup.children[1].dispatch("command");
 
     assert.lengthOf(calls, 1);
     assert.equal(calls[0].type, "openWorkflowSettings");
-    assert.deepEqual(calls[0].data, { window: win });
+    assert.deepEqual(calls[0].data, {
+      window: win,
+      workflowId: "workflow-b",
+    });
+  });
+
+  it("does not rebuild root popup when submenu popupshowing bubbles", async function () {
+    setWorkflowState([
+      makeLoadedWorkflow("workflow-a", "Workflow A"),
+      makeLoadedWorkflow("workflow-b", "Workflow B"),
+    ]);
+    const win = createMainWindow([]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    popup.dispatch("popupshowing");
+    await flushTasks();
+
+    const settingsMenuBefore = popup.children[1];
+    const settingsPopup = settingsMenuBefore.children[0] as FakeXULElement;
+    popup.dispatch("popupshowing", { target: settingsPopup });
+    await flushTasks();
+
+    assert.strictEqual(
+      popup.children[1],
+      settingsMenuBefore,
+      "bubbled submenu popupshowing should not trigger root popup rebuild",
+    );
   });
 
   it("dispatches openTaskManager from context-menu task manager action", async function () {
@@ -560,5 +659,63 @@ describe("gui: workflow context menu", function () {
     assert.lengthOf(calls, 1);
     assert.equal(calls[0].type, "openTaskManager");
     assert.deepEqual(calls[0].data, { window: win });
+  });
+
+  it("dispatches openLogViewer from context-menu logs action", async function () {
+    setWorkflowState([]);
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<void>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+    };
+
+    const win = createMainWindow([]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    popup.dispatch("popupshowing");
+    await flushTasks();
+    popup.children[3].dispatch("command");
+
+    assert.lengthOf(calls, 1);
+    assert.equal(calls[0].type, "openLogViewer");
+    assert.deepEqual(calls[0].data, { window: win });
+  });
+
+  it("keeps pass-through workflow menu item enabled without backend profile", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Pass Through GUI Parent" },
+    });
+    setWorkflowState([
+      makePassThroughWorkflow("pass-through-gui", "Pass Through GUI"),
+    ]);
+    const win = createMainWindow([parent]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    popup.dispatch("popupshowing");
+    for (let i = 0; i < 10; i++) {
+      await flushTasks();
+      if (popup.children.length > 5) {
+        break;
+      }
+    }
+
+    const workflowItem = popup.children.find(
+      (entry) => (entry.getAttribute("label") || "").startsWith("Pass Through GUI"),
+    );
+    assert.isOk(workflowItem);
+    assert.equal(workflowItem.getAttribute("label"), "Pass Through GUI");
+    assert.equal(workflowItem.getAttribute("disabled"), null);
   });
 });

@@ -1,9 +1,5 @@
 import {
   BasicExampleFactory,
-  HelperExampleFactory,
-  KeyExampleFactory,
-  PromptExampleFactory,
-  UIExampleFactory,
 } from "./modules/examples";
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
@@ -14,6 +10,8 @@ import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
 import { openBackendManagerDialog } from "./modules/backendManager";
 import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
+import { openLogViewerDialog } from "./modules/logViewerDialog";
+import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -27,6 +25,38 @@ async function delayMs(ms: number) {
     return;
   }
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRuntimeToolkit() {
+  const runtime = globalThis as {
+    ztoolkit?: {
+      unregisterAll?: () => void;
+      log?: (...args: unknown[]) => void;
+      ProgressWindow?: new (
+        title: string,
+        options?: { closeOnClick?: boolean; closeTime?: number },
+      ) => {
+        createLine: (options: {
+          text: string;
+          type?: string;
+          progress?: number;
+        }) => {
+          show: () => {
+            changeLine: (options: {
+              progress?: number;
+              text?: string;
+            }) => void;
+            startCloseTimer: (delayMs: number) => void;
+          };
+        };
+      };
+    };
+  };
+  return addon.data.ztoolkit || runtime.ztoolkit;
+}
+
+function unregisterToolkitSafely() {
+  getRuntimeToolkit()?.unregisterAll?.();
 }
 
 export async function ensureWorkflowRegistryAndMenu(
@@ -71,24 +101,11 @@ async function onStartup() {
   ]);
 
   initLocale();
+  installWorkflowEditorHostBridge();
 
   await rescanWorkflowRegistry();
 
   BasicExampleFactory.registerPrefs();
-
-  BasicExampleFactory.registerNotifier();
-
-  KeyExampleFactory.registerShortcuts();
-
-  await UIExampleFactory.registerExtraColumn();
-
-  await UIExampleFactory.registerExtraColumnWithCustomCell();
-
-  UIExampleFactory.registerItemPaneCustomInfoRow();
-
-  UIExampleFactory.registerItemPaneSection();
-
-  UIExampleFactory.registerReaderItemPaneSection();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -109,49 +126,49 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     `${addon.data.config.addonRef}-mainWindow.ftl`,
   );
 
-  const popupWin = new ztoolkit.ProgressWindow(addon.data.config.addonName, {
-    closeOnClick: true,
-    closeTime: -1,
-  })
-    .createLine({
-      text: getString("startup-begin"),
-      type: "default",
-      progress: 0,
-    })
-    .show();
+  const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
+  const popupWin = ProgressWindow
+    ? new ProgressWindow(addon.data.config.addonName, {
+        closeOnClick: true,
+        closeTime: -1,
+      })
+        .createLine({
+          text: getString("startup-begin"),
+          type: "default",
+          progress: 0,
+        })
+        .show()
+    : null;
 
-  await Zotero.Promise.delay(1000);
-  popupWin.changeLine({
-    progress: 30,
-    text: `[30%] ${getString("startup-begin")}`,
-  });
+  if (popupWin) {
+    await Zotero.Promise.delay(1000);
+    popupWin.changeLine({
+      progress: 30,
+      text: `[30%] ${getString("startup-begin")}`,
+    });
+  }
 
-  UIExampleFactory.registerStyleSheet(win);
   registerSelectionSampleMenu();
 
-  PromptExampleFactory.registerNormalCommandExample();
+  if (popupWin) {
+    await Zotero.Promise.delay(1000);
 
-  PromptExampleFactory.registerAnonymousCommandExample(win);
-
-  PromptExampleFactory.registerConditionalCommandExample();
-
-  await Zotero.Promise.delay(1000);
-
-  popupWin.changeLine({
-    progress: 100,
-    text: `[100%] ${getString("startup-finish")}`,
-  });
-  popupWin.startCloseTimer(5000);
+    popupWin.changeLine({
+      progress: 100,
+      text: `[100%] ${getString("startup-finish")}`,
+    });
+    popupWin.startCloseTimer(5000);
+  }
 
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
-  ztoolkit.unregisterAll();
+  unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
 }
 
 function onShutdown(): void {
-  ztoolkit.unregisterAll();
+  unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
   // Remove addon object
   addon.data.alive = false;
@@ -169,17 +186,8 @@ async function onNotify(
   ids: Array<string | number>,
   extraData: { [key: string]: any },
 ) {
-  // You can add your code to the corresponding notify type
-  ztoolkit.log("notify", event, type, ids, extraData);
-  if (
-    event == "select" &&
-    type == "tab" &&
-    extraData[ids[0]].type == "reader"
-  ) {
-    BasicExampleFactory.exampleNotifierCallback();
-  } else {
-    return;
-  }
+  getRuntimeToolkit()?.log?.("notify", event, type, ids, extraData);
+  return;
 }
 
 /**
@@ -231,49 +239,26 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "openWorkflowSettings":
       await openWorkflowSettingsDialog({
         window: data.window,
+        workflowId: typeof data.workflowId === "string" ? data.workflowId : undefined,
       });
       break;
     case "openTaskManager":
       await openTaskManagerDialog();
+      break;
+    case "openLogViewer":
+      await openLogViewerDialog();
       break;
     default:
       return;
   }
 }
 
-function onShortcuts(type: string) {
-  switch (type) {
-    case "larger":
-      KeyExampleFactory.exampleShortcutLargerCallback();
-      break;
-    case "smaller":
-      KeyExampleFactory.exampleShortcutSmallerCallback();
-      break;
-    default:
-      break;
-  }
+function onShortcuts(_type: string) {
+  return;
 }
 
-function onDialogEvents(type: string) {
-  switch (type) {
-    case "dialogExample":
-      HelperExampleFactory.dialogExample();
-      break;
-    case "clipboardExample":
-      HelperExampleFactory.clipboardExample();
-      break;
-    case "filePickerExample":
-      HelperExampleFactory.filePickerExample();
-      break;
-    case "progressWindowExample":
-      HelperExampleFactory.progressWindowExample();
-      break;
-    case "vtableExample":
-      HelperExampleFactory.vtableExample();
-      break;
-    default:
-      break;
-  }
+function onDialogEvents(_type: string) {
+  return;
 }
 
 // Add your hooks here. For element click, etc.

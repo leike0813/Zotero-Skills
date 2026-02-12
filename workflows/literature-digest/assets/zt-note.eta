@@ -1,0 +1,238 @@
+# <%= it.title %>
+
+[Zotero](<%= it.backlink %>) <%= it.fileLink %>
+<%~ include("annots", it.annotations) %>
+<%
+/** ====== 本机配置 ====== */
+const LINKED_ATTACHMENT_BASE_DIR = "ENTER Zotero ATTACHMENTS LINK ROOT HERE";
+const OBSIDIAN_VAULT_DIR = "ENTER Obsidian VAULT ROOT HERE";
+
+/** ====== 工具函数 ====== */
+function parseAttrs(tag) {
+  const attrs = {};
+  String(tag).replace(/([^\s=]+)\s*=\s*"([^"]*)"/g, function (_, k, v) {
+    attrs[k] = v;
+    return "";
+  });
+  return attrs;
+}
+
+function decodeBase64Utf8(b64) {
+  if (!b64) return "";
+  try {
+    if (typeof atob === "function") {
+      const bin = atob(b64);
+      const bytes = [];
+      for (let i = 0; i < bin.length; i++) bytes.push(bin.charCodeAt(i));
+      if (typeof TextDecoder !== "undefined") {
+        return new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+      }
+      return decodeURIComponent(
+        bytes.map(function (b) { return "%" + b.toString(16).padStart(2, "0"); }).join("")
+      );
+    }
+  } catch (e) {}
+  try {
+    if (typeof Buffer !== "undefined") {
+      return Buffer.from(b64, "base64").toString("utf8");
+    }
+  } catch (e) {}
+  return "";
+}
+
+function toUnixPath(p) {
+  return String(p || "").replace(/\\/g, "/");
+}
+function trimTrailingSlash(p) {
+  return toUnixPath(p).replace(/\/+$/, "");
+}
+function joinPath(base, rel) {
+  const b = trimTrailingSlash(base);
+  const r = String(rel || "").replace(/^\/+/, "");
+  return b && r ? (b + "/" + r) : (b || r);
+}
+function normKey(v) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function normalizeAttachmentPath(rawPath) {
+  let p = String(rawPath || "").trim();
+  if (!p) return "";
+  if (/^attachments:/i.test(p)) {
+    const rel = p.replace(/^attachments:/i, "");
+    return joinPath(LINKED_ATTACHMENT_BASE_DIR, rel);
+  }
+  if (/^file:\/\//i.test(p)) {
+    p = decodeURI(p.replace(/^file:\/\/\/?/i, ""));
+    return toUnixPath(p);
+  }
+  return toUnixPath(p);
+}
+
+function toVaultRelative(absPath) {
+  const abs = trimTrailingSlash(absPath);
+  const root = trimTrailingSlash(OBSIDIAN_VAULT_DIR);
+  if (!abs || !root) return "";
+  const absL = abs.toLowerCase();
+  const rootL = root.toLowerCase();
+  if (absL === rootL) return "";
+  if (absL.indexOf(rootL + "/") === 0) {
+    return abs.slice(root.length + 1);
+  }
+  return "";
+}
+
+function buildObsidianOpenUri(absPath) {
+  return "obsidian://open?path=" + encodeURIComponent(toUnixPath(absPath));
+}
+
+/** ====== payload / 元数据提取 ====== */
+function extractPayloadBase64FromRaw(raw, payloadKind) {
+  const spans = String(raw || "").match(/<span\b[^>]*>/gi) || [];
+  for (const span of spans) {
+    const attrs = parseAttrs(span);
+    if (
+      attrs["data-zs-block"] === "payload" &&
+      attrs["data-zs-payload"] === payloadKind &&
+      attrs["data-zs-value"]
+    ) {
+      return attrs["data-zs-value"];
+    }
+  }
+  return "";
+}
+
+function extractPayloadJson(payloadKind) {
+  const notes = Array.isArray(it.notes) ? it.notes : [];
+  for (const n of notes) {
+    const raw = String((n && n.note) || "");
+    const b64 = extractPayloadBase64FromRaw(raw, payloadKind);
+    if (!b64) continue;
+    const text = decodeBase64Utf8(b64);
+    if (!text) continue;
+    try {
+      return JSON.parse(text);
+    } catch (e) {}
+  }
+  return null;
+}
+
+function extractSourceMarkdownItemKeyFromRaw(raw) {
+  const spans = String(raw || "").match(/<span\b[^>]*>/gi) || [];
+  for (const span of spans) {
+    const attrs = parseAttrs(span);
+    if (
+      attrs["data-zs-block"] === "meta" &&
+      attrs["data-zs-meta"] === "source-markdown" &&
+      attrs["data-zs-source_markdown_item_key"]
+    ) {
+      return String(attrs["data-zs-source_markdown_item_key"]).trim();
+    }
+  }
+  return "";
+}
+
+function extractSourceMarkdownItemKey() {
+  const notes = Array.isArray(it.notes) ? it.notes : [];
+  for (const n of notes) {
+    const raw = String((n && n.note) || "");
+    const k = extractSourceMarkdownItemKeyFromRaw(raw);
+    if (k) return k;
+  }
+  const digestPayload = extractPayloadJson("digest-markdown");
+  return String(digestPayload?.source_markdown_item_key || "").trim();
+}
+
+/** ====== 附件匹配（关键：使用 it.allAttachments） ====== */
+function collectAttachmentCandidates() {
+  return Array.isArray(it.allAttachments) ? it.allAttachments : [];
+}
+
+function getAttachmentKey(att) {
+  return normKey(
+    att?.key ??
+    att?.itemKey ??
+    att?.attachmentKey ??
+    att?.item?.key ??
+    att?.data?.key
+  );
+}
+
+function getAttachmentPath(att) {
+  return String(
+    att?.filePath ??
+    att?.path ??
+    att?.localPath ??
+    att?.item?.path ??
+    att?.item?.data?.path ??
+    att?.data?.path ??
+    ""
+  ).trim();
+}
+
+function findAttachmentByKey(itemKey) {
+  const target = normKey(itemKey);
+  if (!target) return null;
+  const all = collectAttachmentCandidates();
+  for (const att of all) {
+    if (getAttachmentKey(att) === target) return att;
+  }
+  return null;
+}
+
+function buildSourceMarkdownLink() {
+  const sourceKey = extractSourceMarkdownItemKey();
+  if (!sourceKey) return "";
+
+  const att = findAttachmentByKey(sourceKey);
+  if (!att) return "source_markdown_item_key: `" + sourceKey + "`";
+
+  const absPath = normalizeAttachmentPath(getAttachmentPath(att));
+  if (!absPath) return "source_markdown_item_key: `" + sourceKey + "`";
+
+  const rel = toVaultRelative(absPath);
+  if (rel) return "[[" + rel + "]]";
+
+  // Vault 外：使用 Obsidian URI，尽量由 Obsidian 内部处理打开
+  return "[Source Markdown](" + buildObsidianOpenUri(absPath) + ")";
+}
+
+/** ====== 原有 digest/references 渲染 ====== */
+function mdCell(v) {
+  return String(v ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ")
+    .trim();
+}
+
+function citeKeyWiki(ref) {
+  const ck = String(ref?.citekey ?? ref?.citeKey ?? "").trim();
+  return ck ? "[[" + mdCell(ck) + "]]" : "";
+}
+
+const digestPayload = extractPayloadJson("digest-markdown");
+const refsPayload = extractPayloadJson("references-json");
+const sourceMarkdownLink = buildSourceMarkdownLink();
+
+const digestMarkdown = String(digestPayload?.content ?? "").trim();
+const refs = Array.isArray(refsPayload?.references) ? refsPayload.references : [];
+
+let referencesTable = "";
+if (refs.length) {
+  const lines = [
+    "| # | CiteKey | Year | Title | Authors |",
+    "| --- | --- | --- | --- | --- |",
+    ...refs.map(function (r, i) {
+      const authors = Array.isArray(r?.author) ? r.author.join("; ") : (r?.author ?? "");
+      return "| " + (i + 1) + " | " + citeKeyWiki(r) + " | " + mdCell(r?.year ?? "") + " | " + mdCell(r?.title ?? "") + " | " + mdCell(authors) + " |";
+    }),
+  ];
+  referencesTable = lines.join("\n");
+}
+%><% if (sourceMarkdownLink) { %><%~ sourceMarkdownLink %><% } %>
+
+<% if (digestMarkdown) { %><%~ digestMarkdown %><% } %>
+<% if (referencesTable) { %>
+## References
+<%~ referencesTable %>
+<% } %>

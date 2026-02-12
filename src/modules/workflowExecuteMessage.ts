@@ -9,7 +9,65 @@ function truncateLine(input: string, maxLength = 160) {
   return `${text.slice(0, maxLength)}...`;
 }
 
-export function normalizeErrorMessage(error: unknown) {
+type WorkflowMessageFormatter = {
+  summary: (args: {
+    workflowLabel: string;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+  }) => string;
+  failureReasonsTitle: string;
+  overflow: (count: number) => string;
+  unknownError: string;
+  startToast: (args: { workflowLabel: string; totalJobs: number }) => string;
+  jobToastSuccess: (args: {
+    workflowLabel: string;
+    taskLabel: string;
+    index: number;
+    total: number;
+  }) => string;
+  jobToastFailed: (args: {
+    workflowLabel: string;
+    taskLabel: string;
+    index: number;
+    total: number;
+    reason: string;
+  }) => string;
+};
+
+const defaultFormatter: WorkflowMessageFormatter = {
+  summary: ({ workflowLabel, succeeded, failed, skipped }) => {
+    const skippedPart = skipped > 0 ? `, skipped=${skipped}` : "";
+    return `Workflow ${workflowLabel} finished. succeeded=${succeeded}, failed=${failed}${skippedPart}`;
+  },
+  failureReasonsTitle: "Failure reasons:",
+  overflow: (count) => `...and ${count} more`,
+  unknownError: "unknown error",
+  startToast: ({ workflowLabel, totalJobs }) =>
+    `Workflow ${workflowLabel} started. jobs=${totalJobs}`,
+  jobToastSuccess: ({ workflowLabel, taskLabel, index, total }) =>
+    `Workflow ${workflowLabel} job ${index}/${total} succeeded: ${taskLabel}`,
+  jobToastFailed: ({ workflowLabel, taskLabel, index, total, reason }) =>
+    `Workflow ${workflowLabel} job ${index}/${total} failed: ${taskLabel} (${reason})`,
+};
+
+function resolveFormatter(
+  formatter?: Partial<WorkflowMessageFormatter>,
+): WorkflowMessageFormatter {
+  if (!formatter) {
+    return defaultFormatter;
+  }
+  return {
+    ...defaultFormatter,
+    ...formatter,
+  };
+}
+
+export function normalizeErrorMessage(
+  error: unknown,
+  formatter?: Partial<WorkflowMessageFormatter>,
+) {
+  const resolved = resolveFormatter(formatter);
   if (error instanceof Error) {
     return truncateLine(error.message || error.name);
   }
@@ -19,7 +77,8 @@ export function normalizeErrorMessage(error: unknown) {
   try {
     return truncateLine(JSON.stringify(error));
   } catch {
-    return truncateLine(String(error));
+    const normalized = String(error);
+    return truncateLine(normalized || resolved.unknownError);
   }
 }
 
@@ -29,10 +88,15 @@ export function buildWorkflowFinishMessage(args: {
   failed: number;
   skipped?: number;
   failureReasons: string[];
-}) {
+}, formatter?: Partial<WorkflowMessageFormatter>) {
+  const resolved = resolveFormatter(formatter);
   const skipped = Math.max(0, args.skipped || 0);
-  const skippedPart = skipped > 0 ? `, skipped=${skipped}` : "";
-  const base = `Workflow ${args.workflowLabel} finished. succeeded=${args.succeeded}, failed=${args.failed}${skippedPart}`;
+  const base = resolved.summary({
+    workflowLabel: args.workflowLabel,
+    succeeded: args.succeeded,
+    failed: args.failed,
+    skipped,
+  });
   const reasons = args.failureReasons.filter(Boolean);
   if (args.failed <= 0 || reasons.length === 0) {
     return base;
@@ -43,7 +107,33 @@ export function buildWorkflowFinishMessage(args: {
     .map((reason, index) => `${index + 1}. ${truncateLine(reason)}`)
     .join("\n");
   if (overflow > 0) {
-    return `${base}\nFailure reasons:\n${details}\n...and ${overflow} more`;
+    return `${base}\n${resolved.failureReasonsTitle}\n${details}\n${resolved.overflow(overflow)}`;
   }
-  return `${base}\nFailure reasons:\n${details}`;
+  return `${base}\n${resolved.failureReasonsTitle}\n${details}`;
+}
+
+export function buildWorkflowStartToastMessage(args: {
+  workflowLabel: string;
+  totalJobs: number;
+}, formatter?: Partial<WorkflowMessageFormatter>) {
+  const resolved = resolveFormatter(formatter);
+  return resolved.startToast(args);
+}
+
+export function buildWorkflowJobToastMessage(args: {
+  workflowLabel: string;
+  taskLabel: string;
+  index: number;
+  total: number;
+  succeeded: boolean;
+  reason?: string;
+}, formatter?: Partial<WorkflowMessageFormatter>) {
+  const resolved = resolveFormatter(formatter);
+  if (args.succeeded) {
+    return resolved.jobToastSuccess(args);
+  }
+  return resolved.jobToastFailed({
+    ...args,
+    reason: String(args.reason || resolved.unknownError),
+  });
 }

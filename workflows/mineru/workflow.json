@@ -1,0 +1,78 @@
+{
+  "id": "mineru",
+  "label": "MinerU",
+  "provider": "generic-http",
+  "version": "0.1.0",
+  "inputs": {
+    "unit": "attachment",
+    "accepts": {
+      "mime": ["application/pdf"]
+    }
+  },
+  "execution": {
+    "poll_interval_ms": 2000,
+    "timeout_ms": 600000
+  },
+  "request": {
+    "kind": "generic-http.steps.v1",
+    "steps": [
+      {
+        "id": "create-upload-url",
+        "request": {
+          "method": "POST",
+          "path": "/api/v4/file-urls/batch",
+          "json": {
+            "files": [
+              {
+                "name": "{source_attachment_name}"
+              }
+            ]
+          }
+        },
+        "extract": {
+          "batch_id": "$.data.batch_id",
+          "upload_url": "$.data.file_urls[0] || $.data.files[0] || $.data.files[0].url"
+        }
+      },
+      {
+        "id": "upload-file",
+        "request": {
+          "method": "PUT",
+          "url": "{upload_url}",
+          "binary_from": "{source_attachment_path}"
+        }
+      },
+      {
+        "id": "poll-result",
+        "request": {
+          "method": "GET",
+          "path": "/api/v4/extract-results/batch/{batch_id}"
+        },
+        "repeat_until": {
+          "json_path": "$.data.extract_result[0].state || $.data.state",
+          "in": ["done", "failed"]
+        },
+        "fail_when": {
+          "json_path": "$.data.extract_result[0].state || $.data.state",
+          "equals": "failed",
+          "message_path": "$.data.extract_result[0].err_msg || $.data.err_msg || $.msg"
+        },
+        "extract": {
+          "full_zip_url": "$.data.extract_result[0].full_zip_url || $.data.full_zip_url"
+        }
+      },
+      {
+        "id": "download-bundle",
+        "request": {
+          "method": "GET",
+          "url": "{full_zip_url}",
+          "response_type": "bytes"
+        }
+      }
+    ]
+  },
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.js",
+    "applyResult": "hooks/applyResult.js"
+  }
+}

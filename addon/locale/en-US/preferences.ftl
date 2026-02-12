@@ -13,4 +13,7 @@ pref-backend-manage =
     .label = Open Backend Manager
 pref-backend-manage-help = Add and edit backend profiles grouped by provider.
 pref-section-about = About
+pref-about-author = Author: Ghost in the bucket (leike0813@gmail.com)
+pref-about-github-label = GitHub:
+pref-about-welcome = Welcome to submit issues and pull requests.
 pref-help = { $name } Build { $version } { $time }

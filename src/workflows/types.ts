@@ -13,6 +13,7 @@ export type WorkflowParameterSchema = {
 export type WorkflowHooksSpec = {
   filterInputs?: string;
   buildRequest?: string;
+  normalizeSettings?: string;
   applyResult: string;
 };
 
@@ -143,9 +144,39 @@ export type FilterInputsHook = (args: {
   runtime: WorkflowRuntimeContext;
 }) => unknown | Promise<unknown>;
 
+export type NormalizeWorkflowSettingsHook = (args:
+  | {
+      phase: "persisted";
+      workflowId: string;
+      manifest: WorkflowManifest;
+      previous: {
+        backendId?: string;
+        workflowParams?: Record<string, unknown>;
+        providerOptions?: Record<string, unknown>;
+      };
+      incoming: {
+        backendId?: string;
+        workflowParams?: Record<string, unknown>;
+        providerOptions?: Record<string, unknown>;
+      };
+      merged: {
+        backendId?: string;
+        workflowParams?: Record<string, unknown>;
+        providerOptions?: Record<string, unknown>;
+      };
+    }
+  | {
+      phase: "execution";
+      workflowId: string;
+      manifest: WorkflowManifest;
+      rawWorkflowParams: Record<string, unknown>;
+      normalizedWorkflowParams: Record<string, unknown>;
+    }) => unknown;
+
 export type WorkflowHooksModule = {
   filterInputs?: FilterInputsHook;
   buildRequest?: BuildRequestHook;
+  normalizeSettings?: NormalizeWorkflowSettingsHook;
   applyResult: ApplyResultHook;
 };
 
@@ -163,4 +194,19 @@ export type LoadedWorkflows = {
   manifests: WorkflowManifest[];
   warnings: string[];
   errors: string[];
+  diagnostics?: Array<{
+    level: "warning" | "error";
+    category:
+      | "manifest_parse_error"
+      | "manifest_validation_error"
+      | "hook_missing_error"
+      | "hook_import_error"
+      | "scan_path_error"
+      | "scan_runtime_warning";
+    message: string;
+    entry?: string;
+    workflowId?: string;
+    path?: string;
+    reason?: string;
+  }>;
 };

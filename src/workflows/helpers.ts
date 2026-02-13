@@ -205,24 +205,24 @@ function renderReferencesTable(references: unknown) {
     const citekey = normalizeReferenceText(entry.citekey);
     const year = normalizeReferenceText(entry.year);
     const title = normalizeReferenceText(entry.title);
+    const authors = normalizeReferenceAuthors(entry.author).join("; ");
     const source = resolveReferenceSource(entry);
     const locator = renderReferenceLocator(entry);
-    const authors = normalizeReferenceAuthors(entry.author).join("; ");
     return [
       "<tr>",
       `<td>${index + 1}</td>`,
       `<td>${escapeHtml(citekey)}</td>`,
       `<td>${escapeHtml(year)}</td>`,
       `<td>${escapeHtml(title)}</td>`,
+      `<td>${escapeHtml(authors)}</td>`,
       `<td>${escapeHtml(source)}</td>`,
       `<td>${escapeHtml(locator)}</td>`,
-      `<td>${escapeHtml(authors)}</td>`,
       "</tr>",
     ].join("");
   });
   return [
     '<table data-zs-view="references-table">',
-    "<thead><tr><th>#</th><th>Citekey</th><th>Year</th><th>Title</th><th>Source</th><th>Locator</th><th>Authors</th></tr></thead>",
+    "<thead><tr><th>#</th><th>Citekey</th><th>Year</th><th>Title</th><th>Authors</th><th>Source</th><th>Locator</th></tr></thead>",
     `<tbody>${rows.join("")}</tbody>`,
     "</table>",
   ].join("");

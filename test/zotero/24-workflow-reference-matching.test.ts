@@ -1121,13 +1121,13 @@ describe("workflow: reference-matching", function () {
       "Citekey",
       "Year",
       "Title",
+      "Authors",
       "Source",
       "Locator",
-      "Authors",
     ]);
     const firstRow = extractRenderedRowCells(updatedContent, 0);
-    assert.equal(firstRow[4], "Journal A");
-    assert.equal(firstRow[5], "Vol. 12; No. 4; pp. 11-29; Beijing");
+    assert.equal(firstRow[5], "Journal A");
+    assert.equal(firstRow[6], "Vol. 12; No. 4; pp. 11-29; Beijing");
   });
 
   it("matches through bbt-json data source via local json-rpc endpoint", async function () {

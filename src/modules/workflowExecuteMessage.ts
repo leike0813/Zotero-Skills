@@ -9,7 +9,7 @@ function truncateLine(input: string, maxLength = 160) {
   return `${text.slice(0, maxLength)}...`;
 }
 
-type WorkflowMessageFormatter = {
+export type WorkflowMessageFormatter = {
   summary: (args: {
     workflowLabel: string;
     succeeded: number;

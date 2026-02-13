@@ -136,6 +136,8 @@ describe("workflow scan + registry integration", function () {
     assert.equal(workflow?.manifest.label, "Literature Digest");
     assert.isFunction(workflow?.hooks.applyResult);
     assert.isFunction(workflow?.hooks.filterInputs);
+    assert.isAtLeast(state.loaded.manifests.length, 1);
+    assert.isAtLeast((state.loaded.diagnostics || []).length, 0);
 
     const entries = getLoadedWorkflowEntries();
     assert.isAtLeast(entries.length, 1);
@@ -175,6 +177,12 @@ describe("workflow scan + registry integration", function () {
     assert.lengthOf(state.loaded.workflows, 0);
     assert.lengthOf(state.loaded.errors, 1);
     assert.include(state.loaded.errors[0], expectedDefault);
+    assert.isTrue(
+      (state.loaded.diagnostics || []).some(
+        (entry) => entry.category === "scan_path_error",
+      ),
+      `diagnostics=${JSON.stringify(state.loaded.diagnostics || [])}`,
+    );
   });
 
   it("scans via prefs event and reports summary message", async function () {

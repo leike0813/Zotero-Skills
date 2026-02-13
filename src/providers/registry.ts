@@ -2,6 +2,12 @@ import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
 import { GenericHttpProvider } from "./generic-http/provider";
 import { PassThroughProvider } from "./pass-through/provider";
+import {
+  ProviderRequestContractError,
+  assertProviderRequestDispatchContract,
+  assertRequestKindBackendCompatible,
+  assertRequestKindProviderCompatible,
+} from "./requestContracts";
 import { SkillRunnerProvider } from "./skillrunner/provider";
 import type { Provider } from "./types";
 
@@ -102,12 +108,25 @@ export function resolveProvider(args: {
   requestKind: string;
   backend: BackendInstance;
 }) {
+  const contract = assertRequestKindBackendCompatible({
+    requestKind: args.requestKind,
+    backendType: args.backend.type,
+  });
   const matched = providers.find((provider) => provider.supports(args));
   if (!matched) {
-    throw new Error(
-      `No provider found for requestKind "${args.requestKind}" with backend type "${args.backend.type}"`,
-    );
+    throw new ProviderRequestContractError({
+      category: "provider_contract_error",
+      reason: "provider_not_registered",
+      requestKind: contract.requestKind,
+      backendType: args.backend.type,
+      providerId: contract.contract.providerType,
+      detail: "matching provider instance not found",
+    });
   }
+  assertRequestKindProviderCompatible({
+    requestKind: contract.requestKind,
+    providerId: matched.id,
+  });
   return matched;
 }
 
@@ -118,5 +137,11 @@ export async function executeWithProvider(args: {
   providerOptions?: Record<string, unknown>;
 }): Promise<ProviderExecutionResult> {
   const provider = resolveProvider(args);
+  assertProviderRequestDispatchContract({
+    requestKind: args.requestKind,
+    backendType: args.backend.type,
+    providerId: provider.id,
+    request: args.request,
+  });
   return provider.execute(args);
 }

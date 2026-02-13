@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
+import { rescanWorkflowRegistry } from "../../src/modules/workflowRuntime";
 import {
   clearRunOnceWorkflowOverrides,
   clearWorkflowSettings,
@@ -19,6 +20,10 @@ import {
   mkTempDir,
   writeUtf8,
 } from "./workflow-test-utils";
+
+async function ensureWorkflowRegistryLoaded() {
+  await rescanWorkflowRegistry({ workflowsDir: workflowsPath() });
+}
 
 describe("workflow settings execution", function () {
   const backendsConfigPrefKey = `${config.prefsPrefix}.backendsConfigJson`;
@@ -335,6 +340,7 @@ describe("workflow settings execution", function () {
   });
 
   it("applies persisted bbt port parameter for reference-matching workflow", async function () {
+    await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
         data_source: "bbt-json",
@@ -357,6 +363,7 @@ describe("workflow settings execution", function () {
   });
 
   it("falls back to default bbt port when persisted value is invalid", async function () {
+    await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
         data_source: "bbt-json",
@@ -379,6 +386,7 @@ describe("workflow settings execution", function () {
   });
 
   it("applies persisted bbt-lite citekey template for reference-matching workflow", async function () {
+    await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
         citekey_template:
@@ -403,6 +411,7 @@ describe("workflow settings execution", function () {
   });
 
   it("rejects invalid bbt-lite citekey template and falls back to last valid/default", async function () {
+    await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
         citekey_template: "auth.lower + '_' + year",

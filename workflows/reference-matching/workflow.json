@@ -40,6 +40,7 @@
   },
   "hooks": {
     "filterInputs": "hooks/filterInputs.js",
+    "normalizeSettings": "hooks/normalizeSettings.js",
     "applyResult": "hooks/applyResult.js"
   }
 }

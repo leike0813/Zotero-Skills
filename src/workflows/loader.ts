@@ -2,6 +2,7 @@ import type {
   ApplyResultHook,
   BuildRequestHook,
   FilterInputsHook,
+  NormalizeWorkflowSettingsHook,
   LoadedWorkflow,
   LoadedWorkflows,
   WorkflowHooksModule,
@@ -9,9 +10,16 @@ import type {
 } from "./types";
 import { getBaseName, joinPath } from "../utils/path";
 import {
-  DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
-  PASS_THROUGH_BACKEND_TYPE,
-} from "../config/defaults";
+  createLoaderDiagnostic,
+  normalizeDirectoryEntries,
+  normalizeManifestProvider,
+  parseWorkflowManifestFromText,
+  resolveBuildStrategy,
+  sortLoaderDiagnostics,
+  toDiagnosticFromUnknown,
+  WorkflowLoaderDiagnosticError,
+  type LoaderDiagnostic,
+} from "./loaderContracts";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -195,160 +203,8 @@ async function loadHooksModule(filePath: string): Promise<Record<string, unknown
   return importHooksModuleFromText(filePath);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
-}
-
-function isValidParameterSchema(
-  value: unknown,
-): value is import("./types").WorkflowParameterSchema {
-  if (!isObject(value)) {
-    return false;
-  }
-  const type = value.type;
-  if (type !== "string" && type !== "number" && type !== "boolean") {
-    return false;
-  }
-  if (
-    typeof value.min !== "undefined" &&
-    (typeof value.min !== "number" || !Number.isFinite(value.min))
-  ) {
-    return false;
-  }
-  if (
-    typeof value.max !== "undefined" &&
-    (typeof value.max !== "number" || !Number.isFinite(value.max))
-  ) {
-    return false;
-  }
-  if (
-    typeof value.min === "number" &&
-    typeof value.max === "number" &&
-    value.min > value.max
-  ) {
-    return false;
-  }
-  if (
-    typeof value.enum !== "undefined" &&
-    (!Array.isArray(value.enum) || value.enum.length === 0)
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function hasValidParameters(value: unknown) {
-  if (typeof value === "undefined") {
-    return true;
-  }
-  if (!isObject(value)) {
-    return false;
-  }
-  for (const entry of Object.values(value)) {
-    if (!isValidParameterSchema(entry)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasDeprecatedWorkflowFields(value: Record<string, unknown>) {
-  if (typeof value.backend !== "undefined") {
-    return true;
-  }
-  if (typeof value.defaults !== "undefined") {
-    return true;
-  }
-
-  const request = value.request;
-  if (!isObject(request)) {
-    return false;
-  }
-  if (typeof request.result !== "undefined") {
-    return true;
-  }
-  const create = request.create;
-  if (!isObject(create)) {
-    return false;
-  }
-  return (
-    typeof create.engine !== "undefined" ||
-    typeof create.parameter !== "undefined" ||
-    typeof create.model !== "undefined" ||
-    typeof create.runtime_options !== "undefined"
-  );
-}
-
-function inferProviderFromRequestKind(kind: string) {
-  const normalized = String(kind || "").trim();
-  if (!normalized) {
-    return "";
-  }
-  for (const [backendType, requestKind] of Object.entries(
-    DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
-  )) {
-    if (requestKind === normalized) {
-      return backendType;
-    }
-  }
-  return "";
-}
-
-function isManifestLike(value: unknown): value is WorkflowManifest {
-  if (!isObject(value)) {
-    return false;
-  }
-  if (hasDeprecatedWorkflowFields(value)) {
-    return false;
-  }
-  return (
-    isNonEmptyString(value.id) &&
-    isNonEmptyString(value.label) &&
-    isObject(value.hooks) &&
-    isNonEmptyString(value.hooks.applyResult) &&
-    hasValidParameters(value.parameters)
-  );
-}
-
-function normalizeManifestProvider(manifest: WorkflowManifest) {
-  const declared = String(manifest.provider || "").trim();
-  if (declared) {
-    manifest.provider = declared;
-    return manifest;
-  }
-  const inferred = inferProviderFromRequestKind(manifest.request?.kind || "");
-  if (inferred) {
-    manifest.provider = inferred;
-  }
-  return manifest;
-}
-
-function resolveBuildStrategy(manifest: WorkflowManifest) {
-  if (manifest.hooks.buildRequest) {
-    return "hook" as const;
-  }
-  if (manifest.request) {
-    return "declarative" as const;
-  }
-  if (manifest.provider === PASS_THROUGH_BACKEND_TYPE) {
-    return "declarative" as const;
-  }
-  return null;
-}
-
-async function readManifestFile(
-  filePath: string,
-): Promise<WorkflowManifest | null> {
-  const raw = await readTextFile(filePath);
-  const parsed = JSON.parse(raw) as unknown;
-  if (!isManifestLike(parsed)) {
-    return null;
-  }
-  return normalizeManifestProvider(parsed);
 }
 
 async function loadHooks(
@@ -358,37 +214,154 @@ async function loadHooks(
   const hooks: WorkflowHooksModule = {} as WorkflowHooksModule;
 
   const applyResultPath = joinPath(workflowRoot, manifest.hooks.applyResult);
-  await statPath(applyResultPath);
-  const applyResultModule = await loadHooksModule(applyResultPath);
+  try {
+    await statPath(applyResultPath);
+  } catch (error) {
+    throw new WorkflowLoaderDiagnosticError({
+      category: "hook_missing_error",
+      message: `Hook file missing: ${manifest.hooks.applyResult}`,
+      workflowId: manifest.id,
+      path: applyResultPath,
+      reason: String(error),
+    });
+  }
+  let applyResultModule: Record<string, unknown>;
+  try {
+    applyResultModule = await loadHooksModule(applyResultPath);
+  } catch (error) {
+    throw new WorkflowLoaderDiagnosticError({
+      category: "hook_import_error",
+      message: `Hook import failed: ${manifest.hooks.applyResult}`,
+      workflowId: manifest.id,
+      path: applyResultPath,
+      reason: String(error),
+    });
+  }
   if (typeof applyResultModule.applyResult !== "function") {
-    throw new Error(
-      `Hook export applyResult() not found: ${manifest.hooks.applyResult}`,
-    );
+    throw new WorkflowLoaderDiagnosticError({
+      category: "hook_import_error",
+      message: `Hook export applyResult() not found: ${manifest.hooks.applyResult}`,
+      workflowId: manifest.id,
+      path: applyResultPath,
+      reason: "applyResult export missing",
+    });
   }
   hooks.applyResult = applyResultModule.applyResult as ApplyResultHook;
 
   if (manifest.hooks.filterInputs) {
     const filterInputsPath = joinPath(workflowRoot, manifest.hooks.filterInputs);
-    await statPath(filterInputsPath);
-    const filterInputsModule = await loadHooksModule(filterInputsPath);
+    try {
+      await statPath(filterInputsPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_missing_error",
+        message: `Hook file missing: ${manifest.hooks.filterInputs}`,
+        workflowId: manifest.id,
+        path: filterInputsPath,
+        reason: String(error),
+      });
+    }
+    let filterInputsModule: Record<string, unknown>;
+    try {
+      filterInputsModule = await loadHooksModule(filterInputsPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message: `Hook import failed: ${manifest.hooks.filterInputs}`,
+        workflowId: manifest.id,
+        path: filterInputsPath,
+        reason: String(error),
+      });
+    }
     if (typeof filterInputsModule.filterInputs !== "function") {
-      throw new Error(
-        `Hook export filterInputs() not found: ${manifest.hooks.filterInputs}`,
-      );
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message: `Hook export filterInputs() not found: ${manifest.hooks.filterInputs}`,
+        workflowId: manifest.id,
+        path: filterInputsPath,
+        reason: "filterInputs export missing",
+      });
     }
     hooks.filterInputs = filterInputsModule.filterInputs as FilterInputsHook;
   }
 
   if (manifest.hooks.buildRequest) {
     const buildRequestPath = joinPath(workflowRoot, manifest.hooks.buildRequest);
-    await statPath(buildRequestPath);
-    const buildRequestModule = await loadHooksModule(buildRequestPath);
+    try {
+      await statPath(buildRequestPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_missing_error",
+        message: `Hook file missing: ${manifest.hooks.buildRequest}`,
+        workflowId: manifest.id,
+        path: buildRequestPath,
+        reason: String(error),
+      });
+    }
+    let buildRequestModule: Record<string, unknown>;
+    try {
+      buildRequestModule = await loadHooksModule(buildRequestPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message: `Hook import failed: ${manifest.hooks.buildRequest}`,
+        workflowId: manifest.id,
+        path: buildRequestPath,
+        reason: String(error),
+      });
+    }
     if (typeof buildRequestModule.buildRequest !== "function") {
-      throw new Error(
-        `Hook export buildRequest() not found: ${manifest.hooks.buildRequest}`,
-      );
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message: `Hook export buildRequest() not found: ${manifest.hooks.buildRequest}`,
+        workflowId: manifest.id,
+        path: buildRequestPath,
+        reason: "buildRequest export missing",
+      });
     }
     hooks.buildRequest = buildRequestModule.buildRequest as BuildRequestHook;
+  }
+
+  if (manifest.hooks.normalizeSettings) {
+    const normalizeSettingsPath = joinPath(
+      workflowRoot,
+      manifest.hooks.normalizeSettings,
+    );
+    try {
+      await statPath(normalizeSettingsPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_missing_error",
+        message: `Hook file missing: ${manifest.hooks.normalizeSettings}`,
+        workflowId: manifest.id,
+        path: normalizeSettingsPath,
+        reason: String(error),
+      });
+    }
+    let normalizeSettingsModule: Record<string, unknown>;
+    try {
+      normalizeSettingsModule = await loadHooksModule(normalizeSettingsPath);
+    } catch (error) {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message: `Hook import failed: ${manifest.hooks.normalizeSettings}`,
+        workflowId: manifest.id,
+        path: normalizeSettingsPath,
+        reason: String(error),
+      });
+    }
+    if (typeof normalizeSettingsModule.normalizeSettings !== "function") {
+      throw new WorkflowLoaderDiagnosticError({
+        category: "hook_import_error",
+        message:
+          `Hook export normalizeSettings() not found: ${manifest.hooks.normalizeSettings}`,
+        workflowId: manifest.id,
+        path: normalizeSettingsPath,
+        reason: "normalizeSettings export missing",
+      });
+    }
+    hooks.normalizeSettings =
+      normalizeSettingsModule.normalizeSettings as NormalizeWorkflowSettingsHook;
   }
 
   return hooks;
@@ -397,23 +370,29 @@ async function loadHooks(
 export async function loadWorkflowManifests(
   workflowsDir: string,
 ): Promise<LoadedWorkflows> {
-  const warnings: string[] = [];
-  const errors: string[] = [];
+  const diagnostics: LoaderDiagnostic[] = [];
   const workflowsById = new Map<string, LoadedWorkflow>();
 
   let entries: string[] = [];
   try {
     entries = await listDirectoryEntries(workflowsDir);
   } catch (error) {
+    const diagnostic = createLoaderDiagnostic({
+      level: "error",
+      category: "scan_path_error",
+      message: `Unable to read workflows directory: ${workflowsDir} (${String(error)})`,
+      path: workflowsDir,
+      reason: String(error),
+    });
     return {
       workflows: [],
       manifests: [],
-      warnings,
-      errors: [
-        `Unable to read workflows directory: ${workflowsDir} (${String(error)})`,
-      ],
+      warnings: [],
+      errors: [diagnostic.message],
+      diagnostics: [diagnostic],
     };
   }
+  entries = normalizeDirectoryEntries(entries);
 
   for (const entry of entries) {
     const workflowRoot = joinPath(workflowsDir, entry);
@@ -423,22 +402,49 @@ export async function loadWorkflowManifests(
       if (!stat.isDirectory) {
         continue;
       }
-      const manifest = await readManifestFile(manifestPath);
-      if (!manifest) {
-        warnings.push(`Invalid workflow manifest: ${manifestPath}`);
+      const manifestResult = parseWorkflowManifestFromText({
+        raw: await readTextFile(manifestPath),
+        manifestPath,
+      });
+      if (!manifestResult.manifest) {
+        if (manifestResult.diagnostic) {
+          diagnostics.push({
+            ...manifestResult.diagnostic,
+            entry,
+          });
+        }
         continue;
       }
+      const manifest = normalizeManifestProvider(manifestResult.manifest);
       if (!isNonEmptyString(manifest.provider)) {
-        warnings.push(
-          `Skip workflow ${manifest.id}: missing provider declaration and unable to infer from request kind`,
+        diagnostics.push(
+          createLoaderDiagnostic({
+            level: "warning",
+            category: "manifest_validation_error",
+            message:
+              `Skip workflow ${manifest.id}: missing provider declaration and unable to infer from request kind`,
+            entry,
+            workflowId: manifest.id,
+            path: manifestPath,
+            reason: "provider missing and cannot infer",
+          }),
         );
         continue;
       }
 
       const buildStrategy = resolveBuildStrategy(manifest);
       if (!buildStrategy) {
-        warnings.push(
-          `Skip workflow ${manifest.id}: missing hooks.buildRequest and request declaration`,
+        diagnostics.push(
+          createLoaderDiagnostic({
+            level: "warning",
+            category: "manifest_validation_error",
+            message:
+              `Skip workflow ${manifest.id}: missing hooks.buildRequest and request declaration`,
+            entry,
+            workflowId: manifest.id,
+            path: manifestPath,
+            reason: "build strategy unresolved",
+          }),
         );
         continue;
       }
@@ -451,15 +457,40 @@ export async function loadWorkflowManifests(
         buildStrategy,
       });
     } catch (error) {
-      warnings.push(`Skip workflow ${entry}: ${String(error)}`);
+      const normalized = toDiagnosticFromUnknown({
+        error,
+        fallback: createLoaderDiagnostic({
+          level: "warning",
+          category: "scan_runtime_warning",
+          message: `Skip workflow ${entry}: ${String(error)}`,
+          entry,
+          path: manifestPath,
+        }),
+      });
+      diagnostics.push({
+        ...normalized,
+        message: normalized.message.startsWith("Skip workflow")
+          ? normalized.message
+          : `Skip workflow ${entry}: ${normalized.message}`,
+      });
     }
   }
 
-  const workflows = Array.from(workflowsById.values());
+  const workflows = Array.from(workflowsById.values()).sort((a, b) =>
+    a.manifest.id.localeCompare(b.manifest.id),
+  );
+  const sortedDiagnostics = sortLoaderDiagnostics(diagnostics);
+  const warnings = sortedDiagnostics
+    .filter((entry) => entry.level === "warning")
+    .map((entry) => entry.message);
+  const errors = sortedDiagnostics
+    .filter((entry) => entry.level === "error")
+    .map((entry) => entry.message);
   return {
     workflows,
     manifests: workflows.map((entry) => entry.manifest),
     warnings,
     errors,
+    diagnostics: sortedDiagnostics,
   };
 }

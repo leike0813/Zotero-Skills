@@ -2,6 +2,8 @@
 
 本文档描述当前实现下的执行主链路。
 
+硬化基线与技术债盘点请见：`doc/architecture-hardening-baseline.md`。
+
 ## Mermaid 流程图（当前实现）
 
 ```mermaid

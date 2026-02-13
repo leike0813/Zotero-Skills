@@ -461,16 +461,16 @@ describe("workflow: reference-note-editor", function () {
       "Citekey",
       "Year",
       "Title",
+      "Authors",
       "Source",
       "Locator",
-      "Authors",
     ]);
     const firstRow = extractRenderedRowCells(updatedNoteContent, 0);
     const secondRow = extractRenderedRowCells(updatedNoteContent, 1);
-    assert.equal(firstRow[4], "VisionConf 2021");
-    assert.equal(firstRow[5], "Vol. 42; No. 7; pp. 101-120");
-    assert.equal(secondRow[4], "Journal of Added Rows");
-    assert.equal(secondRow[5], "Zurich");
+    assert.equal(firstRow[5], "VisionConf 2021");
+    assert.equal(firstRow[6], "Vol. 42; No. 7; pp. 101-120");
+    assert.equal(secondRow[5], "Journal of Added Rows");
+    assert.equal(secondRow[6], "Zurich");
     assert.equal(String(payloadRefs[0]?.citekey || ""), "beta_second_2021");
     assert.equal(String(payloadRefs[1]?.citekey || ""), "delta_third_2022");
     assert.equal(String(payloadRefs[0]?.conferenceName || ""), "VisionConf 2021");

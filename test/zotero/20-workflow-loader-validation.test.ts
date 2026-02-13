@@ -126,6 +126,14 @@ describe("workflow loader validation", function () {
       ),
       `warnings=${JSON.stringify(loaded.warnings)}`,
     );
+    assert.isTrue(
+      (loaded.diagnostics || []).some(
+        (entry) =>
+          entry.category === "manifest_parse_error" &&
+          entry.entry === "invalid-json-workflow",
+      ),
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
   });
 
   it("rejects fixture workflow when required applyResult hook file is missing", async function () {
@@ -142,6 +150,14 @@ describe("workflow loader validation", function () {
     assert.isTrue(
       loaded.warnings.some((warning) => warning.includes("applyResult.js")),
       `warnings=${JSON.stringify(loaded.warnings)}`,
+    );
+    assert.isTrue(
+      (loaded.diagnostics || []).some(
+        (entry) =>
+          entry.category === "hook_missing_error" &&
+          entry.workflowId === "missing-apply-workflow",
+      ),
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
     );
   });
 
@@ -171,5 +187,63 @@ describe("workflow loader validation", function () {
         `missing warning for fixture=${entry}, warnings=${JSON.stringify(loaded.warnings)}`,
       );
     }
+  });
+
+  it("emits deterministic ordering for loaded workflows and diagnostics", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "z-workflow",
+      {
+        id: "z-workflow",
+        label: "Z Workflow",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+    await makeWorkflow(
+      tmpRoot,
+      "a-workflow",
+      {
+        id: "a-workflow",
+        label: "A Workflow",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+    await makeWorkflow(
+      tmpRoot,
+      "broken-workflow",
+      {
+        id: "broken-workflow",
+        label: "Broken Workflow",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {},
+    );
+
+    const first = await loadWorkflowManifests(tmpRoot);
+    const second = await loadWorkflowManifests(tmpRoot);
+
+    assert.deepEqual(
+      first.workflows.map((entry) => entry.manifest.id),
+      ["a-workflow", "z-workflow"],
+    );
+    assert.deepEqual(
+      second.workflows.map((entry) => entry.manifest.id),
+      ["a-workflow", "z-workflow"],
+    );
+    assert.deepEqual(first.warnings, second.warnings);
+    assert.deepEqual(first.errors, second.errors);
+    assert.deepEqual(first.diagnostics || [], second.diagnostics || []);
   });
 });

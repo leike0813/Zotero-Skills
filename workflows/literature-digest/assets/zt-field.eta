@@ -70,6 +70,33 @@ function readPayloadJson(payloadKind) {
   return null;
 }
 
+function resolveSource(r) {
+  var candidates = [
+    r && r.publicationTitle,
+    r && r.conferenceName,
+    r && r.university,
+    r && r.archiveID,
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    var value = String(candidates[i] === undefined || candidates[i] === null ? "" : candidates[i]).trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function renderLocator(r) {
+  var volume = String(r && r.volume !== undefined && r.volume !== null ? r.volume : "").trim();
+  var issue = String(r && r.issue !== undefined && r.issue !== null ? r.issue : "").trim();
+  var pages = String(r && r.pages !== undefined && r.pages !== null ? r.pages : "").trim();
+  var place = String(r && r.place !== undefined && r.place !== null ? r.place : "").trim();
+  var parts = [];
+  if (volume) parts.push("Vol. " + volume);
+  if (issue) parts.push("No. " + issue);
+  if (pages) parts.push("pp. " + pages);
+  if (place) parts.push(place);
+  return parts.join("; ");
+}
+
 var refsPayload = readPayloadJson("references-json");
 var refs = (refsPayload &&
   refsPayload.references &&
@@ -105,12 +132,16 @@ if (!refs.length) {
     } else if (r.author !== undefined && r.author !== null) {
       authors = String(r.author);
     }
+    var source = resolveSource(r);
+    var locator = renderLocator(r);
 
     var row = "";
     if (ck) row += ck + " | ";
     if (year) row += year + " | ";
     row += t;
     if (authors) row += " | " + authors;
+    if (source) row += " | " + source;
+    if (locator) row += " | " + locator;
 
     lines.push('  - "' + escYaml(row) + '"');
   }

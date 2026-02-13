@@ -6,6 +6,7 @@ import {
   PASS_THROUGH_BACKEND_TYPE,
   PASS_THROUGH_REQUEST_KIND,
 } from "../config/defaults";
+import { assertRequestPayloadContract } from "../providers/requestContracts";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -587,45 +588,59 @@ export async function executeBuildRequests(args: {
 
   const requests: BuildRequestsResult = [];
   for (const selectionContext of resolvedSelections) {
-    if (args.workflow.hooks.buildRequest) {
-      requests.push(
-        enrichRequestWithSelectionMeta(
-          await args.workflow.hooks.buildRequest({
-            selectionContext,
-            manifest: args.workflow.manifest,
-            executionOptions: args.executionOptions,
-            runtime,
-          }),
-          selectionContext,
-        ),
-      );
-      continue;
-    }
-
-    const request = args.workflow.manifest.request;
     const passThroughFallbackKind =
       String(args.workflow.manifest.provider || "").trim() ===
       PASS_THROUGH_BACKEND_TYPE
         ? PASS_THROUGH_REQUEST_KIND
         : "";
-    const requestKind = String(request?.kind || passThroughFallbackKind).trim();
-    if (!requestKind) {
+    const requestKind = String(
+      args.workflow.manifest.request?.kind || passThroughFallbackKind,
+    ).trim();
+
+    if (args.workflow.hooks.buildRequest) {
+      const builtRequest = enrichRequestWithSelectionMeta(
+        await args.workflow.hooks.buildRequest({
+          selectionContext,
+          manifest: args.workflow.manifest,
+          executionOptions: args.executionOptions,
+          runtime,
+        }),
+        selectionContext,
+      );
+      if (requestKind) {
+        assertRequestPayloadContract({
+          requestKind,
+          request: builtRequest,
+        });
+      }
+      requests.push(builtRequest);
+      continue;
+    }
+
+    const request = args.workflow.manifest.request;
+    const requestKindFromManifest = String(
+      request?.kind || passThroughFallbackKind,
+    ).trim();
+    if (!requestKindFromManifest) {
       throw new Error(
         `Workflow ${args.workflow.manifest.id} missing buildRequest hook and request declaration`,
       );
     }
 
-    requests.push(
-      enrichRequestWithSelectionMeta(
-        compileDeclarativeRequest({
-          kind: requestKind,
-          selectionContext,
-          manifest: args.workflow.manifest,
-          executionOptions: args.executionOptions,
-        }),
+    const compiledRequest = enrichRequestWithSelectionMeta(
+      compileDeclarativeRequest({
+        kind: requestKindFromManifest,
         selectionContext,
-      ),
+        manifest: args.workflow.manifest,
+        executionOptions: args.executionOptions,
+      }),
+      selectionContext,
     );
+    assertRequestPayloadContract({
+      requestKind: requestKindFromManifest,
+      request: compiledRequest,
+    });
+    requests.push(compiledRequest);
   }
   const skippedUnits = Math.max(0, resolved.totalUnits - requests.length);
   Object.defineProperty(requests, "__stats", {

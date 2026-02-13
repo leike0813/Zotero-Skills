@@ -6,6 +6,10 @@ import type {
   SkillRunnerJobRequestV1,
 } from "../providers/contracts";
 import { PASS_THROUGH_REQUEST_KIND } from "../config/defaults";
+import {
+  assertRequestKindSupported,
+  assertRequestPayloadContract,
+} from "../providers/requestContracts";
 import type { WorkflowManifest, WorkflowRequestSpec } from "./types";
 
 type AttachmentLike = {
@@ -467,18 +471,38 @@ export function compileDeclarativeRequest(args: {
     providerOptions?: Record<string, unknown>;
   };
 }) {
-  const kind = String(args.kind || "").trim();
-  if (kind === "skillrunner.job.v1") {
-    return buildSkillRunnerJobRequest(args);
+  const resolvedKind = assertRequestKindSupported(args.kind).requestKind;
+  if (resolvedKind === "skillrunner.job.v1") {
+    const request = buildSkillRunnerJobRequest(args);
+    assertRequestPayloadContract({
+      requestKind: resolvedKind,
+      request,
+    });
+    return request;
   }
-  if (kind === "generic-http.request.v1") {
-    return buildGenericHttpRequest(args);
+  if (resolvedKind === "generic-http.request.v1") {
+    const request = buildGenericHttpRequest(args);
+    assertRequestPayloadContract({
+      requestKind: resolvedKind,
+      request,
+    });
+    return request;
   }
-  if (kind === "generic-http.steps.v1") {
-    return buildGenericHttpStepsRequest(args);
+  if (resolvedKind === "generic-http.steps.v1") {
+    const request = buildGenericHttpStepsRequest(args);
+    assertRequestPayloadContract({
+      requestKind: resolvedKind,
+      request,
+    });
+    return request;
   }
-  if (kind === PASS_THROUGH_REQUEST_KIND) {
-    return buildPassThroughRequest(args);
+  if (resolvedKind === PASS_THROUGH_REQUEST_KIND) {
+    const request = buildPassThroughRequest(args);
+    assertRequestPayloadContract({
+      requestKind: resolvedKind,
+      request,
+    });
+    return request;
   }
-  throw new Error(`Unsupported declarative request kind: ${kind}`);
+  throw new Error(`Unsupported declarative request kind: ${resolvedKind}`);
 }

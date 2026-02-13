@@ -210,6 +210,33 @@ function citeKeyWiki(ref) {
   return ck ? "[[" + mdCell(ck) + "]]" : "";
 }
 
+function resolveSource(ref) {
+  const candidates = [
+    ref?.publicationTitle,
+    ref?.conferenceName,
+    ref?.university,
+    ref?.archiveID,
+  ];
+  for (const value of candidates) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function renderLocator(ref) {
+  const volume = String(ref?.volume ?? "").trim();
+  const issue = String(ref?.issue ?? "").trim();
+  const pages = String(ref?.pages ?? "").trim();
+  const place = String(ref?.place ?? "").trim();
+  const parts = [];
+  if (volume) parts.push("Vol. " + volume);
+  if (issue) parts.push("No. " + issue);
+  if (pages) parts.push("pp. " + pages);
+  if (place) parts.push(place);
+  return parts.join("; ");
+}
+
 const digestPayload = extractPayloadJson("digest-markdown");
 const refsPayload = extractPayloadJson("references-json");
 const sourceMarkdownLink = buildSourceMarkdownLink();
@@ -220,11 +247,13 @@ const refs = Array.isArray(refsPayload?.references) ? refsPayload.references : [
 let referencesTable = "";
 if (refs.length) {
   const lines = [
-    "| # | CiteKey | Year | Title | Authors |",
-    "| --- | --- | --- | --- | --- |",
+    "| # | CiteKey | Year | Title | Authors | Source | Locator |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
     ...refs.map(function (r, i) {
       const authors = Array.isArray(r?.author) ? r.author.join("; ") : (r?.author ?? "");
-      return "| " + (i + 1) + " | " + citeKeyWiki(r) + " | " + mdCell(r?.year ?? "") + " | " + mdCell(r?.title ?? "") + " | " + mdCell(authors) + " |";
+      const source = resolveSource(r);
+      const locator = renderLocator(r);
+      return "| " + (i + 1) + " | " + citeKeyWiki(r) + " | " + mdCell(r?.year ?? "") + " | " + mdCell(r?.title ?? "") + " | " + mdCell(authors) + " | " + mdCell(source) + " | " + mdCell(locator) + " |";
     }),
   ];
   referencesTable = lines.join("\n");

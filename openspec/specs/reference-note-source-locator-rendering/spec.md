@@ -9,7 +9,8 @@ Canonical references table rendering SHALL include two new columns: `Source` and
 #### Scenario: Rewrite references note table
 - **WHEN** any workflow rewrites a references note table (`literature-digest`, `reference-matching`, or `reference-note-editor`)
 - **THEN** rendered table header SHALL include `Source` and `Locator` columns
-- **AND** the row data for these columns SHALL be derived from payload fields using canonical mapping rules
+- **AND** canonical header order SHALL be `#`, `Citekey`, `Year`, `Title`, `Authors`, `Source`, `Locator`
+- **AND** row cell order SHALL match the same sequence
 
 ### Requirement: Source Column MUST Use Deterministic Field Precedence
 `Source` SHALL render the first non-empty field value in this order: `publicationTitle`, `conferenceName`, `university`, `archiveID`.
@@ -34,4 +35,3 @@ All workflows that write references notes SHALL apply the same canonical rules f
 - **WHEN** the same references payload is rewritten by each of the three workflows (`literature-digest`, `reference-matching`, and `reference-note-editor`)
 - **THEN** resulting `Source` and `Locator` cell outputs SHALL be equivalent for corresponding rows
 - **AND** payload/table synchronization SHALL remain intact after each rewrite
-

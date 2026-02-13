@@ -55,17 +55,39 @@ function emptyLoadedWorkflows(): LoadedWorkflows {
     manifests: [],
     warnings: [],
     errors: [],
+    diagnostics: [],
   };
 }
 
+let fallbackWorkflowState:
+  | {
+      workflowsDir: string;
+      loaded: LoadedWorkflows;
+    }
+  | undefined;
+
 function getState() {
-  if (!addon.data.workflow) {
-    addon.data.workflow = {
+  if (
+    typeof addon !== "undefined" &&
+    addon &&
+    typeof addon === "object" &&
+    addon.data
+  ) {
+    if (!addon.data.workflow) {
+      addon.data.workflow = {
+        workflowsDir: "",
+        loaded: emptyLoadedWorkflows(),
+      };
+    }
+    return addon.data.workflow;
+  }
+  if (!fallbackWorkflowState) {
+    fallbackWorkflowState = {
       workflowsDir: "",
       loaded: emptyLoadedWorkflows(),
     };
   }
-  return addon.data.workflow;
+  return fallbackWorkflowState;
 }
 
 export function getEffectiveWorkflowDir() {

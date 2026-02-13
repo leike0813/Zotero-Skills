@@ -4,9 +4,16 @@ import {
   loadBackendsRegistry,
   resolveBackendForWorkflow,
 } from "../../src/backends/registry";
-import { resolveProvider } from "../../src/providers/registry";
+import {
+  executeWithProvider,
+  registerProvider,
+  resolveProvider,
+  resolveProviderById,
+} from "../../src/providers/registry";
+import { ProviderRequestContractError } from "../../src/providers/requestContracts";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import type { LoadedWorkflow } from "../../src/workflows/types";
+import type { Provider } from "../../src/providers/types";
 import { workflowsPath } from "./workflow-test-utils";
 import { PASS_THROUGH_REQUEST_KIND } from "../../src/config/defaults";
 
@@ -144,8 +151,107 @@ describe("provider/backend registry", function () {
           requestKind: "unsupported.kind",
           backend,
         }),
-      /No provider found/,
+      /request_kind_unsupported|unsupported_request_kind/i,
     );
+  });
+
+  it("throws normalized contract error when request kind and backend type mismatch", async function () {
+    let thrown: unknown;
+    try {
+      resolveProvider({
+        requestKind: PASS_THROUGH_REQUEST_KIND,
+        backend: {
+          id: "generic-http-local",
+          type: "generic-http",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "provider_backend_mismatch");
+    assert.equal(typed.reason, "backend_type_mismatch");
+  });
+
+  it("validates request payload contract before provider dispatch", async function () {
+    const originalProvider = resolveProviderById("generic-http");
+    let executeCalled = 0;
+    const stubProvider: Provider = {
+      id: "generic-http",
+      supports: ({ requestKind, backend }) =>
+        backend.type === "generic-http" &&
+        (requestKind === "generic-http.request.v1" ||
+          requestKind === "generic-http.steps.v1"),
+      execute: async () => {
+        executeCalled += 1;
+        return {
+          status: "succeeded",
+          requestId: "stub",
+          fetchType: "result",
+          resultJson: {},
+          responseJson: {},
+        };
+      },
+    };
+    registerProvider(stubProvider);
+
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: "generic-http.steps.v1",
+        backend: {
+          id: "generic-http-local",
+          type: "generic-http",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "generic-http.steps.v1",
+          steps: [],
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      registerProvider(originalProvider);
+    }
+
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.equal(executeCalled, 0, "provider.execute should not be called");
+  });
+
+  it("validates single-request payload contract for generic-http.request.v1", async function () {
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: "generic-http.request.v1",
+        backend: {
+          id: "generic-http-local",
+          type: "generic-http",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "generic-http.request.v1",
+          request: {
+            method: "POST",
+          },
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.match(String(typed.detail || ""), /request\.path/i);
   });
 
   it("resolves and executes pass-through provider with unified result model", async function () {

@@ -1,7 +1,7 @@
 {
   "name": "zotero-skills",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Zotero plugin for execute agent skills using Skill-Runner backend",
   "config": {
     "addonName": "Zotero Skills",

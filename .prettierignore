@@ -5,3 +5,5 @@ node_modules
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+test/fixtures/workflow-loader-invalid-json/**
+test/fixtures/selection-context/attachments/**

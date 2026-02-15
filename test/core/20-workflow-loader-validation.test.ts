@@ -161,6 +161,125 @@ describe("workflow loader validation", function () {
     );
   });
 
+  it("Risk: MR-01 reports normalizeSettings missing file diagnostics", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "normalize-settings-missing-file",
+      {
+        id: "normalize-settings-missing-file",
+        label: "Normalize Settings Missing File",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: {
+          applyResult: "hooks/applyResult.js",
+          normalizeSettings: "hooks/normalizeSettings.js",
+        },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    assert.isTrue(
+      loaded.warnings.some((warning) =>
+        warning.includes("Hook file missing: hooks/normalizeSettings.js"),
+      ),
+      `warnings=${JSON.stringify(loaded.warnings)}`,
+    );
+    assert.isTrue(
+      (loaded.diagnostics || []).some(
+        (entry) =>
+          entry.category === "hook_missing_error" &&
+          entry.workflowId === "normalize-settings-missing-file",
+      ),
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+  });
+
+  it("Risk: MR-01 reports normalizeSettings import failures as hook_import_error", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "normalize-settings-import-error",
+      {
+        id: "normalize-settings-import-error",
+        label: "Normalize Settings Import Error",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: {
+          applyResult: "hooks/applyResult.js",
+          normalizeSettings: "hooks/normalizeSettings.js",
+        },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+        "normalizeSettings.js":
+          "export async function normalizeSettings( { return {}; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    assert.isTrue(
+      loaded.warnings.some((warning) =>
+        warning.includes("Hook import failed: hooks/normalizeSettings.js"),
+      ),
+      `warnings=${JSON.stringify(loaded.warnings)}`,
+    );
+    assert.isTrue(
+      (loaded.diagnostics || []).some(
+        (entry) =>
+          entry.category === "hook_import_error" &&
+          entry.workflowId === "normalize-settings-import-error",
+      ),
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+  });
+
+  it("Risk: MR-01 reports normalizeSettings export mismatch diagnostics", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "normalize-settings-export-missing",
+      {
+        id: "normalize-settings-export-missing",
+        label: "Normalize Settings Export Missing",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: {
+          applyResult: "hooks/applyResult.js",
+          normalizeSettings: "hooks/normalizeSettings.js",
+        },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+        "normalizeSettings.js":
+          "export async function notNormalizeSettings(){ return {}; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    assert.isTrue(
+      loaded.warnings.some((warning) =>
+        warning.includes("Hook export normalizeSettings() not found"),
+      ),
+      `warnings=${JSON.stringify(loaded.warnings)}`,
+    );
+    assert.isTrue(
+      (loaded.diagnostics || []).some(
+        (entry) =>
+          entry.category === "hook_import_error" &&
+          entry.workflowId === "normalize-settings-export-missing" &&
+          String(entry.reason || "").includes("normalizeSettings export missing"),
+      ),
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+  });
+
   it("rejects fixture workflows when required manifest fields are missing or empty", async function () {
     const fixturesRoot = fixturePath("workflow-loader-missing-required-fields");
     const invalidEntries = [

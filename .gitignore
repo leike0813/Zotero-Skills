@@ -15,9 +15,9 @@ tsconfig.tsbuildinfo
 build
 logs
 
-.vscode
-.history
-.codex
+.vscode/
+.history/
+.codex/
 
 .pnpmfile.cjs
 

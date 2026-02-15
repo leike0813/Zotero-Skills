@@ -22,6 +22,11 @@ const PROVIDER_SECTIONS = [
   },
 ];
 
+type BackendPersistenceDeps = {
+  setPref: typeof setPref;
+  refreshWorkflowMenus: typeof refreshWorkflowMenus;
+};
+
 type EditableBackendRow = {
   id: string;
   type: string;
@@ -458,7 +463,7 @@ function readRowField(row: Element, field: string) {
   return getElementValue(control);
 }
 
-function collectBackendsFromDialog(doc: Document): {
+export function collectBackendsFromDialog(doc: Document): {
   backends: BackendInstance[];
 } {
   const rows = Array.from(
@@ -566,6 +571,28 @@ function collectBackendsFromDialog(doc: Document): {
   return {
     backends,
   };
+}
+
+const defaultBackendPersistenceDeps: BackendPersistenceDeps = {
+  setPref,
+  refreshWorkflowMenus,
+};
+
+export function persistBackendsConfig(
+  backends: BackendInstance[],
+  deps: Partial<BackendPersistenceDeps> = {},
+) {
+  const resolved = {
+    ...defaultBackendPersistenceDeps,
+    ...deps,
+  };
+  resolved.setPref(
+    BACKENDS_CONFIG_PREF_KEY,
+    JSON.stringify({
+      backends,
+    }),
+  );
+  resolved.refreshWorkflowMenus();
 }
 
 function getAlertWindow(window?: Window) {
@@ -691,13 +718,7 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
       throw new Error(getString("backend-manager-error-window-unavailable" as any));
     }
     const collected = collectBackendsFromDialog(doc);
-    setPref(
-      BACKENDS_CONFIG_PREF_KEY,
-      JSON.stringify({
-        backends: collected.backends,
-      }),
-    );
-    refreshWorkflowMenus();
+    persistBackendsConfig(collected.backends);
     alertWindow?.alert?.(getString("backend-manager-saved" as any));
   } catch (error) {
     alertWindow?.alert?.(

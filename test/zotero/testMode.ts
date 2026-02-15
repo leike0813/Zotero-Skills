@@ -1,4 +1,5 @@
 export type TestMode = "lite" | "full";
+export type TestDomain = "all" | "core" | "ui" | "workflow";
 
 function normalizeMode(value: unknown): TestMode {
   const raw = String(value || "").trim().toLowerCase();
@@ -10,6 +11,13 @@ function readFromProcessEnv() {
     return "";
   }
   return process.env.ZOTERO_TEST_MODE || "";
+}
+
+function readDomainFromProcessEnv() {
+  if (typeof process === "undefined" || !process.env) {
+    return "";
+  }
+  return process.env.ZOTERO_TEST_DOMAIN || "";
 }
 
 function readFromServicesEnv() {
@@ -26,6 +34,28 @@ function readFromServicesEnv() {
   }
 }
 
+function readDomainFromServicesEnv() {
+  const runtime = globalThis as {
+    Services?: { env?: { get?: (key: string) => string } };
+  };
+  if (!runtime.Services?.env?.get) {
+    return "";
+  }
+  try {
+    return runtime.Services.env.get("ZOTERO_TEST_DOMAIN") || "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeDomain(value: unknown): TestDomain {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "core" || raw === "ui" || raw === "workflow") {
+    return raw;
+  }
+  return "all";
+}
+
 export function getTestMode(): TestMode {
   const fromProcess = readFromProcessEnv();
   if (fromProcess) {
@@ -40,4 +70,16 @@ export function getTestMode(): TestMode {
 
 export function isFullTestMode() {
   return getTestMode() === "full";
+}
+
+export function getTestDomain(): TestDomain {
+  const fromProcess = readDomainFromProcessEnv();
+  if (fromProcess) {
+    return normalizeDomain(fromProcess);
+  }
+  const fromServices = readDomainFromServicesEnv();
+  if (fromServices) {
+    return normalizeDomain(fromServices);
+  }
+  return "all";
 }

@@ -8,13 +8,28 @@ const MOCK_PORT = "8030";
 const MOCK_HOST = "127.0.0.1";
 const TARGET_TEST_SCRIPT = process.argv[2] || "test:zotero:raw";
 const REQUESTED_TEST_MODE = process.argv[3] || process.env.ZOTERO_TEST_MODE || "lite";
+const REQUESTED_TEST_DOMAIN =
+  process.argv[4] || process.env.ZOTERO_TEST_DOMAIN || "all";
 const TEST_WORKFLOW_DIR = path.join(process.cwd(), "workflows");
 
 function normalizeTestMode(value: string) {
   return value.trim().toLowerCase() === "full" ? "full" : "lite";
 }
 
+function normalizeTestDomain(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "core" ||
+    normalized === "ui" ||
+    normalized === "workflow"
+  ) {
+    return normalized;
+  }
+  return "all";
+}
+
 const TEST_MODE = normalizeTestMode(REQUESTED_TEST_MODE);
+const TEST_DOMAIN = normalizeTestDomain(REQUESTED_TEST_DOMAIN);
 
 function spawnNpm(args: string[], options?: SpawnOptions) {
   if (process.platform === "win32") {
@@ -124,9 +139,11 @@ async function main() {
   const testEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ZOTERO_TEST_MODE: TEST_MODE,
+    ZOTERO_TEST_DOMAIN: TEST_DOMAIN,
     ZOTERO_TEST_WORKFLOW_DIR: TEST_WORKFLOW_DIR,
   };
   console.log(`[test-mode] ${TEST_MODE}`);
+  console.log(`[test-domain] ${TEST_DOMAIN}`);
   console.log(`[test-workflow-dir] ${TEST_WORKFLOW_DIR}`);
 
   const mock = spawnNpm(

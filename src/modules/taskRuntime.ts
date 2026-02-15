@@ -7,6 +7,8 @@ export type WorkflowTaskRecord = {
   workflowId: string;
   workflowLabel: string;
   taskName: string;
+  inputUnitIdentity?: string;
+  inputUnitLabel?: string;
   state: JobState;
   error?: string;
   createdAt: string;
@@ -38,6 +40,9 @@ function buildTaskRecordFromJob(job: JobRecord): WorkflowTaskRecord {
   const workflowLabel =
     normalizeMetaString(job.meta, "workflowLabel") || job.workflowId;
   const taskName = normalizeMetaString(job.meta, "taskName") || job.id;
+  const inputUnitIdentity = normalizeMetaString(job.meta, "inputUnitIdentity");
+  const inputUnitLabel =
+    normalizeMetaString(job.meta, "inputUnitLabel") || taskName;
   return {
     id: getTaskIdFromJob(job),
     runId,
@@ -45,6 +50,8 @@ function buildTaskRecordFromJob(job: JobRecord): WorkflowTaskRecord {
     workflowId: job.workflowId,
     workflowLabel,
     taskName,
+    inputUnitIdentity: inputUnitIdentity || undefined,
+    inputUnitLabel: inputUnitLabel || undefined,
     state: job.state,
     error: job.error,
     createdAt: job.createdAt,
@@ -73,6 +80,12 @@ export function listWorkflowTasks() {
   return Array.from(taskRecords.values())
     .map((entry) => ({ ...entry }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function listActiveWorkflowTasks() {
+  return listWorkflowTasks().filter(
+    (entry) => entry.state === "queued" || entry.state === "running",
+  );
 }
 
 export function clearFinishedWorkflowTasks() {

@@ -8,12 +8,14 @@
 
 - 实现文件：`test/setup/zotero-mock.ts`
 - Node 测试入口会通过 `--require test/setup/zotero-mock.ts` 自动注入全局 `Zotero`
+- Parity 治理合同：`doc/components/zotero-mock-parity.md`
 
 ## 覆盖范围（精简但可用）
 
 ### 全局对象
 
 - `Zotero`：核心 API 模拟
+- `Zotero.__parity`：mock 能力声明与 drift 元数据（HB-08）
 - `Components.utils.isDeadWrapper`：恒为 `false`
 - `PathUtils.join` / `OS.Path.join`：路径拼接
 
@@ -53,8 +55,9 @@ Mock 内会生成：
 
 ## 行为差异（需要注意）
 
-- `getChildren()` 仅返回 **非 note / 非 attachment** 的子条目  
-  （与真实 Zotero 一致，避免把附件/笔记当作 child）
+差异与风险等级以 `doc/components/zotero-mock-parity.md` 的 drift register 为准。  
+常见偏差包括：
+
 - `allowMissing` 场景下，会在临时目录创建占位文件
 - `Search` 仅为 stub，`search()` 返回空数组
 - UI/插件注册相关 API（`PreferencePanes/ItemPaneManager` 等）为轻量 stub

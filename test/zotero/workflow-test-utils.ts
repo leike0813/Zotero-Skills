@@ -1,3 +1,5 @@
+import { assert } from "chai";
+
 type DynamicImport = (specifier: string) => Promise<any>;
 
 const dynamicImport: DynamicImport = new Function(
@@ -95,7 +97,22 @@ export function getProjectRoot() {
 }
 
 export function fixturePath(...segments: string[]) {
-  return joinPath(getProjectRoot(), "test", "fixtures", ...segments);
+  const normalizedSegments = segments.map((segment) =>
+    String(segment || "").trim(),
+  );
+  if (normalizedSegments[0] === "reference-matching") {
+    normalizedSegments[0] = "workflow-reference-matching";
+  }
+  const preferred = joinPath(
+    getProjectRoot(),
+    "test",
+    "fixtures",
+    ...normalizedSegments,
+  );
+  if (isZoteroRuntime()) {
+    return preferred;
+  }
+  return preferred;
 }
 
 export function workflowsPath(...segments: string[]) {
@@ -279,4 +296,37 @@ export function decodeBase64Utf8(text: string): string {
     return decodeURIComponent(escape(atob(encoded)));
   }
   throw new Error("No base64 decoder available in current runtime");
+}
+
+type WorkflowSummaryCounterField = "succeeded" | "failed" | "skipped";
+
+const WORKFLOW_SUMMARY_COUNTER_ALIASES: Record<
+  WorkflowSummaryCounterField,
+  string[]
+> = {
+  succeeded: ["succeeded", "\u6210\u529f"],
+  failed: ["failed", "\u5931\u8d25"],
+  skipped: ["skipped", "\u8df3\u8fc7"],
+};
+
+export function hasWorkflowSummaryCounter(
+  message: string,
+  field: WorkflowSummaryCounterField,
+  value: number,
+) {
+  const summary = String(message || "");
+  return WORKFLOW_SUMMARY_COUNTER_ALIASES[field].some((label) =>
+    summary.includes(`${label}=${value}`),
+  );
+}
+
+export function expectWorkflowSummaryCounter(
+  message: string,
+  field: WorkflowSummaryCounterField,
+  value: number,
+) {
+  assert.isTrue(
+    hasWorkflowSummaryCounter(message, field, value),
+    `expected workflow summary to include ${field}=${value} (or localized equivalent), got: ${message}`,
+  );
 }

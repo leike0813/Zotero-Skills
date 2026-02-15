@@ -5,6 +5,10 @@ import selectionContextSchema from "../schemas/selectionContextSchema";
 import { buildSelectionContext, type SelectionContext } from "./selectionContext";
 import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
+import {
+  resolveRuntimeAlert,
+  resolveRuntimeToolkit,
+} from "../utils/runtimeBridge";
 
 const ajvLogger = {
   log: () => {},
@@ -38,15 +42,7 @@ type RuntimeToolkit = {
 };
 
 function getRuntimeToolkit(): RuntimeToolkit | null {
-  const runtime = globalThis as { ztoolkit?: RuntimeToolkit };
-  const fromLegacyGlobal =
-    typeof ztoolkit !== "undefined" ? (ztoolkit as RuntimeToolkit) : undefined;
-  return (
-    (addon?.data?.ztoolkit as RuntimeToolkit | undefined) ||
-    fromLegacyGlobal ||
-    runtime.ztoolkit ||
-    null
-  );
+  return (resolveRuntimeToolkit() as RuntimeToolkit | undefined) || null;
 }
 
 function showProgress(text: string, type: "success" | "default", progress = 100) {
@@ -127,12 +123,8 @@ export async function sampleSelectionContext() {
 
 function showAlert(message: string) {
   const win = Zotero.getMainWindow?.();
-  if (win?.alert) {
-    win.alert(message);
-    return;
-  }
-  const alertFn = getRuntimeToolkit()?.getGlobal?.("alert");
-  if (typeof alertFn === "function") {
+  const alertFn = resolveRuntimeAlert(win);
+  if (alertFn) {
     alertFn(message);
   }
 }

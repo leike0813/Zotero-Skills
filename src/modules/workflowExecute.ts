@@ -1,6 +1,7 @@
 import type { LoadedWorkflow } from "../workflows/types";
 import { appendRuntimeLog } from "./runtimeLogManager";
 import { runWorkflowPreparationSeam } from "./workflowExecution/preparationSeam";
+import { runWorkflowDuplicateGuardSeam } from "./workflowExecution/duplicateGuardSeam";
 import { runWorkflowExecutionSeam } from "./workflowExecution/runSeam";
 import { runWorkflowApplySeam } from "./workflowExecution/applySeam";
 import {
@@ -24,8 +25,44 @@ export async function executeWorkflowFromCurrentSelection(args: {
     return;
   }
 
+  const duplicateGuard = await runWorkflowDuplicateGuardSeam({
+    win: args.win,
+    workflowId: args.workflow.manifest.id,
+    workflowLabel: args.workflow.manifest.label,
+    requests: preparation.prepared.requests,
+  });
+  const skippedByGuard = duplicateGuard.skippedByDuplicate;
+  const totalSkipped = preparation.prepared.skippedByFilter + skippedByGuard;
+
+  if (duplicateGuard.allowedRequests.length === 0) {
+    appendRuntimeLog({
+      level: "warn",
+      scope: "workflow-trigger",
+      workflowId: args.workflow.manifest.id,
+      stage: "trigger-no-requests-after-duplicate-guard",
+      message: "workflow trigger halted after duplicate guard",
+      details: {
+        skippedByFilter: preparation.prepared.skippedByFilter,
+        skippedByDuplicate: skippedByGuard,
+      },
+    });
+    emitWorkflowFinishSummary({
+      win: args.win,
+      workflowLabel: args.workflow.manifest.label,
+      succeeded: 0,
+      failed: 0,
+      skipped: totalSkipped,
+      failureReasons: [],
+      messageFormatter,
+    });
+    return;
+  }
+
   const runState = runWorkflowExecutionSeam({
-    prepared: preparation.prepared,
+    prepared: {
+      ...preparation.prepared,
+      requests: duplicateGuard.allowedRequests,
+    },
   });
   emitWorkflowStartToast({
     workflowLabel: args.workflow.manifest.label,
@@ -56,7 +93,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
     details: {
       succeeded: applySummary.succeeded,
       failed: applySummary.failed,
-      skipped: preparation.prepared.skippedByFilter,
+      skipped: totalSkipped,
       failureCount: applySummary.failureReasons.length,
     },
   });
@@ -66,7 +103,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
     workflowLabel: args.workflow.manifest.label,
     succeeded: applySummary.succeeded,
     failed: applySummary.failed,
-    skipped: preparation.prepared.skippedByFilter,
+    skipped: totalSkipped,
     failureReasons: applySummary.failureReasons,
     messageFormatter,
   });

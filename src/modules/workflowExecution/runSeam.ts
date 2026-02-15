@@ -4,6 +4,8 @@ import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
+  resolveInputUnitIdentityFromRequest,
+  resolveInputUnitLabelFromRequest,
   resolveTargetParentIDFromRequest,
   resolveTaskNameFromRequest,
 } from "./requestMeta";
@@ -48,6 +50,8 @@ export function runWorkflowExecutionSeam(args: {
 
   const jobIds = args.prepared.requests.map((request, index) => {
     const taskName = resolveTaskNameFromRequest(request, index);
+    const inputUnitIdentity = resolveInputUnitIdentityFromRequest(request);
+    const inputUnitLabel = resolveInputUnitLabelFromRequest(request, index);
     const jobId = queue.enqueue({
       workflowId: args.prepared.workflow.manifest.id,
       request,
@@ -56,6 +60,8 @@ export function runWorkflowExecutionSeam(args: {
         runId,
         workflowLabel: args.prepared.workflow.manifest.label,
         taskName,
+        inputUnitIdentity,
+        inputUnitLabel,
         targetParentID: resolveTargetParentIDFromRequest(request),
       },
     });

@@ -27,6 +27,31 @@ function resolveAttachmentPathsFromRequest(request: unknown) {
     .filter(Boolean);
 }
 
+function readContextValue(request: unknown, key: string) {
+  const typed = request as {
+    context?: Record<string, unknown>;
+    request?: { json?: Record<string, unknown> };
+    [k: string]: unknown;
+  };
+  const fromContext = typed.context?.[key];
+  if (typeof fromContext === "string" || typeof fromContext === "number") {
+    return String(fromContext).trim();
+  }
+  const fromJson = typed.request?.json?.[key];
+  if (typeof fromJson === "string" || typeof fromJson === "number") {
+    return String(fromJson).trim();
+  }
+  const fromTop = typed[key];
+  if (typeof fromTop === "string" || typeof fromTop === "number") {
+    return String(fromTop).trim();
+  }
+  return "";
+}
+
+function normalizeIdentityValue(value: string) {
+  return String(value || "").trim().replace(/\\/g, "/");
+}
+
 function resolveParentTaskName(targetParentID: number | null) {
   if (!targetParentID) {
     return "";
@@ -56,4 +81,37 @@ export function resolveTaskNameFromRequest(request: unknown, index: number) {
     return parentName;
   }
   return `task-${index + 1}`;
+}
+
+export function resolveInputUnitIdentityFromRequest(request: unknown) {
+  const itemKey = readContextValue(request, "source_attachment_item_key");
+  if (itemKey) {
+    return `attachment-key:${itemKey}`;
+  }
+
+  const itemId = readContextValue(request, "source_attachment_item_id");
+  if (itemId) {
+    return `attachment-id:${itemId}`;
+  }
+
+  const attachmentPaths = resolveAttachmentPathsFromRequest(request);
+  if (attachmentPaths.length > 0) {
+    return `attachment-path:${normalizeIdentityValue(attachmentPaths[0])}`;
+  }
+
+  const sourcePath = readContextValue(request, "source_attachment_path");
+  if (sourcePath) {
+    return `attachment-path:${normalizeIdentityValue(sourcePath)}`;
+  }
+
+  const targetParentID = resolveTargetParentIDFromRequest(request);
+  if (targetParentID) {
+    return `parent-id:${targetParentID}`;
+  }
+
+  return "";
+}
+
+export function resolveInputUnitLabelFromRequest(request: unknown, index: number) {
+  return resolveTaskNameFromRequest(request, index);
 }

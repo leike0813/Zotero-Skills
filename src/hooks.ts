@@ -12,6 +12,7 @@ import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { openLogViewerDialog } from "./modules/logViewerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
+import { resolveRuntimeToolkit } from "./utils/runtimeBridge";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -28,31 +29,30 @@ async function delayMs(ms: number) {
 }
 
 function getRuntimeToolkit() {
-  const runtime = globalThis as {
-    ztoolkit?: {
-      unregisterAll?: () => void;
-      log?: (...args: unknown[]) => void;
-      ProgressWindow?: new (
-        title: string,
-        options?: { closeOnClick?: boolean; closeTime?: number },
-      ) => {
-        createLine: (options: {
-          text: string;
-          type?: string;
-          progress?: number;
-        }) => {
-          show: () => {
-            changeLine: (options: {
-              progress?: number;
-              text?: string;
-            }) => void;
-            startCloseTimer: (delayMs: number) => void;
+  return resolveRuntimeToolkit() as
+    | {
+        unregisterAll?: () => void;
+        log?: (...args: unknown[]) => void;
+        ProgressWindow?: new (
+          title: string,
+          options?: { closeOnClick?: boolean; closeTime?: number },
+        ) => {
+          createLine: (options: {
+            text: string;
+            type?: string;
+            progress?: number;
+          }) => {
+            show: () => {
+              changeLine: (options: {
+                progress?: number;
+                text?: string;
+              }) => void;
+              startCloseTimer: (delayMs: number) => void;
+            };
           };
         };
-      };
-    };
-  };
-  return addon.data.ztoolkit || runtime.ztoolkit;
+      }
+    | undefined;
 }
 
 function unregisterToolkitSafely() {

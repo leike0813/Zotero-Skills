@@ -1,16 +1,16 @@
 ## 1. Week 1 - Architecture Baseline and Debt Audit
 
-- [ ] 1.1 Build an architecture inventory for runtime pipeline, provider layer, workflow hooks, and editor host boundaries
-- [ ] 1.2 Identify technical debt candidates and classify by risk (stability, maintainability, testability)
-- [ ] 1.3 Produce a prioritized hardening backlog with explicit sequencing constraints
-- [ ] 1.4 Define refactor acceptance criteria (no behavior change, test parity, readability delta)
+- [x] 1.1 Build an architecture inventory for runtime pipeline, provider layer, workflow hooks, and editor host boundaries
+- [x] 1.2 Identify technical debt candidates and classify by risk (stability, maintainability, testability)
+- [x] 1.3 Produce a prioritized hardening backlog with explicit sequencing constraints
+- [x] 1.4 Define refactor acceptance criteria (no behavior change, test parity, readability delta)
 
 ## 2. Week 2 - Test Taxonomy and Suite Strategy
 
-- [ ] 2.1 Regroup existing tests into `core`, `ui`, and `workflow-*` domains
-- [ ] 2.2 Define `lite` suite scope for PR gating and `full` suite scope for release gating
-- [ ] 2.3 Define suite depth rules (smoke/integration/e2e boundaries) and ownership model
-- [ ] 2.4 Draft CI gate policy and failure severity policy (blocking vs non-blocking)
+- [x] 2.1 Regroup existing tests into `core`, `ui`, and `workflow-*` domains
+- [x] 2.2 Define `lite` suite scope for PR gating and `full` suite scope for release gating
+- [x] 2.3 Define suite depth rules (smoke/integration/e2e boundaries) and ownership model
+- [x] 2.4 Draft CI gate policy and failure severity policy (blocking vs non-blocking)
 
 ## 3. Week 3 - Coverage Gaps and Reviewability Plan
 

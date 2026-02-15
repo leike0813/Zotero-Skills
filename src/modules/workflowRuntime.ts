@@ -1,5 +1,6 @@
 import { getPref, setPref } from "../utils/prefs";
 import { joinPath } from "../utils/path";
+import { resolveRuntimeAddon } from "../utils/runtimeBridge";
 import { loadWorkflowManifests } from "../workflows/loader";
 import type { LoadedWorkflow, LoadedWorkflows } from "../workflows/types";
 
@@ -67,19 +68,17 @@ let fallbackWorkflowState:
   | undefined;
 
 function getState() {
-  if (
-    typeof addon !== "undefined" &&
-    addon &&
-    typeof addon === "object" &&
-    addon.data
-  ) {
-    if (!addon.data.workflow) {
-      addon.data.workflow = {
+  const runtimeAddon = resolveRuntimeAddon();
+  if (runtimeAddon?.data) {
+    if (!(runtimeAddon.data as { workflow?: unknown }).workflow) {
+      (runtimeAddon.data as { workflow?: unknown }).workflow = {
         workflowsDir: "",
         loaded: emptyLoadedWorkflows(),
       };
     }
-    return addon.data.workflow;
+    return (runtimeAddon.data as {
+      workflow: { workflowsDir: string; loaded: LoadedWorkflows };
+    }).workflow;
   }
   if (!fallbackWorkflowState) {
     fallbackWorkflowState = {

@@ -6,10 +6,10 @@
   },
   "typescript.tsdk": "node_modules/typescript/lib",
   "workbench.colorCustomizations": {
-    "editorCursor.foreground": "#7aa2f7",
-    "activityBarBadge.background": "#7aa2f7",
+    "editorCursor.foreground": "#9ece6a",
+    "activityBarBadge.background": "#9ece6a",
     "activityBarBadge.foreground": "#15161e",
-    "statusBar.background": "#7aa2f7",
+    "statusBar.background": "#9ece6a",
     "statusBar.foreground": "#15161e"
   }
 }

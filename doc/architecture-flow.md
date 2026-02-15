@@ -77,3 +77,9 @@ flowchart TD
 - 输入筛选后无合法输入：跳过执行
 - Provider 执行失败：任务标记 failed
 - applyResult 失败：该任务标记 failed，并进入汇总错误
+
+## 8. Runtime Bridge 约定
+
+- 插件模块读取运行时全局能力（如 `addon`、`ztoolkit`、`alert`）时，应优先通过 `src/utils/runtimeBridge.ts`。
+- 业务模块不应再自行拼接 `globalThis/addon/ztoolkit` 多源读取链。
+- 测试需要模拟不同运行时能力组合时，应使用 runtime bridge 的注入/重置接口，避免污染全局状态。

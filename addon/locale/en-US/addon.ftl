@@ -94,6 +94,10 @@ workflow-execute-toast-job-failed = Workflow { $workflowLabel } job { $index }/{
 workflow-execute-no-selection = No items selected.
 workflow-execute-cannot-run = Workflow { $workflowLabel } cannot run: { $reason }
 workflow-execute-cannot-run-context-unavailable = Workflow { $workflowLabel } cannot run: execution context is unavailable
+workflow-duplicate-confirm-title = Duplicate running job detected
+workflow-duplicate-confirm-message = Input "{ $inputLabel }" already has a running job in workflow "{ $workflowLabel }" (running task: "{ $runningTaskLabel }"). Continue and submit another job?
+workflow-duplicate-confirm-yes = Yes
+workflow-duplicate-confirm-no = No
 
 backend-manager-title = Backend Manager
 backend-manager-provider-skillrunner = SkillRunner

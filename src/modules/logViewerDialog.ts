@@ -1,5 +1,6 @@
 import type { DialogHelper } from "zotero-plugin-toolkit";
 import { getString } from "../utils/locale";
+import { resolveToolkitMember } from "../utils/runtimeBridge";
 import { isWindowAlive } from "../utils/window";
 import {
   clearRuntimeLogs,
@@ -16,6 +17,7 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
 const ALL_LEVELS: RuntimeLogLevel[] = ["debug", "info", "warn", "error"];
 
 type LevelFilterState = Record<RuntimeLogLevel, boolean>;
+type DialogCtor = new (rows: number, columns: number) => DialogHelper;
 
 let logViewerDialog: DialogHelper | undefined;
 
@@ -33,15 +35,10 @@ function clearChildren(node: Element) {
 }
 
 function resolveClipboardCtor() {
-  const fromGlobalVar =
-    typeof ztoolkit !== "undefined" ? ztoolkit?.Clipboard : undefined;
-  const fromAddon =
-    typeof addon !== "undefined" ? addon?.data?.ztoolkit?.Clipboard : undefined;
-  const fromGlobalThis = (globalThis as { ztoolkit?: { Clipboard?: unknown } })
-    .ztoolkit?.Clipboard;
-  return (fromGlobalVar || fromAddon || fromGlobalThis) as
+  return resolveToolkitMember<
     | (new () => { addText: (text: string, mime: string) => unknown; copy: () => unknown })
-    | undefined;
+    | undefined
+  >("Clipboard");
 }
 
 function copyText(text: string) {
@@ -228,6 +225,10 @@ export async function openLogViewerDialog() {
   if (isWindowAlive(logViewerDialog?.window)) {
     logViewerDialog?.window?.focus();
     return;
+  }
+  const Dialog = resolveToolkitMember<DialogCtor>("Dialog");
+  if (!Dialog) {
+    throw new Error("log viewer dialog is unavailable");
   }
 
   let selectedEntryId = "";
@@ -450,7 +451,7 @@ export async function openLogViewerDialog() {
     },
   };
 
-  logViewerDialog = new ztoolkit.Dialog(1, 1)
+  logViewerDialog = new Dialog(1, 1)
     .addCell(0, 0, {
       tag: "div",
       namespace: "html",

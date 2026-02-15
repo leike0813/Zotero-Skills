@@ -1,61 +1,207 @@
-# Workflow Hook 内建函数指南
+# Workflow Hook Helpers API Reference
 
-本文档说明 Workflow hooks 如何使用插件内核注入的 `runtime.helpers`，避免在每个 hook 文件里重复定义通用函数。
+This document is the API-level reference for hook-side helper utilities injected as `runtime.helpers`.
 
-## 入口
+Protocol-level workflow contract is documented in `doc/components/workflows.md`.
 
-每个 hook 都会收到 `runtime` 对象：
+## Runtime Entry
+
+Each hook receives `runtime`:
 
 ```js
 export function filterInputs({ selectionContext, runtime }) {
   const helpers = runtime.helpers;
-  // ...
+  // use helpers here
 }
 ```
 
-## filterInputs 触发与契约（M1）
+## Scope Boundary
 
-- 对于 `inputs.unit = "attachment"` 的 workflow：只要声明了 `hooks.filterInputs`，就会在声明式 `inputs` 初筛后执行。
-- `filterInputs` 的主要用途仍是处理复杂输入裁决（例如同一父条目下多个同类候选附件）。
-- 输入：`selectionContext`（声明式初筛后的候选集）+ `manifest` + `runtime`。
-- 输出：筛选后的 `selectionContext`（通常通过 `withFilteredAttachments` 返回）。
-- 失败语义：
-  - 未提供 hook：直接使用声明式初筛结果继续执行。
-  - hook 返回后无合法输入：该 workflow 在构建请求阶段会出现 `no valid input units`，执行层按“跳过并提示”处理。
+- `runtime.helpers`: stable, workflow-agnostic utility surface.
+- Dialog/editor host APIs: hook-facing bridge APIs, not part of `runtime.helpers` (see below).
 
-## 可用函数（M1）
+## Full Helper Inventory
 
-- `getAttachmentParentId(entry)`：获取附件所属父条目 ID
-- `getAttachmentFilePath(entry)`：获取附件路径（`filePath`/`data.path`/`title` 回退）
-- `getAttachmentFileName(entry)`：获取附件文件名
-- `getAttachmentFileStem(entry)`：获取文件名 stem（小写，无扩展名）
-- `getAttachmentDateAdded(entry)`：解析附件 `dateAdded` 为时间戳（用于排序）
-- `isMarkdownAttachment(entry)`：判断是否 markdown 附件
-- `isPdfAttachment(entry)`：判断是否 PDF 附件
-- `pickEarliestPdfAttachment(entries)`：从候选集合中选出最早加入的 PDF（同时间按文件名稳定排序）
-- `cloneSelectionContext(selectionContext)`：深拷贝选择上下文
-- `withFilteredAttachments(selectionContext, attachments)`：返回仅包含指定附件集合的新上下文
-- `resolveItemRef(ref)`：将 `Zotero.Item | id | key` 解析为 `Zotero.Item`
-- `basenameOrFallback(path, fallback)`：返回文件名或默认值
-- `toHtmlNote(title, body)`：生成安全的 HTML note 内容
+Current source of truth:
 
-## 使用建议
+- `src/workflows/types.ts` (`HookHelpers`)
+- `src/workflows/helpers.ts` (`createHookHelpers`)
 
-- 先使用声明式 `inputs` 完成一阶筛选，复杂输入歧义再放在 `filterInputs`。
-- `filterInputs` 内尽量调用 `runtime.helpers` 完成通用判断与排序。
-- `chooseMarkdownByPdfOrEarliest` 这类工作流私有规则，建议仅保留在对应 workflow 的 hook 文件中。
-- `applyResult` 中涉及 item 解析、HTML note 包装、artifact 文件名处理时优先使用内建函数。
-- 当请求终态为 `result`（非 `bundle`）时，`bundleReader.readText()` 不可用会抛错；此时应优先从 `runResult` 读取结果并做分支处理。
-- 仅当某逻辑明显是 workflow 私有规则时，再在 hook 内定义局部函数。
+### Attachment and Selection Helpers
 
-## 示例：applyResult
+`getAttachmentParentId(entry: unknown): number | null`
+- Returns attachment parent item ID from `entry.parent.id` or `entry.item.parentItemID`.
+- Returns `null` when unavailable.
+
+`getAttachmentFilePath(entry: unknown): string`
+- Resolution order: `entry.filePath` -> `entry.item.data.path` -> `entry.item.title` -> `""`.
+
+`getAttachmentFileName(entry: unknown): string`
+- Derives basename from `getAttachmentFilePath`.
+- Normalizes `attachments:` / `storage:` prefix before basename extraction.
+
+`getAttachmentFileStem(entry: unknown): string`
+- Lower-cased filename stem without extension.
+
+`getAttachmentDateAdded(entry: unknown): number`
+- Parses `entry.item.data.dateAdded`.
+- Invalid/missing value returns `Number.POSITIVE_INFINITY`.
+
+`isMarkdownAttachment(entry: unknown): boolean`
+- `true` when filename ends with `.md` or MIME equals `text/markdown`.
+
+`isPdfAttachment(entry: unknown): boolean`
+- `true` when filename ends with `.pdf` or MIME equals `application/pdf`.
+
+`pickEarliestPdfAttachment(entries: unknown[]): unknown | null`
+- Filters PDF entries and sorts by:
+  - `dateAdded` ascending;
+  - filename lexical order as stable tie-breaker.
+- Returns first match or `null`.
+
+`cloneSelectionContext<T>(selectionContext: T): T`
+- Deep clones with JSON round-trip.
+- Intended for hook-side safe mutation flows.
+
+`withFilteredAttachments<T>(selectionContext: T, attachments: unknown[]): T`
+- Returns cloned selection context with:
+  - `items.attachments = attachments`
+  - `summary.attachmentCount = attachments.length`
+
+### Item and Note Helpers
+
+`resolveItemRef(ref: Zotero.Item | number | string): Zotero.Item`
+- Resolves direct item/id/key into `Zotero.Item`.
+- Throws when resolution fails.
+- String key resolution targets `Zotero.Libraries.userLibraryID`.
+
+`basenameOrFallback(targetPath: string | undefined, fallback: string): string`
+- Returns basename when `targetPath` is truthy; otherwise returns `fallback`.
+
+`toHtmlNote(title: string, body: string): string`
+- Returns escaped HTML note wrapper:
+  - `<h1>` title
+  - `<pre>` body
+
+### Reference Payload/Table Helpers
+
+`normalizeReferenceAuthors(value: unknown): string[]`
+- Accepts:
+  - author array;
+  - delimited string (`;` or newline).
+- Trims entries and drops empty elements.
+
+`normalizeReferenceEntry(entry: unknown, index: number): Record<string, unknown>`
+- Normalizes one reference row:
+  - required-ish fields: `id`, `title`, `year`, `author[]`
+  - optional `citekey` (`citeKey` merged into `citekey`)
+  - optional `rawText`
+  - optional metadata: `publicationTitle`, `conferenceName`, `university`, `archiveID`, `volume`, `issue`, `pages`, `place`
+- Empty optional values are removed.
+
+`normalizeReferencesArray(value: unknown): Record<string, unknown>[]`
+- Normalizes array input; non-array yields `[]`.
+
+`normalizeReferencesPayload(payload: unknown): Record<string, unknown>[]`
+- Accepts payload shapes:
+  - `Reference[]`
+  - `{ references: Reference[] }`
+  - `{ items: Reference[] }`
+- Throws if no recognizable references array exists.
+
+`replacePayloadReferences(payload: unknown, references: Record<string, unknown>[]): unknown`
+- Replaces references preserving payload shape when possible:
+  - array payload -> returns `references`
+  - `{ references: [] }` -> updates `references`
+  - `{ items: [] }` -> updates `items`
+  - other object -> writes `references`
+  - non-object -> returns `{ references }`
+
+`resolveReferenceSource(entry: unknown): string`
+- Returns first non-empty source field by priority:
+  - `publicationTitle` -> `conferenceName` -> `university` -> `archiveID`.
+
+`renderReferenceLocator(entry: unknown): string`
+- Renders locator from optional fields in order:
+  - `volume`, `issue`, `pages`, `place`
+- Format:
+  - `Vol. <volume>; No. <issue>; pp. <pages>; <place>`
+- Empty fields are skipped.
+
+`renderReferencesTable(references: unknown): string`
+- Canonical HTML table renderer used by shared reference-note workflows.
+- Column order:
+  - `#`, `Citekey`, `Year`, `Title`, `Authors`, `Source`, `Locator`.
+- Input is normalized via `normalizeReferencesArray`.
+
+## Hook-Facing Dialog/Editor Bridge APIs
+
+These APIs are outside `runtime.helpers` and are provided by workflow editor host:
+
+- `globalThis.__zsWorkflowEditorHostOpen`
+- `globalThis.__zsWorkflowEditorHostRegisterRenderer`
+- `globalThis.__zsWorkflowEditorHostUnregisterRenderer`
+- `addon.data.workflowEditorHost.open`
+- `addon.data.workflowEditorHost.registerRenderer`
+- `addon.data.workflowEditorHost.unregisterRenderer`
+
+Primary implementation: `src/modules/workflowEditorHost.ts`.
+
+### Bridge Functions
+
+`open(args): Promise<{ saved: boolean; result?: unknown; reason?: string }>`
+- Opens one editor dialog session.
+- `saved = false` means user canceled/closed (conventionally equivalent to “No”).
+
+`registerRenderer(rendererId, renderer): void`
+- Registers renderer implementation by `rendererId`.
+
+`unregisterRenderer(rendererId): void`
+- Removes renderer registration.
+
+### Sequencing and Lifecycle Semantics
+
+- Sessions are queued and opened sequentially (one dialog at a time).
+- Multi-input workflow invocations therefore present dialogs one-by-one.
+- Renderer `serialize()` return value is passed back as `result` when saved.
+- If hook treats cancel as failure (for example by throwing), the corresponding job is marked failed.
+
+## Practical Examples
+
+### Example 1: Attachment Filtering
 
 ```js
-export async function applyResult({ parent, bundleReader, runtime }) {
-  const parentItem = runtime.helpers.resolveItemRef(parent);
-  const digest = await bundleReader.readText("artifacts/digest.md");
-  return runtime.handlers.parent.addNote(parentItem, {
-    content: runtime.helpers.toHtmlNote("Digest", digest),
-  });
+export function filterInputs({ selectionContext, runtime }) {
+  const attachments = Array.isArray(selectionContext?.items?.attachments)
+    ? selectionContext.items.attachments
+    : [];
+  const selected = attachments.filter((entry) => runtime.helpers.isPdfAttachment(entry));
+  return runtime.helpers.withFilteredAttachments(selectionContext, selected);
 }
 ```
+
+### Example 2: Payload Normalization + Replacement
+
+```js
+function rewritePayload(payloadJson, runtime) {
+  const refs = runtime.helpers.normalizeReferencesPayload(payloadJson);
+  const next = refs.map((entry, i) =>
+    runtime.helpers.normalizeReferenceEntry({ ...entry, id: `ref-${i + 1}` }, i),
+  );
+  return runtime.helpers.replacePayloadReferences(payloadJson, next);
+}
+```
+
+### Example 3: Canonical Table Rendering
+
+```js
+function renderTableHtml(references, runtime) {
+  return runtime.helpers.renderReferencesTable(references);
+}
+```
+
+## Maintenance Checklist
+
+- If `HookHelpers` changes in `src/workflows/types.ts`, update this document in the same change.
+- If helper behavior changes in `src/workflows/helpers.ts`, update relevant signature/semantics/examples.
+- If workflow editor host bridge keys or behaviors change (`src/modules/workflowEditorHost.ts`), update bridge section.

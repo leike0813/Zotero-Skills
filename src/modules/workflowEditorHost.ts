@@ -1,3 +1,5 @@
+import { resolveToolkitMember } from "../utils/runtimeBridge";
+
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const ROOT_ID = "zs-workflow-editor-root";
 const GLOBAL_OPEN_KEY = "__zsWorkflowEditorHostOpen";
@@ -91,13 +93,7 @@ function cloneSerializable<T>(value: T): T {
 }
 
 function resolveDialogCtor() {
-  const fromGlobalVar =
-    typeof ztoolkit !== "undefined" ? ztoolkit?.Dialog : undefined;
-  const fromAddon =
-    typeof addon !== "undefined" ? addon?.data?.ztoolkit?.Dialog : undefined;
-  const runtime = globalThis as { ztoolkit?: { Dialog?: unknown } };
-  const fromGlobalThis = runtime.ztoolkit?.Dialog;
-  return (fromGlobalVar || fromAddon || fromGlobalThis) as DialogCtor | undefined;
+  return resolveToolkitMember<DialogCtor>("Dialog");
 }
 
 function normalizeNumber(value: unknown, fallback: number) {
@@ -334,4 +330,3 @@ export function createWorkflowEditorPanelContainer(doc: Document) {
   panel.style.boxSizing = "border-box";
   return panel;
 }
-

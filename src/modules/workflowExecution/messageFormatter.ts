@@ -1,4 +1,5 @@
 import { getString } from "../../utils/locale";
+import { resolveAddonRef, resolveRuntimeAddon } from "../../utils/runtimeBridge";
 import type { WorkflowMessageFormatter } from "../workflowExecuteMessage";
 
 export function localizeWorkflowText(
@@ -7,13 +8,14 @@ export function localizeWorkflowText(
   args?: Record<string, unknown>,
 ) {
   try {
-    if (typeof addon === "undefined") {
+    if (!resolveRuntimeAddon()) {
       return fallback;
     }
     const localized = args
       ? getString(id as any, { args })
       : getString(id as any);
-    const unresolved = `${addon.data.config.addonRef}-${id}`;
+    const addonRef = resolveAddonRef("zotero-skills");
+    const unresolved = `${addonRef}-${id}`;
     if (!localized || localized === unresolved) {
       return fallback;
     }

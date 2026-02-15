@@ -5,6 +5,22 @@ import os from "os";
 import path from "path";
 
 type TagEntry = { tag: string; type?: number };
+type MockParityRisk = "low" | "medium" | "high";
+type MockParityDriftStatus = "open" | "waived" | "closed";
+type MockParityDriftEntry = {
+  id: string;
+  scope: string;
+  risk: MockParityRisk;
+  status: MockParityDriftStatus;
+  summary: string;
+  closureCriteria: string;
+};
+type MockParityDescriptor = {
+  runtime: "node-mock";
+  contractVersion: string;
+  capabilities: Record<string, boolean>;
+  drifts: MockParityDriftEntry[];
+};
 
 type ZoteroMock = {
   Promise: {
@@ -56,7 +72,52 @@ type ZoteroMock = {
   };
   getTempDirectory: () => MockFile;
   isWin: boolean;
+  __parity?: MockParityDescriptor;
   [key: string]: unknown;
+};
+
+const ZOTERO_MOCK_PARITY: MockParityDescriptor = {
+  runtime: "node-mock",
+  contractVersion: "2026-02-hb08",
+  capabilities: {
+    attachmentsRelativePathResolution: true,
+    trashMarksDeleted: true,
+    readonlyDeletedField: true,
+    itemLookupSemantics: true,
+    fieldValidationSemantics: true,
+    searchStubOnly: true,
+  },
+  drifts: [
+    {
+      id: "DR-001",
+      scope: "File.pathToFile",
+      risk: "high",
+      status: "open",
+      summary:
+        "Mock accepts forward-slash drive path (D:/...), while real Zotero can reject it in some runtime chains.",
+      closureCriteria:
+        "Align path parser behavior with real Zotero and keep regression coverage green.",
+    },
+    {
+      id: "DR-002",
+      scope: "Search API",
+      risk: "medium",
+      status: "waived",
+      summary: "Search.search() is currently a stub that always returns empty array.",
+      closureCriteria:
+        "Implement real query semantics once workflows depend on Search behavior.",
+    },
+    {
+      id: "DR-003",
+      scope: "UI registration APIs",
+      risk: "low",
+      status: "waived",
+      summary:
+        "PreferencePanes/ItemPaneManager and related APIs are lightweight no-op stubs in node runtime.",
+      closureCriteria:
+        "Backfill observable UI side-effect simulation when tests require those guarantees.",
+    },
+  ],
 };
 
 class MockFile {
@@ -2291,6 +2352,7 @@ function createZoteroMock(): ZoteroMock {
       env: "test",
     },
   };
+  mock.__parity = JSON.parse(JSON.stringify(ZOTERO_MOCK_PARITY));
 
   return mock;
 }

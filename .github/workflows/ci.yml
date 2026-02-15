@@ -34,11 +34,24 @@ jobs:
           name: build-result
           path: .scaffold/build
 
-  test:
+  test-lite:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs:
       - build
     steps:
       - name: Setup JS
         uses: zotero-plugin-dev/workflows/setup-js@main
-      - run: npm run test
+      - name: Run PR gate (blocking)
+        run: npm run test:gate:pr
+
+  test-full:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+      - name: Setup JS
+        uses: zotero-plugin-dev/workflows/setup-js@main
+      - name: Run release gate (blocking)
+        run: npm run test:gate:release

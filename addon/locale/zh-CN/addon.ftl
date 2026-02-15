@@ -94,6 +94,10 @@ workflow-execute-toast-job-failed = Workflow { $workflowLabel } 任务 { $index 
 workflow-execute-no-selection = 未选择任何条目。
 workflow-execute-cannot-run = Workflow { $workflowLabel } 无法执行：{ $reason }
 workflow-execute-cannot-run-context-unavailable = Workflow { $workflowLabel } 无法执行：执行上下文不可用
+workflow-duplicate-confirm-title = 检测到重复运行中的任务
+workflow-duplicate-confirm-message = 输入“{ $inputLabel }”在 Workflow “{ $workflowLabel }”中已有运行中任务（当前任务：{ $runningTaskLabel }）。是否仍要继续提交一个重复任务？
+workflow-duplicate-confirm-yes = 是
+workflow-duplicate-confirm-no = 否
 
 backend-manager-title = 后端管理器
 backend-manager-provider-skillrunner = SkillRunner

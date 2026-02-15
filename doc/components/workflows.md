@@ -4,6 +4,8 @@
 
 定义 Workflow 包（manifest + hooks）的加载、校验与执行入口，为 UI 与执行内核提供稳定输入。
 
+配套 API 细节请同时参见 `doc/components/workflow-hook-helpers.md`。
+
 ## 目录结构
 
 ```text
@@ -13,6 +15,7 @@ workflows/
     hooks/
       filterInputs.js   # 可选
       buildRequest.js   # 可选（声明式 request 无法覆盖时使用）
+      normalizeSettings.js # 可选（workflow 专属设置归一化）
       applyResult.js    # 必需
 ```
 
@@ -43,6 +46,7 @@ type WorkflowManifest = {
   hooks: {
     filterInputs?: string;
     buildRequest?: string;
+    normalizeSettings?: string;
     applyResult: string;
   };
 };
@@ -51,6 +55,7 @@ type WorkflowManifest = {
 说明：
 
 - `hooks.applyResult` 必需。
+- `hooks.normalizeSettings` 可选（用于 workflow 设置归一化，phase: `persisted` / `execution`）。
 - buildRequest 能力必需，但实现方式二选一：
   - `hooks.buildRequest`
   - `request`（声明式）
@@ -123,6 +128,22 @@ type WorkflowManifest = {
   - 每次打开某个 workflow 设置页时，Run Once 的 profile / workflow 参数 / provider 选项默认值都会从当前 Persistent 设置初始化；
   - 不提供单独的“是否跟随 Persistent”开关；
   - 重新打开设置页会重置待消费的一次性覆盖显示值，避免展示过期 Run Once 输入。
+- `normalizeSettings` 钩子语义：
+  - `phase = persisted`：用于持久化写入前的配置归一化；
+  - `phase = execution`：用于执行前 workflow 参数归一化；
+  - hook 返回 `undefined` 时，保持内核默认归一化结果。
+
+### normalizeSettings 设计意图与适用场景
+
+- 该钩子用于承载“workflow 专属配置语义”，避免把业务规则写进插件核心。
+- 它不是 BBT 专用能力；BBT 只是当前一个实例。
+- 当前实现中，`reference-matching` 使用该钩子来校验/回退 `citekey_template`（legacy + BBT-Lite）。
+- 适用场景（典型）：
+  - 条件依赖：例如 `data_source=bbt-json` 时强制补默认端口；
+  - 跨字段联动：A/B 互斥、C 由 D 推导；
+  - 配置迁移：旧字段到新字段的兼容迁移；
+  - 执行前稳态：清理非法值，确保本次运行参数可执行。
+- 若 workflow 没有此类专属语义，可不提供该钩子。
 
 ## 失败语义
 
@@ -238,7 +259,7 @@ type WorkflowManifest = {
 ### Reference 表格列映射（共享规则）
 
 - `reference-note-editor`、`reference-matching`、`literature-digest` 三个 workflow 使用同一套 canonical `references-table` 渲染规则，列顺序为：
-  - `#`、`Citekey`、`Year`、`Title`、`Source`、`Locator`、`Authors`。
+  - `#`、`Citekey`、`Year`、`Title`、`Authors`、`Source`、`Locator`。
 - `Source` 列取值优先级（命中首个非空即停止）：
   - `publicationTitle` > `conferenceName` > `university` > `archiveID`。
 - `Locator` 列由以下字段按固定顺序合并：
@@ -286,3 +307,9 @@ type WorkflowManifest = {
 - `buildStrategy = hook | declarative` 分支行为
 - 声明式 request 编译与输入映射约束
 - Node/Zotero 双运行时 loader 行为
+
+## 文档维护检查清单
+
+- 修改 `src/workflows/types.ts` 中 `WorkflowHooksSpec` 或 `WorkflowManifest` 后，同步更新本文件的 manifest 契约章节。
+- 修改 `src/workflows/loader.ts` 的 hook 载入策略或失败语义后，同步更新本文件的运行时兼容/失败语义章节。
+- 修改 `src/workflows/helpers.ts` 中 canonical references 表格渲染逻辑后，同步更新本文件的“Reference 表格列映射”。

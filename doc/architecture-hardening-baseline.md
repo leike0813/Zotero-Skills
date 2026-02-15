@@ -46,9 +46,9 @@ Use the same template for every boundary:
 - `Evidence`:
   - `src/modules/workflowExecute.ts`
   - `src/workflows/runtime.ts`
-  - `test/zotero/24-workflow-execute-message.test.ts`
-  - `test/zotero/42-task-runtime.test.ts`
-  - `test/zotero/47-workflow-log-instrumentation.test.ts`
+  - `test/core/24-workflow-execute-message.test.ts`
+  - `test/core/42-task-runtime.test.ts`
+  - `test/core/47-workflow-log-instrumentation.test.ts`
 - `Risk Notes`:
   - orchestration logic is concentrated in large files with mixed concerns.
 
@@ -76,9 +76,9 @@ Use the same template for every boundary:
 - `Evidence`:
   - `src/providers/registry.ts`
   - `src/providers/contracts.ts`
-  - `test/zotero/33-provider-backend-registry.test.ts`
-  - `test/zotero/34-generic-http-provider-e2e.test.ts`
-  - `test/zotero/38-generic-http-steps-provider.test.ts`
+  - `test/core/33-provider-backend-registry.test.ts`
+  - `test/core/34-generic-http-provider-e2e.test.ts`
+  - `test/core/38-generic-http-steps-provider.test.ts`
 - `Risk Notes`:
   - request-kind growth may outpace contract normalization unless centralized.
 
@@ -103,9 +103,9 @@ Use the same template for every boundary:
 - `Evidence`:
   - `src/workflows/loader.ts`
   - `src/workflows/declarativeRequestCompiler.ts`
-  - `test/zotero/20-workflow-loader-validation.test.ts`
-  - `test/zotero/21-workflow-literature-digest.test.ts`
-  - `test/zotero/41-workflow-scan-registration.test.ts`
+  - `test/core/20-workflow-loader-validation.test.ts`
+  - `test/workflow-literature-digest/21-workflow-literature-digest.test.ts`
+  - `test/core/41-workflow-scan-registration.test.ts`
 - `Risk Notes`:
   - dual-runtime loading path increases compatibility complexity.
 
@@ -135,9 +135,9 @@ Use the same template for every boundary:
   - `src/modules/workflowEditorHost.ts`
   - `src/modules/workflowSettingsDialog.ts`
   - `src/modules/workflowSettings.ts`
-  - `test/zotero/44-workflow-editor-host.test.ts`
-  - `test/zotero/35-workflow-settings-execution.test.ts`
-  - `test/zotero/40-gui-preferences-menu-scan.test.ts`
+  - `test/ui/44-workflow-editor-host.test.ts`
+  - `test/ui/35-workflow-settings-execution.test.ts`
+  - `test/ui/40-gui-preferences-menu-scan.test.ts`
 - `Risk Notes`:
   - UI logic and schema/rendering logic are still heavily coupled in large files.
 
@@ -172,7 +172,7 @@ Scoring formula:
 | D-05 | Settings dialog mixes rendering, schema, data collect, persistence wiring | `src/modules/workflowSettingsDialog.ts` | 3 | 5 | 3 | P1 | Very large UI module |
 | D-06 | Global runtime dependencies are scattered | `src/hooks.ts`, `src/modules/workflowEditorHost.ts`, `src/index.ts` | 3 | 4 | 3 | P2 | `ztoolkit` and global bridge access pattern not centralized |
 | D-07 | Contract spread across provider contracts + request compiler + manifests | `src/providers/contracts.ts`, `src/workflows/declarativeRequestCompiler.ts`, `workflows/*/workflow.json` | 3 | 4 | 4 | P1 | Contract drift risk as kinds grow |
-| D-08 | Test taxonomy is file-number based, not domain-based | `test/zotero/*.test.ts`, `doc/testing-framework.md` | 3 | 4 | 5 | P1 | Hard to select risk-targeted gates |
+| D-08 | Test taxonomy is file-number based, not domain-based | `test/{core,ui,workflow-*}/*.test.ts`, `doc/testing-framework.md` | 3 | 4 | 5 | P1 | Hard to select risk-targeted gates |
 | D-09 | Mock/real API parity requires stronger governance | `test/setup/zotero-mock.ts`, archived bugfix changes | 4 | 3 | 4 | P1 | Regression escapes caused by runtime differences |
 | D-10 | Documentation structure is fragmented for hardening review | `doc/components/*.md`, `doc/architecture-flow.md` | 2 | 4 | 3 | P2 | Hard to map architecture docs to backlog actions |
 
@@ -258,3 +258,20 @@ Every hardening implementation change must pass all required checks:
   - `define-lite-full-suite-and-ci-gates`
   - `add-high-risk-smoke-and-regression-tests`
   - `improve-code-and-test-reviewability`
+
+## 7. HB-08 Completion Evidence (govern-zotero-mock-parity)
+
+- Governance contract and drift register:
+  - `doc/components/zotero-mock-parity.md`
+- Mock capability declaration + drift annotation entry:
+  - `test/setup/zotero-mock.ts` (`Zotero.__parity`)
+- First drift/parity test slice:
+  - `test/core/53-zotero-mock-parity-governance.test.ts`
+- Test strategy alignment updates:
+  - `doc/testing-framework.md`
+
+## 8. Baseline Reassessment Link
+
+Post-refactor residual risk reassessment (baseline-constrained) is published at:
+
+- `doc/architecture-hardening-baseline-reassessment.md`

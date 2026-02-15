@@ -1,6 +1,32 @@
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
 
+type TestDomain = "all" | "core" | "ui" | "workflow";
+
+function normalizeTestDomain(value: string | undefined): TestDomain {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "core" || normalized === "ui" || normalized === "workflow") {
+    return normalized;
+  }
+  return "all";
+}
+
+function resolveTestEntries(domain: TestDomain) {
+  if (domain === "core") {
+    return "test/core";
+  }
+  if (domain === "ui") {
+    return "test/ui";
+  }
+  if (domain === "workflow") {
+    return "test/workflow-*";
+  }
+  return "test";
+}
+
+const TEST_DOMAIN = normalizeTestDomain(process.env.ZOTERO_TEST_DOMAIN);
+const TEST_ENTRIES = resolveTestEntries(TEST_DOMAIN);
+
 export default defineConfig({
   source: ["src", "addon"],
   dist: ".scaffold/build",
@@ -40,7 +66,7 @@ export default defineConfig({
   },
 
   test: {
-    entries: "test/zotero",
+    entries: TEST_ENTRIES,
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
   },
 

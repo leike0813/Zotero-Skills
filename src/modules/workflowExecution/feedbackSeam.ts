@@ -4,6 +4,11 @@ import {
   buildWorkflowStartToastMessage,
   type WorkflowMessageFormatter,
 } from "../workflowExecuteMessage";
+import {
+  resolveAddonName,
+  resolveRuntimeAlert,
+  resolveToolkitMember,
+} from "../../utils/runtimeBridge";
 import type { WorkflowJobOutcome, WorkflowToastPayload } from "./contracts";
 
 type ProgressWindowInstance = {
@@ -22,17 +27,7 @@ type ProgressWindowCtor = new (
 ) => ProgressWindowInstance;
 
 function resolveProgressWindowCtor() {
-  const runtime = globalThis as unknown as {
-    ztoolkit?: { ProgressWindow?: ProgressWindowCtor };
-  };
-  const fromGlobalVar =
-    typeof ztoolkit !== "undefined" ? ztoolkit?.ProgressWindow : undefined;
-  const fromAddon =
-    typeof addon !== "undefined"
-      ? addon?.data?.ztoolkit?.ProgressWindow
-      : undefined;
-  const fromGlobalThis = runtime.ztoolkit?.ProgressWindow;
-  return fromGlobalVar || fromAddon || fromGlobalThis;
+  return resolveToolkitMember<ProgressWindowCtor>("ProgressWindow");
 }
 
 export function showWorkflowToast(payload: WorkflowToastPayload) {
@@ -40,9 +35,7 @@ export function showWorkflowToast(payload: WorkflowToastPayload) {
   if (!ProgressWindow) {
     return;
   }
-  const addonName =
-    (typeof addon !== "undefined" && addon?.data?.config?.addonName) ||
-    "Zotero Skills";
+  const addonName = resolveAddonName("Zotero Skills");
   try {
     const win = new ProgressWindow(addonName, {
       closeOnClick: true,
@@ -64,14 +57,15 @@ export function showWorkflowToast(payload: WorkflowToastPayload) {
 }
 
 export function alertWindow(win: _ZoteroTypes.MainWindow, message: string) {
-  if (typeof win.alert === "function") {
-    win.alert(message);
-    return;
+  const alertFn = resolveRuntimeAlert(win);
+  if (alertFn) {
+    alertFn(message);
+  } else {
+    showWorkflowToast({
+      text: message,
+      type: "default",
+    });
   }
-  showWorkflowToast({
-    text: message,
-    type: "default",
-  });
 }
 
 type FeedbackDeps = {

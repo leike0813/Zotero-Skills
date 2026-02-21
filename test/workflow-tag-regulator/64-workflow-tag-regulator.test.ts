@@ -340,41 +340,56 @@ describe("workflow: tag-regulator", function () {
     })) as TagRegulatorRequest[];
     assert.lengthOf(requests, 1);
 
-    const applied = (await executeApplyResult({
-      workflow,
-      parent,
-      bundleReader: {
-        readText: async () => "",
-      },
-      request: requests[0],
-      runResult: {
-        resultJson: {
-          result: {
-            status: "success",
-            data: {
-              metadata: requests[0].input?.metadata || {},
-              input_tags: requests[0].input?.input_tags || [],
-              remove_tags: ["topic:legacy"],
-              add_tags: ["topic:tunnel"],
-              suggest_tags: [
-                { tag: "topic:suggested", note: "suggested note" },
-              ],
-              warnings: ["heuristic"],
-              error: null,
-            },
-            artifacts: [],
-            validation_warnings: [],
-            error: null,
-          },
-        },
-      },
-    })) as {
+    const restoreOpen = installSuggestTagsDialogMock(async () => ({
+      saved: false,
+      reason: "test-skip-suggest-dialog",
+    }));
+    let applied: {
       applied: boolean;
       removed: string[];
       added: string[];
       suggest_tags: SuggestTagEntry[];
       warnings: string[];
     };
+    try {
+      applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        request: requests[0],
+        runResult: {
+          resultJson: {
+            result: {
+              status: "success",
+              data: {
+                metadata: requests[0].input?.metadata || {},
+                input_tags: requests[0].input?.input_tags || [],
+                remove_tags: ["topic:legacy"],
+                add_tags: ["topic:tunnel"],
+                suggest_tags: [
+                  { tag: "topic:suggested", note: "suggested note" },
+                ],
+                warnings: ["heuristic"],
+                error: null,
+              },
+              artifacts: [],
+              validation_warnings: [],
+              error: null,
+            },
+          },
+        },
+      })) as {
+        applied: boolean;
+        removed: string[];
+        added: string[];
+        suggest_tags: SuggestTagEntry[];
+        warnings: string[];
+      };
+    } finally {
+      restoreOpen();
+    }
 
     assert.isTrue(applied.applied);
     assert.deepEqual(applied.removed, ["topic:legacy"]);
@@ -897,73 +912,87 @@ describe("workflow: tag-regulator", function () {
     ]);
 
     const workflow = await getTagRegulatorWorkflow();
-    const applied = (await executeApplyResult({
-      workflow,
-      parent,
-      bundleReader: {
-        readText: async () => "",
-      },
-      runResult: {
-        resultJson: {
-          request_id: "req-live-shape",
-          result: {
-            status: "success",
-            data: {
-              metadata: {
-                key: "KSM65VAD",
-                title: "MOTR: end-to-end multiple-object tracking with transformer",
-              },
-              input_tags: [
-                "/unread",
-                "End-to-End",
-                "Multiple-object tracking",
-                "Transformer",
-              ],
-              remove_tags: [
-                "/unread",
-                "End-to-End",
-                "Multiple-object tracking",
-                "Transformer",
-              ],
-              add_tags: [
-                "ai_task:tracking",
-                "data:video",
-                "field:CS/AI/CV",
-                "model:DL/transformer",
-              ],
-              suggest_tags: [
-                {
-                  tag: "topic:end-to-end",
-                  note: "end-to-end topic",
-                },
-                {
-                  tag: "topic:multiple-object-tracking",
-                  note: "multiple-object-tracking topic",
-                },
-              ],
-              warnings: [
-                "Inferred tags based on title and abstract.",
-                "Mapped 'Multiple-object tracking' to 'ai_task:tracking'.",
-              ],
-              error: null,
-            },
-            artifacts: [],
-            validation_warnings: ["OUTPUT_REPAIRED_GENERIC"],
-            error: null,
-          },
-        },
-        responseJson: {
-          status: "succeeded",
-          warnings: ["OUTPUT_REPAIRED_GENERIC"],
-          error: null,
-        },
-      },
-    })) as {
+    const restoreOpen = installSuggestTagsDialogMock(async () => ({
+      saved: false,
+      reason: "test-skip-suggest-dialog",
+    }));
+    let applied: {
       applied: boolean;
       skipped: boolean;
       removed: string[];
       added: string[];
     };
+    try {
+      applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        runResult: {
+          resultJson: {
+            request_id: "req-live-shape",
+            result: {
+              status: "success",
+              data: {
+                metadata: {
+                  key: "KSM65VAD",
+                  title: "MOTR: end-to-end multiple-object tracking with transformer",
+                },
+                input_tags: [
+                  "/unread",
+                  "End-to-End",
+                  "Multiple-object tracking",
+                  "Transformer",
+                ],
+                remove_tags: [
+                  "/unread",
+                  "End-to-End",
+                  "Multiple-object tracking",
+                  "Transformer",
+                ],
+                add_tags: [
+                  "ai_task:tracking",
+                  "data:video",
+                  "field:CS/AI/CV",
+                  "model:DL/transformer",
+                ],
+                suggest_tags: [
+                  {
+                    tag: "topic:end-to-end",
+                    note: "end-to-end topic",
+                  },
+                  {
+                    tag: "topic:multiple-object-tracking",
+                    note: "multiple-object-tracking topic",
+                  },
+                ],
+                warnings: [
+                  "Inferred tags based on title and abstract.",
+                  "Mapped 'Multiple-object tracking' to 'ai_task:tracking'.",
+                ],
+                error: null,
+              },
+              artifacts: [],
+              validation_warnings: ["OUTPUT_REPAIRED_GENERIC"],
+              error: null,
+            },
+          },
+          responseJson: {
+            status: "succeeded",
+            warnings: ["OUTPUT_REPAIRED_GENERIC"],
+            error: null,
+          },
+        },
+      })) as {
+        applied: boolean;
+        skipped: boolean;
+        removed: string[];
+        added: string[];
+      };
+    } finally {
+      restoreOpen();
+    }
 
     assert.isTrue(applied.applied);
     assert.isFalse(applied.skipped);

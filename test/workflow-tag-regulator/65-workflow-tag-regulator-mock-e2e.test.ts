@@ -16,6 +16,45 @@ type PersistedTagEntry = {
   deprecated: boolean;
 };
 
+type SuggestTagEntry = {
+  tag: string;
+  note: string;
+};
+
+type SuggestTagsDialogOpenArgs = {
+  rendererId?: string;
+  title?: string;
+  initialState?: {
+    suggestTagEntries?: SuggestTagEntry[];
+    selectedTags?: string[];
+  };
+  labels?: {
+    save?: string;
+    cancel?: string;
+  };
+};
+
+type SuggestTagsDialogOpenResult = {
+  saved: boolean;
+  result?: unknown;
+  reason?: string;
+};
+
+type RuntimeWithEditorBridge = typeof globalThis & {
+  __zsWorkflowEditorHostOpen?: (
+    args: SuggestTagsDialogOpenArgs,
+  ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult;
+  addon?: {
+    data?: {
+      workflowEditorHost?: {
+        open?: (
+          args: SuggestTagsDialogOpenArgs,
+        ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult;
+      };
+    };
+  };
+};
+
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
 const MOCK_SKILLRUNNER_BASE_URL =
   (typeof process !== "undefined" &&
@@ -35,6 +74,32 @@ function saveTagVocabularyState(entries: PersistedTagEntry[]) {
     }),
     true,
   );
+}
+
+function installSuggestTagsDialogMock(
+  mockOpen: (
+    args: SuggestTagsDialogOpenArgs,
+  ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult,
+) {
+  const runtime = globalThis as RuntimeWithEditorBridge;
+  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
+  const addonObj = (runtime.addon || {}) as NonNullable<
+    RuntimeWithEditorBridge["addon"]
+  >;
+  if (!addonObj.data) {
+    addonObj.data = {};
+  }
+  if (!addonObj.data.workflowEditorHost) {
+    addonObj.data.workflowEditorHost = {};
+  }
+  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
+  addonObj.data.workflowEditorHost.open = mockOpen;
+  runtime.__zsWorkflowEditorHostOpen = mockOpen;
+  runtime.addon = addonObj;
+  return () => {
+    runtime.__zsWorkflowEditorHostOpen = prevGlobal;
+    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+  };
 }
 
 function listTags(item: Zotero.Item) {
@@ -119,11 +184,18 @@ describe("integration: tag-regulator with mock skill-runner", function () {
       },
       alert: (message: string) => alerts.push(message),
     } as unknown as _ZoteroTypes.MainWindow;
-
-    await executeWorkflowFromCurrentSelection({
-      win,
-      workflow,
-    });
+    const restoreOpen = installSuggestTagsDialogMock(async () => ({
+      saved: false,
+      reason: "test-skip-suggest-dialog",
+    }));
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreOpen();
+    }
 
     assert.lengthOf(alerts, 1);
     expectWorkflowSummaryCounter(alerts[0], "succeeded", 1);

@@ -32,6 +32,8 @@ Zotero-Skills 是一个面向 Zotero 7 的插件，它将 Zotero 变成一个可
 - 可隔离：工作流特定逻辑留在各自工作流包中。
 - 可复用：共享统一的 runtime、队列、配置与 UI 行为。
 
+当前工作流声明还支持“推荐枚举 + 可自定义输入”的参数模式（`allowCustom`），例如语言参数可下拉选择，也可手动输入符合规范的值。
+
 ## Agent Skills 依赖 Skill-Runner
 
 对于 Agent Skills 调用，Zotero-Skills 依赖 [Skill-Runner](https://github.com/leike0813/Skill-Runner) 作为后端编排层：
@@ -53,8 +55,11 @@ Zotero-Skills 是一个面向 Zotero 7 的插件，它将 Zotero 变成一个可
 ## 典型使用场景（内建工作流）
 
 - 文献摘要工作流：从选中的 markdown/PDF 上下文生成 digest/reference 笔记。
-- 参考文献匹配工作流：将参考文献匹配为 citekey 并回写结构化 payload。
+- 参考文献匹配工作流：将参考文献匹配为 citekey，回写结构化 payload，并以幂等方式更新父条目的 related items。
+- 参考文献编辑工作流：在独立编辑窗口中维护参考文献条目，并重写同步后的表格与 payload。
 - MinerU 工作流：解析选中的 PDF 附件，物化 markdown/资源并挂载到父条目。
+- Tag 管理工作流：打开受控词表管理面板，支持标签增删改查、facet 过滤、YAML 导入与导出。
+- Tag 规整工作流：调用 Skill-Runner 对父条目标签做规范化增删，并可将 `suggest_tags` 以 `source=agent-suggest` 方式纳入受控词表。
 
 ## 快速导航
 

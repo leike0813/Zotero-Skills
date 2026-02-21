@@ -32,6 +32,8 @@ Key benefits:
 - Isolation: workflow-specific logic stays inside workflow packages.
 - Reuse: shared runtime, queue, settings, and UI behavior across different workflows.
 
+Current workflow manifest capabilities include configurable parameters with recommended enums plus editable custom input (`allowCustom`) for cases like language selection.
+
 ## Agent Skills Require Skill-Runner
 
 For Agent Skills invocation, Zotero-Skills depends on [Skill-Runner](https://github.com/leike0813/Skill-Runner) as backend orchestration:
@@ -53,9 +55,11 @@ This architecture helps control LLM usage cost:
 ## Typical Use Cases (Built-in Workflows)
 
 - Literature digest workflow: generate digest/reference notes from selected markdown context.
-- Reference matching workflow: resolve references to citekeys and write back structured note payload.
+- Reference matching workflow: resolve references to citekeys, rewrite structured note payload, and update parent related items idempotently.
 - Reference note editor workflow: edit structured reference payload in a dedicated form dialog and rewrite synchronized table+payload.
 - MinerU workflow: parse selected PDF attachments, materialize markdown/assets, and attach outputs to parent items.
+- Tag manager workflow: open an editor panel for controlled tag vocabulary CRUD, filtering, import (YAML), and export.
+- Tag regulator workflow: call Skill-Runner to normalize parent tags, apply add/remove safely, and optionally intake `suggest_tags` into controlled vocabulary with `source=agent-suggest`.
 
 ## Quick Navigation
 

@@ -75,6 +75,12 @@ function validateSkillRunnerJobPayload(request: unknown) {
   if (!Array.isArray(request.upload_files) || request.upload_files.length === 0) {
     return "payload.upload_files must be non-empty array";
   }
+  if (
+    typeof request.input !== "undefined" &&
+    !isObject(request.input)
+  ) {
+    return "payload.input must be object when provided";
+  }
   return null;
 }
 

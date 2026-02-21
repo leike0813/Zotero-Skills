@@ -1,0 +1,15 @@
+{
+  "id": "tag-manager",
+  "label": "Tag Manager",
+  "version": "0.1.0",
+  "provider": "pass-through",
+  "execution": {
+    "feedback": {
+      "showNotifications": false
+    }
+  },
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.js",
+    "applyResult": "hooks/applyResult.js"
+  }
+}

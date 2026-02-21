@@ -3,6 +3,8 @@ import {
   DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
   PASS_THROUGH_BACKEND_TYPE,
 } from "../config/defaults";
+import Ajv, { type ErrorObject, type ValidateFunction } from "ajv/dist/2020";
+import workflowManifestSchema from "../schemas/workflow.schema.json";
 
 export type LoaderDiagnosticLevel = "warning" | "error";
 
@@ -53,91 +55,53 @@ export class WorkflowLoaderDiagnosticError extends Error {
   }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
+const ajvLogger = {
+  log: () => {},
+  warn: () => {},
+  error: () => {},
+};
+let validateWorkflowManifestSchema: ValidateFunction<WorkflowManifest> | null =
+  null;
+
+function getWorkflowManifestValidator() {
+  if (!validateWorkflowManifestSchema) {
+    const ajv = new Ajv({
+      allErrors: true,
+      strict: true,
+      $data: true,
+      logger: ajvLogger,
+    });
+    validateWorkflowManifestSchema =
+      ajv.compile<WorkflowManifest>(workflowManifestSchema);
+  }
+  return validateWorkflowManifestSchema;
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
+function formatManifestValidationError(
+  error: ErrorObject<string, Record<string, unknown>, unknown>,
+) {
+  const path = error.instancePath || "/";
+  if (error.keyword === "required") {
+    const missing = String(error.params?.missingProperty || "");
+    return `${path} missing required property "${missing}"`;
+  }
+  if (error.keyword === "additionalProperties") {
+    const additional = String(error.params?.additionalProperty || "");
+    return `${path} unexpected property "${additional}"`;
+  }
+  if (error.keyword === "false schema") {
+    return `${path} uses deprecated field`;
+  }
+  return `${path} ${error.message || "schema mismatch"}`;
 }
 
-function isValidParameterSchema(
-  value: unknown,
-): value is import("./types").WorkflowParameterSchema {
-  if (!isObject(value)) {
-    return false;
+function describeManifestValidationErrors(
+  errors: ErrorObject<string, Record<string, unknown>, unknown>[] | null | undefined,
+) {
+  if (!errors || errors.length === 0) {
+    return "manifest schema mismatch";
   }
-  const type = value.type;
-  if (type !== "string" && type !== "number" && type !== "boolean") {
-    return false;
-  }
-  if (
-    typeof value.min !== "undefined" &&
-    (typeof value.min !== "number" || !Number.isFinite(value.min))
-  ) {
-    return false;
-  }
-  if (
-    typeof value.max !== "undefined" &&
-    (typeof value.max !== "number" || !Number.isFinite(value.max))
-  ) {
-    return false;
-  }
-  if (
-    typeof value.min === "number" &&
-    typeof value.max === "number" &&
-    value.min > value.max
-  ) {
-    return false;
-  }
-  if (
-    typeof value.enum !== "undefined" &&
-    (!Array.isArray(value.enum) || value.enum.length === 0)
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function hasValidParameters(value: unknown) {
-  if (typeof value === "undefined") {
-    return true;
-  }
-  if (!isObject(value)) {
-    return false;
-  }
-  for (const entry of Object.values(value)) {
-    if (!isValidParameterSchema(entry)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasDeprecatedWorkflowFields(value: Record<string, unknown>) {
-  if (typeof value.backend !== "undefined") {
-    return true;
-  }
-  if (typeof value.defaults !== "undefined") {
-    return true;
-  }
-  const request = value.request;
-  if (!isObject(request)) {
-    return false;
-  }
-  if (typeof request.result !== "undefined") {
-    return true;
-  }
-  const create = request.create;
-  if (!isObject(create)) {
-    return false;
-  }
-  return (
-    typeof create.engine !== "undefined" ||
-    typeof create.parameter !== "undefined" ||
-    typeof create.model !== "undefined" ||
-    typeof create.runtime_options !== "undefined"
-  );
+  return errors.map(formatManifestValidationError).join("; ");
 }
 
 export function inferProviderFromRequestKind(kind: string) {
@@ -200,7 +164,8 @@ export function parseWorkflowManifestFromText(args: {
       }),
     };
   }
-  if (!isManifestLike(parsed)) {
+  const validate = getWorkflowManifestValidator();
+  if (!validate(parsed)) {
     return {
       manifest: null,
       diagnostic: createLoaderDiagnostic({
@@ -208,7 +173,7 @@ export function parseWorkflowManifestFromText(args: {
         category: "manifest_validation_error",
         message: `Invalid workflow manifest: ${args.manifestPath}`,
         path: args.manifestPath,
-        reason: "manifest schema mismatch",
+        reason: describeManifestValidationErrors(validate.errors),
       }),
     };
   }
@@ -216,22 +181,6 @@ export function parseWorkflowManifestFromText(args: {
     manifest: normalizeManifestProvider(parsed),
     diagnostic: null,
   };
-}
-
-function isManifestLike(value: unknown): value is WorkflowManifest {
-  if (!isObject(value)) {
-    return false;
-  }
-  if (hasDeprecatedWorkflowFields(value)) {
-    return false;
-  }
-  return (
-    isNonEmptyString(value.id) &&
-    isNonEmptyString(value.label) &&
-    isObject(value.hooks) &&
-    isNonEmptyString(value.hooks.applyResult) &&
-    hasValidParameters(value.parameters)
-  );
 }
 
 export function createLoaderDiagnostic(

@@ -2,9 +2,7 @@
 
 ## Purpose
 TBD - created by archiving change decouple-workflow-settings-domain. Update Purpose after archive.
-
 ## Requirements
-
 ### Requirement: Workflow settings domain SHALL be isolated from dialog rendering
 Settings persistence, normalization, and execution-merge logic MUST be exposed via domain contracts independent of UI/dialog rendering code.
 
@@ -35,3 +33,19 @@ Domain contracts MUST support regression testing without requiring dialog render
 #### Scenario: Domain-level parity test
 - **WHEN** tests call settings-domain APIs directly
 - **THEN** they can verify normalization, merge precedence, and reset-on-open semantics without opening dialog UI
+
+### Requirement: Workflow parameter normalization SHALL support enum-as-recommendation when allowCustom is enabled
+Workflow settings domain normalization MUST preserve custom string inputs for enum-backed parameters when the manifest explicitly enables `allowCustom`.
+
+#### Scenario: Custom string survives enum normalization with allowCustom=true
+- **WHEN** workflow parameter schema is `type=string`, `enum=[...]`, and `allowCustom=true`
+- **AND** user-provided value is a non-empty string outside enum
+- **THEN** normalized workflow params SHALL keep the provided value
+- **AND** value SHALL still pass string-type normalization path
+
+#### Scenario: Strict enum remains default
+- **WHEN** workflow parameter schema is `type=string`, `enum=[...]`, and `allowCustom` is missing or false
+- **AND** user-provided value is outside enum
+- **THEN** normalization SHALL reject the out-of-enum value
+- **AND** fallback behavior SHALL remain unchanged (default value or omission)
+

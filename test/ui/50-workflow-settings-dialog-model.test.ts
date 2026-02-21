@@ -53,6 +53,7 @@ describe("workflow settings dialog model", function () {
         type: "string" as const,
         title: "Matching Mode",
         enum: ["strict", "fuzzy"],
+        allowCustom: true,
         default: "strict",
       },
     };
@@ -88,6 +89,10 @@ describe("workflow settings dialog model", function () {
       (c.persistedWorkflowParams as Record<string, unknown>).bbtPort,
       23124,
     );
+    const modeEntry = c.workflowSchemaEntries.find((entry) => entry.key === "mode");
+    assert.isOk(modeEntry);
+    assert.equal(modeEntry?.allowCustom, true);
+    assert.deepEqual(modeEntry?.enumValues || [], ["strict", "fuzzy"]);
   });
 
   it("collects schema values with correct coercion", function () {
@@ -200,6 +205,30 @@ describe("workflow settings dialog model", function () {
         workflowParams: { bbtPort: 25000 },
         providerOptions: { model: "gpt-4.1-mini" },
       },
+    });
+  });
+
+  it("collects editable enum value from custom input as final payload", function () {
+    const controls: FakeControl[] = [
+      makeControl(
+        {
+          "data-zs-choice-control": "1",
+          "data-zs-choice-value": "en-US",
+        },
+        {},
+      ),
+      makeControl(
+        {
+          "data-zs-option-key": "language",
+          "data-zs-option-type": "string",
+        },
+        { value: "fr-FR" },
+      ),
+    ];
+
+    const result = collectSchemaValues(makeContainer(controls));
+    assert.deepEqual(result, {
+      language: "fr-FR",
     });
   });
 });

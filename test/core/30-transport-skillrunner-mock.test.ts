@@ -154,10 +154,15 @@ describe("transport: skillrunner mock", function () {
       assert.isUndefined(result.bundleBytes);
       assert.deepEqual(result.resultJson, {
         request_id: result.requestId,
-        status: "succeeded",
-        data: {
-          digest_path: "digest.md",
-          references_path: "references.json",
+        result: {
+          status: "success",
+          data: {
+            digest_path: "digest.md",
+            references_path: "references.json",
+          },
+          artifacts: [],
+          validation_warnings: [],
+          error: null,
         },
       });
     } catch (error) {

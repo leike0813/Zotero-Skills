@@ -14,6 +14,7 @@ import type {
 } from "./contracts";
 import { alertWindow } from "./feedbackSeam";
 import { localizeWorkflowText } from "./messageFormatter";
+import { shouldShowWorkflowNotifications } from "./feedbackPolicy";
 
 function isNoValidInputUnitsError(error: unknown) {
   if (
@@ -164,19 +165,21 @@ export async function runWorkflowPreparationSeam(args: {
           `[workflow-execute] skipped workflow=${args.workflow.manifest.id} reason=no-valid-input-units`,
         );
       }
-      resolved.alertWindow(
-        args.win,
-        buildWorkflowFinishMessage(
-          {
-            workflowLabel: args.workflow.manifest.label,
-            succeeded: 0,
-            failed: 0,
-            skipped: skippedUnits,
-            failureReasons: [],
-          },
-          args.messageFormatter,
-        ),
-      );
+      if (shouldShowWorkflowNotifications(args.workflow.manifest)) {
+        resolved.alertWindow(
+          args.win,
+          buildWorkflowFinishMessage(
+            {
+              workflowLabel: args.workflow.manifest.label,
+              succeeded: 0,
+              failed: 0,
+              skipped: skippedUnits,
+              failureReasons: [],
+            },
+            args.messageFormatter,
+          ),
+        );
+      }
       return {
         status: "halted",
       };
@@ -218,19 +221,21 @@ export async function runWorkflowPreparationSeam(args: {
         skippedUnits: Math.max(1, skippedByFilter),
       },
     });
-    resolved.alertWindow(
-      args.win,
-      buildWorkflowFinishMessage(
-        {
-          workflowLabel: args.workflow.manifest.label,
-          succeeded: 0,
-          failed: 0,
-          skipped: Math.max(1, skippedByFilter),
-          failureReasons: [],
-        },
-        args.messageFormatter,
-      ),
-    );
+    if (shouldShowWorkflowNotifications(args.workflow.manifest)) {
+      resolved.alertWindow(
+        args.win,
+        buildWorkflowFinishMessage(
+          {
+            workflowLabel: args.workflow.manifest.label,
+            succeeded: 0,
+            failed: 0,
+            skipped: Math.max(1, skippedByFilter),
+            failureReasons: [],
+          },
+          args.messageFormatter,
+        ),
+      );
+    }
     return {
       status: "halted",
     };

@@ -226,6 +226,93 @@ describe("provider/backend registry", function () {
     assert.equal(executeCalled, 0, "provider.execute should not be called");
   });
 
+  it("accepts optional inline input object for skillrunner.job.v1 payload", async function () {
+    const originalProvider = resolveProviderById("skillrunner");
+    let executeCalled = 0;
+    let capturedRequest: unknown;
+    const stubProvider: Provider = {
+      id: "skillrunner",
+      supports: ({ requestKind, backend }) =>
+        backend.type === "skillrunner" && requestKind === "skillrunner.job.v1",
+      execute: async (args) => {
+        executeCalled += 1;
+        capturedRequest = args.request;
+        return {
+          status: "succeeded",
+          requestId: "stub-skillrunner",
+          fetchType: "result",
+          resultJson: {},
+          responseJson: {},
+        };
+      },
+    };
+    registerProvider(stubProvider);
+
+    try {
+      const result = await executeWithProvider({
+        requestKind: "skillrunner.job.v1",
+        backend: {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          upload_files: [{ key: "md_path", path: "D:/fixtures/example.md" }],
+          parameter: { language: "zh-CN" },
+          input: {
+            metadata: { itemKey: "AAA111" },
+            tags: ["A", "B"],
+          },
+        },
+      });
+      assert.equal(result.status, "succeeded");
+    } finally {
+      registerProvider(originalProvider);
+    }
+
+    assert.equal(executeCalled, 1, "provider.execute should be called once");
+    assert.deepEqual(
+      (capturedRequest as { input?: unknown })?.input,
+      {
+        metadata: { itemKey: "AAA111" },
+        tags: ["A", "B"],
+      },
+      `capturedRequest=${JSON.stringify(capturedRequest)}`,
+    );
+  });
+
+  it("rejects skillrunner.job.v1 payload when inline input is not object", async function () {
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: "skillrunner.job.v1",
+        backend: {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          upload_files: [{ key: "md_path", path: "D:/fixtures/example.md" }],
+          input: "not-object",
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.match(String(typed.detail || ""), /payload\.input must be object/i);
+  });
+
   it("validates single-request payload contract for generic-http.request.v1", async function () {
     let thrown: unknown;
     try {

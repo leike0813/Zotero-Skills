@@ -93,8 +93,11 @@ export function normalizeWorkflowParamsBySchema(
       if (typeof coerced === "undefined") {
         return undefined;
       }
+      const enumIsStrict = !(
+        schema.type === "string" && schema.allowCustom === true
+      );
       if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-        if (!schema.enum.some((candidate) => candidate === coerced)) {
+        if (enumIsStrict && !schema.enum.some((candidate) => candidate === coerced)) {
           return undefined;
         }
       }

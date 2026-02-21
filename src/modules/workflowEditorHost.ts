@@ -96,6 +96,122 @@ function resolveDialogCtor() {
   return resolveToolkitMember<DialogCtor>("Dialog");
 }
 
+function serializeEditorResult(args: {
+  renderer: WorkflowEditorRenderer;
+  state: unknown;
+  context: unknown;
+}) {
+  return typeof args.renderer.serialize === "function"
+    ? args.renderer.serialize({
+        state: args.state,
+        context: args.context,
+      })
+    : cloneSerializable(args.state);
+}
+
+function toComparableSnapshot(value: unknown) {
+  try {
+    const encoded = JSON.stringify(value);
+    if (typeof encoded === "string") {
+      return encoded;
+    }
+    return `__primitive__:${String(encoded)}`;
+  } catch {
+    return null;
+  }
+}
+
+function hasUnsavedChanges(args: {
+  renderer: WorkflowEditorRenderer;
+  state: unknown;
+  context: unknown;
+  initialSnapshot: string | null;
+}) {
+  if (args.initialSnapshot === null) {
+    return true;
+  }
+  let currentResult: unknown;
+  try {
+    currentResult = serializeEditorResult({
+      renderer: args.renderer,
+      state: args.state,
+      context: args.context,
+    });
+  } catch {
+    return true;
+  }
+  const currentSnapshot = toComparableSnapshot(currentResult);
+  if (currentSnapshot === null) {
+    return true;
+  }
+  return currentSnapshot !== args.initialSnapshot;
+}
+
+function resolveDirtyCloseDecision(args: {
+  win: _ZoteroTypes.MainWindow | null;
+  title: string;
+  message: string;
+  saveLabel: string;
+  discardLabel: string;
+  cancelLabel: string;
+}) {
+  const runtime = globalThis as {
+    Zotero?: {
+      Prompt?: {
+        BUTTON_TITLE_SAVE?: number;
+        BUTTON_TITLE_DONT_SAVE?: number;
+        BUTTON_TITLE_CANCEL?: number;
+        confirm?: (args: {
+          window?: _ZoteroTypes.MainWindow | null;
+          title: string;
+          text: string;
+          button0: string | number;
+          button1: string | number;
+          button2?: string | number;
+          defaultButton: number;
+        }) => number;
+      };
+    };
+  };
+  try {
+    const prompt = runtime.Zotero?.Prompt;
+    if (prompt && typeof prompt.confirm === "function") {
+      const clicked = prompt.confirm({
+        window: args.win || null,
+        title: args.title,
+        text: args.message,
+        button0: prompt.BUTTON_TITLE_SAVE ?? args.saveLabel,
+        button1: prompt.BUTTON_TITLE_DONT_SAVE ?? args.discardLabel,
+        button2: prompt.BUTTON_TITLE_CANCEL ?? args.cancelLabel,
+        defaultButton: 0,
+      });
+      if (clicked === 0) {
+        return "save" as const;
+      }
+      if (clicked === 1) {
+        return "discard" as const;
+      }
+      return "cancel" as const;
+    }
+  } catch {
+    // ignore and fallback to window.confirm
+  }
+  if (args.win && typeof args.win.confirm === "function") {
+    if (args.win.confirm(`${args.title}\n\n${args.message}`)) {
+      return "save" as const;
+    }
+    if (
+      args.win.confirm(
+        `${args.title}\n\nDiscard changes and close?\n\n(OK = Discard, Cancel = Keep Editing)`,
+      )
+    ) {
+      return "discard" as const;
+    }
+    return "cancel" as const;
+  }
+  return "cancel" as const;
+}
+
 function normalizeNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -166,6 +282,18 @@ async function openDialogSession(
 
   const state = cloneSerializable(args.initialState);
   const context = cloneSerializable(args.context);
+  let initialSnapshot: string | null = null;
+  try {
+    initialSnapshot = toComparableSnapshot(
+      serializeEditorResult({
+        renderer,
+        state,
+        context,
+      }),
+    );
+  } catch {
+    initialSnapshot = null;
+  }
 
   const dialogData: Record<string, unknown> = {
     loadCallback: () => {
@@ -204,11 +332,46 @@ async function openDialogSession(
       (root as HTMLElement).style.maxHeight = `${layout.maxHeight - 120}px`;
       (root as HTMLElement).style.boxSizing = "border-box";
       (root as HTMLElement).style.padding = `${layout.padding}px`;
-      (root as HTMLElement).style.overflow = "hidden";
+      // Keep popups from native controls (e.g., <select>) usable inside editor renderers.
+      (root as HTMLElement).style.overflow = "visible";
 
       host.rerender();
     },
     unloadCallback: () => {},
+  };
+
+  let dialogWindow: _ZoteroTypes.MainWindow | null = null;
+  const closeDialogWith = (buttonId: "save" | "cancel" | "discard") => {
+    (dialogData as { _lastButtonId?: string })._lastButtonId = buttonId;
+    dialogWindow?.close?.();
+  };
+  const handleAttemptClose = () => {
+    const dirty = hasUnsavedChanges({
+      renderer,
+      state,
+      context,
+      initialSnapshot,
+    });
+    if (!dirty) {
+      closeDialogWith("cancel");
+      return;
+    }
+    const action = resolveDirtyCloseDecision({
+      win: dialogWindow,
+      title: String(args.title || "Workflow Editor"),
+      message: "You have unsaved changes. Save before closing?",
+      saveLabel: labels.save,
+      discardLabel: "Don't Save",
+      cancelLabel: "Cancel",
+    });
+    if (action === "save") {
+      closeDialogWith("save");
+      return;
+    }
+    if (action === "discard") {
+      closeDialogWith("discard");
+      return;
+    }
   };
 
   const dialog = new Dialog(1, 1)
@@ -221,9 +384,15 @@ async function openDialogSession(
       },
     })
     .addButton(labels.save, "save")
-    .addButton(labels.cancel, "cancel")
+    .addButton(labels.cancel, "cancel", {
+      noClose: true,
+      callback: () => {
+        handleAttemptClose();
+      },
+    })
     .setDialogData(dialogData)
     .open(String(args.title || "Workflow Editor"));
+  dialogWindow = (dialog as { window?: _ZoteroTypes.MainWindow }).window || null;
 
   addon.data.dialog = dialog as typeof addon.data.dialog;
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
@@ -233,20 +402,23 @@ async function openDialogSession(
   const clicked = String(
     (dialogData as { _lastButtonId?: string })._lastButtonId || "",
   ).trim();
+  if (clicked === "discard") {
+    return {
+      saved: false,
+      reason: "discarded",
+    };
+  }
   if (clicked !== "save") {
     return {
       saved: false,
       reason: "canceled",
     };
   }
-
-  const result =
-    typeof renderer.serialize === "function"
-      ? renderer.serialize({
-          state,
-          context,
-        })
-      : cloneSerializable(state);
+  const result = serializeEditorResult({
+    renderer,
+    state,
+    context,
+  });
   return {
     saved: true,
     result,

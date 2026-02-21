@@ -10,12 +10,16 @@ import {
   emitWorkflowStartToast,
 } from "./workflowExecution/feedbackSeam";
 import { createLocalizedMessageFormatter } from "./workflowExecution/messageFormatter";
+import { shouldShowWorkflowNotifications } from "./workflowExecution/feedbackPolicy";
 
 export async function executeWorkflowFromCurrentSelection(args: {
   win: _ZoteroTypes.MainWindow;
   workflow: LoadedWorkflow;
 }) {
   const messageFormatter = createLocalizedMessageFormatter();
+  const showWorkflowNotifications = shouldShowWorkflowNotifications(
+    args.workflow.manifest,
+  );
   const preparation = await runWorkflowPreparationSeam({
     win: args.win,
     workflow: args.workflow,
@@ -46,15 +50,17 @@ export async function executeWorkflowFromCurrentSelection(args: {
         skippedByDuplicate: skippedByGuard,
       },
     });
-    emitWorkflowFinishSummary({
-      win: args.win,
-      workflowLabel: args.workflow.manifest.label,
-      succeeded: 0,
-      failed: 0,
-      skipped: totalSkipped,
-      failureReasons: [],
-      messageFormatter,
-    });
+    if (showWorkflowNotifications) {
+      emitWorkflowFinishSummary({
+        win: args.win,
+        workflowLabel: args.workflow.manifest.label,
+        succeeded: 0,
+        failed: 0,
+        skipped: totalSkipped,
+        failureReasons: [],
+        messageFormatter,
+      });
+    }
     return;
   }
 
@@ -64,11 +70,13 @@ export async function executeWorkflowFromCurrentSelection(args: {
       requests: duplicateGuard.allowedRequests,
     },
   });
-  emitWorkflowStartToast({
-    workflowLabel: args.workflow.manifest.label,
-    totalJobs: runState.totalJobs,
-    messageFormatter,
-  });
+  if (showWorkflowNotifications) {
+    emitWorkflowStartToast({
+      workflowLabel: args.workflow.manifest.label,
+      totalJobs: runState.totalJobs,
+      messageFormatter,
+    });
+  }
 
   await runState.idlePromise;
 
@@ -77,12 +85,14 @@ export async function executeWorkflowFromCurrentSelection(args: {
     messageFormatter,
   });
 
-  emitWorkflowJobToasts({
-    workflowLabel: args.workflow.manifest.label,
-    totalJobs: runState.totalJobs,
-    outcomes: applySummary.jobOutcomes,
-    messageFormatter,
-  });
+  if (showWorkflowNotifications) {
+    emitWorkflowJobToasts({
+      workflowLabel: args.workflow.manifest.label,
+      totalJobs: runState.totalJobs,
+      outcomes: applySummary.jobOutcomes,
+      messageFormatter,
+    });
+  }
 
   appendRuntimeLog({
     level: applySummary.failed > 0 ? "warn" : "info",
@@ -98,13 +108,15 @@ export async function executeWorkflowFromCurrentSelection(args: {
     },
   });
 
-  emitWorkflowFinishSummary({
-    win: args.win,
-    workflowLabel: args.workflow.manifest.label,
-    succeeded: applySummary.succeeded,
-    failed: applySummary.failed,
-    skipped: totalSkipped,
-    failureReasons: applySummary.failureReasons,
-    messageFormatter,
-  });
+  if (showWorkflowNotifications) {
+    emitWorkflowFinishSummary({
+      win: args.win,
+      workflowLabel: args.workflow.manifest.label,
+      succeeded: applySummary.succeeded,
+      failed: applySummary.failed,
+      skipped: totalSkipped,
+      failureReasons: applySummary.failureReasons,
+      messageFormatter,
+    });
+  }
 }

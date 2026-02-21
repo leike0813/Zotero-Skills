@@ -3,9 +3,13 @@
   "label": "Reference Note Editor",
   "version": "0.1.0",
   "provider": "pass-through",
+  "execution": {
+    "feedback": {
+      "showNotifications": false
+    }
+  },
   "hooks": {
     "filterInputs": "hooks/filterInputs.js",
     "applyResult": "hooks/applyResult.js"
   }
 }
-

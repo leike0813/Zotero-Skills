@@ -267,6 +267,12 @@ function buildSkillRunnerJobRequest(args: {
     executionOptions: args.executionOptions,
   });
   const fetchType = args.manifest.result?.fetch?.type || "bundle";
+  const declaredInput = isObject(request.input) ? request.input : null;
+  const inlineInput = declaredInput
+    ? Object.fromEntries(
+        Object.entries(declaredInput).filter(([key]) => key !== "upload"),
+      )
+    : {};
 
   const requestPayload: SkillRunnerJobRequestV1 = {
     kind: "skillrunner.job.v1",
@@ -276,6 +282,7 @@ function buildSkillRunnerJobRequest(args: {
     skill_id: skillId,
     upload_files: uploadFiles,
     parameter: workflowParams,
+    ...(Object.keys(inlineInput).length > 0 ? { input: inlineInput } : {}),
     poll: {
       interval_ms:
         request.poll?.interval_ms || args.manifest.execution?.poll_interval_ms,

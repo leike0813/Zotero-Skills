@@ -1322,6 +1322,110 @@ function resolveSelectedReferenceNote(runResult, runtime) {
   };
 }
 
+function resolveParentItemForReferenceNote(noteItem, runResult, runtime) {
+  const selectionParentId = runResult?.resultJson?.selectionContext?.items?.notes?.[0]?.parent?.id;
+  if (typeof selectionParentId === "number" && selectionParentId > 0) {
+    try {
+      return runtime.helpers.resolveItemRef(selectionParentId);
+    } catch {
+      return null;
+    }
+  }
+  const fallbackParentId =
+    (typeof noteItem?.parentItemID === "number" && noteItem.parentItemID > 0
+      ? noteItem.parentItemID
+      : null) ||
+    (typeof noteItem?.parentID === "number" && noteItem.parentID > 0
+      ? noteItem.parentID
+      : null);
+  if (typeof fallbackParentId === "number" && fallbackParentId > 0) {
+    try {
+      return runtime.helpers.resolveItemRef(fallbackParentId);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function listRelatedKeys(item) {
+  const raw = Array.isArray(item?.relatedItems) ? item.relatedItems : [];
+  return raw
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function resolveMatchedItem(candidate, runtime) {
+  const source = candidate?.item;
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const id = source.id;
+  if (typeof id === "number" && id > 0) {
+    try {
+      return runtime.helpers.resolveItemRef(id);
+    } catch {
+      return null;
+    }
+  }
+  const key = String(source.key || "").trim();
+  if (key) {
+    try {
+      return runtime.helpers.resolveItemRef(key);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function syncParentRelatedItems({
+  parentItem,
+  matchedCandidates,
+  runtime,
+}) {
+  const resolvedItemsByKey = new Map();
+  let unresolved = 0;
+  for (const candidate of matchedCandidates || []) {
+    const item = resolveMatchedItem(candidate, runtime);
+    if (!item) {
+      unresolved += 1;
+      continue;
+    }
+    const key = String(item.key || "").trim();
+    if (!key) {
+      unresolved += 1;
+      continue;
+    }
+    resolvedItemsByKey.set(key, item);
+  }
+  if (!parentItem) {
+    return {
+      added: 0,
+      existing: 0,
+      skipped: resolvedItemsByKey.size + unresolved,
+    };
+  }
+  const existingKeys = new Set(listRelatedKeys(parentItem));
+  const toAdd = [];
+  let existing = 0;
+  for (const [key, item] of resolvedItemsByKey.entries()) {
+    if (existingKeys.has(key)) {
+      existing += 1;
+      continue;
+    }
+    toAdd.push(item);
+  }
+  if (toAdd.length > 0) {
+    await runtime.handlers.parent.addRelated(parentItem, toAdd);
+  }
+  return {
+    added: toAdd.length,
+    existing,
+    skipped: unresolved,
+  };
+}
+
 export async function applyResult({ runResult, runtime }) {
   const parameter = runResult?.resultJson?.parameter || {};
   const dataSource = String(parameter?.data_source || "zotero-api").trim();
@@ -1337,6 +1441,7 @@ export async function applyResult({ runResult, runtime }) {
   const candidates = await collectLibraryCandidates(dataSource, parameter);
   const citekeyTemplate = resolveCitekeyTemplate(parameter);
   const citekeyIndex = buildCitekeyIndex(candidates);
+  const matchedCandidates = [];
 
   const nextReferences = references.map((reference) => {
     const explicit = resolveCandidateByCitekey(
@@ -1344,6 +1449,7 @@ export async function applyResult({ runResult, runtime }) {
       citekeyIndex,
     );
     if (explicit.candidate && explicit.candidate.citekey) {
+      matchedCandidates.push(explicit.candidate);
       return {
         ...(reference || {}),
         citekey: explicit.candidate.citekey,
@@ -1353,6 +1459,7 @@ export async function applyResult({ runResult, runtime }) {
     const predictedCitekey = buildPredictedCitekey(reference, citekeyTemplate);
     const predicted = resolveCandidateByCitekey(predictedCitekey, citekeyIndex);
     if (predicted.candidate && predicted.candidate.citekey) {
+      matchedCandidates.push(predicted.candidate);
       return {
         ...(reference || {}),
         citekey: predicted.candidate.citekey,
@@ -1366,6 +1473,7 @@ export async function applyResult({ runResult, runtime }) {
       delete cleared.citeKey;
       return cleared;
     }
+    matchedCandidates.push(selected);
     return {
       ...(reference || {}),
       citekey: selected.citekey,
@@ -1384,6 +1492,12 @@ export async function applyResult({ runResult, runtime }) {
   await runtime.handlers.note.update(noteItem, {
     content: nextNoteContent,
   });
+  const parentItem = resolveParentItemForReferenceNote(noteItem, runResult, runtime);
+  const related = await syncParentRelatedItems({
+    parentItem,
+    matchedCandidates,
+    runtime,
+  });
 
   const matched = nextReferences.filter((entry) =>
     String(entry?.citekey || "").trim(),
@@ -1392,6 +1506,9 @@ export async function applyResult({ runResult, runtime }) {
     updated: 1,
     matched,
     total: nextReferences.length,
+    related_added: related.added,
+    related_existing: related.existing,
+    related_skipped: related.skipped,
   };
 }
 

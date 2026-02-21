@@ -356,25 +356,64 @@ function renderSchemaFields(args: {
       const needsEmptyOption =
         selectedValue.length === 0 ||
         (typeof defaultValue === "string" && defaultValue.length === 0);
-      const control = createChoiceControl({
-        doc,
-        options: entry.enumValues.map((candidate) => ({
-          value: candidate,
-          label: candidate,
-        })),
-        selectedValue,
-        includeEmptyOption: needsEmptyOption
+      if (entry.allowCustom === true) {
+        const combo = createHtmlElement(doc, "div");
+        combo.style.display = "inline-flex";
+        combo.style.alignItems = "center";
+        combo.style.gap = "8px";
+
+        const recommendationControl = createChoiceControl({
+          doc,
+          options: entry.enumValues.map((candidate) => ({
+            value: candidate,
+            label: candidate,
+          })),
+          selectedValue,
+          includeEmptyOption: needsEmptyOption
             ? {
-              value: "",
-              label: getString("workflow-settings-default-option" as any),
-            }
-          : undefined,
-      });
-      control.setAttribute("id", controlId);
-      control.setAttribute("data-zs-option-key", entry.key);
-      control.setAttribute("data-zs-option-type", entry.type);
-      applySelectVisualStyle(control, "320px");
-      row.appendChild(control);
+                value: "",
+                label: getString("workflow-settings-default-option" as any),
+              }
+            : undefined,
+        });
+        recommendationControl.setAttribute("id", `${controlId}-recommendation`);
+        applySelectVisualStyle(recommendationControl, "180px");
+        combo.appendChild(recommendationControl);
+
+        const customInput = createHtmlElement(doc, "input");
+        customInput.id = controlId;
+        customInput.type = "text";
+        customInput.style.width = "320px";
+        customInput.value = selectedValue;
+        customInput.setAttribute("data-zs-option-key", entry.key);
+        customInput.setAttribute("data-zs-option-type", entry.type);
+        recommendationControl.addEventListener("change", () => {
+          customInput.value = getElementValue(recommendationControl);
+        });
+        combo.appendChild(customInput);
+
+        row.appendChild(combo);
+      } else {
+        const control = createChoiceControl({
+          doc,
+          options: entry.enumValues.map((candidate) => ({
+            value: candidate,
+            label: candidate,
+          })),
+          selectedValue,
+          includeEmptyOption: needsEmptyOption
+            ? {
+                value: "",
+                label: getString("workflow-settings-default-option" as any),
+              }
+            : undefined,
+        });
+        control.setAttribute("id", controlId);
+        control.setAttribute("data-zs-option-key", entry.key);
+        control.setAttribute("data-zs-option-type", entry.type);
+        applySelectVisualStyle(control, "320px");
+        row.appendChild(control);
+      }
     } else {
       const input = createHtmlElement(doc, "input");
       input.id = controlId;

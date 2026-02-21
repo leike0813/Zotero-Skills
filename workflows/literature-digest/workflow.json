@@ -30,7 +30,17 @@
     "language": {
       "type": "string",
       "title": "Language",
-      "enum": ["zh-CN", "en-US"],
+      "enum": [
+        "zh-CN",
+        "en-US",
+        "ja-JP",
+        "ko-KR",
+        "de-DE",
+        "fr-FR",
+        "es-ES",
+        "ru-RU"
+      ],
+      "allowCustom": true,
       "default": "zh-CN"
     }
   },

@@ -406,6 +406,7 @@ export class SkillRunnerClient {
               skill_id: request.skill_id,
               ...(engine ? { engine } : {}),
               ...(model ? { model } : {}),
+              ...(request.input ? { input: request.input } : {}),
               parameter: request.parameter || {},
               ...(Object.keys(runtimeOptions).length > 0
                 ? { runtime_options: runtimeOptions }

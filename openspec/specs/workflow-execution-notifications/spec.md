@@ -4,13 +4,21 @@
 TBD - created by archiving change enhance-workflow-notifications-i18n-toasts. Update Purpose after archive.
 ## Requirements
 ### Requirement: Workflow Execution Summary Dialog SHALL Support Localization
-The end-of-run summary dialog SHALL be localizable and include succeeded/failed/skipped counts.
+Workflow execution reminders (start toast, per-job toasts, final summary dialog) SHALL be localizable and SHALL be shown only when the workflow execution feedback config enables reminders.
 
-#### Scenario: Localized summary dialog on completion
-- **WHEN** a workflow trigger finishes
-- **THEN** the summary dialog SHALL use locale-specific text
-- **AND** it SHALL include succeeded/failed counts
-- **AND** it SHALL include skipped count when skipped units exist
+#### Scenario: Localized reminders on execution when enabled
+- **WHEN** a workflow trigger runs and `execution.feedback.showNotifications` is omitted or `true`
+- **THEN** runtime SHALL emit localized start and per-job toasts
+- **AND** final summary dialog SHALL use locale-specific text
+- **AND** final summary dialog SHALL include succeeded/failed counts
+- **AND** final summary dialog SHALL include skipped count when skipped units exist
+
+#### Scenario: Execution reminders are suppressed when disabled
+- **WHEN** a workflow trigger runs and `execution.feedback.showNotifications` is `false`
+- **THEN** runtime SHALL NOT emit start toast
+- **AND** runtime SHALL NOT emit per-job toasts
+- **AND** runtime SHALL NOT open the final summary alert dialog
+- **AND** workflow execution result logging SHALL remain available
 
 ### Requirement: Workflow Trigger SHALL Emit Start Toast
 The system SHALL show one transient toast when a workflow trigger starts execution.

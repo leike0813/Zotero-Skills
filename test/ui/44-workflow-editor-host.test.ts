@@ -21,6 +21,52 @@ function createRootElement() {
   };
 }
 
+function installPromptConfirmMock(
+  impl: (args: {
+    window?: _ZoteroTypes.MainWindow | null;
+    title: string;
+    text: string;
+    button0: string | number;
+    button1: string | number;
+    button2?: string | number;
+    defaultButton: number;
+  }) => number,
+) {
+  const runtime = globalThis as typeof globalThis & {
+    Zotero?: {
+      Prompt?: {
+        confirm?: (args: {
+          window?: _ZoteroTypes.MainWindow | null;
+          title: string;
+          text: string;
+          button0: string | number;
+          button1: string | number;
+          button2?: string | number;
+          defaultButton: number;
+        }) => number;
+      };
+    };
+  };
+  const previousZotero = runtime.Zotero;
+  const previousPrompt = previousZotero?.Prompt;
+  runtime.Zotero = runtime.Zotero || {};
+  runtime.Zotero.Prompt = runtime.Zotero.Prompt || {};
+  runtime.Zotero.Prompt.confirm = impl;
+  return () => {
+    if (!runtime.Zotero) {
+      return;
+    }
+    if (previousPrompt) {
+      runtime.Zotero.Prompt = previousPrompt;
+    } else if (runtime.Zotero.Prompt) {
+      delete runtime.Zotero.Prompt;
+    }
+    if (!previousZotero) {
+      delete runtime.Zotero;
+    }
+  };
+}
+
 class MockDialog {
   static nextButtons: string[] = [];
 
@@ -34,11 +80,26 @@ class MockDialog {
 
   private readonly root = createRootElement();
 
+  private readonly buttons: Array<{
+    id: string;
+    options?: {
+      noClose?: boolean;
+      callback?: (event?: unknown) => void;
+    };
+  }> = [];
+
   addCell() {
     return this;
   }
 
-  addButton() {
+  addButton(_label?: string, id?: string, options?: unknown) {
+    this.buttons.push({
+      id: String(id || ""),
+      options: (options || {}) as {
+        noClose?: boolean;
+        callback?: (event?: unknown) => void;
+      },
+    });
     return this;
   }
 
@@ -54,8 +115,6 @@ class MockDialog {
     MockDialog.inFlight += 1;
     MockDialog.maxInFlight = Math.max(MockDialog.maxInFlight, MockDialog.inFlight);
     const delayMs = MockDialog.nextDelays.shift() || 0;
-    const clicked = MockDialog.nextButtons.shift() || "save";
-
     const doc = {
       defaultView: {
         resizeTo: () => {},
@@ -63,18 +122,47 @@ class MockDialog {
       getElementById: () => this.root,
     };
 
+    let closed = false;
+    let settled = false;
+    let resolveDone: (() => void) | null = null;
     const window = {
       document: doc,
+      close: () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        if (!settled) {
+          settled = true;
+          MockDialog.inFlight -= 1;
+          resolveDone?.();
+        }
+      },
     };
 
     const completion = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        this.dialogData?.loadCallback?.();
+      resolveDone = resolve;
+      const runNextClick = () => {
+        if (closed) {
+          return;
+        }
+        const clicked = MockDialog.nextButtons.shift() || "save";
+        const button = this.buttons.find((entry) => entry.id === clicked);
+        if (button?.options?.noClose) {
+          button.options.callback?.({ type: "click" });
+          if (!closed) {
+            setTimeout(runNextClick, 0);
+          }
+          return;
+        }
         if (this.dialogData) {
           this.dialogData._lastButtonId = clicked;
         }
-        MockDialog.inFlight -= 1;
-        resolve();
+        window.close();
+      };
+      setTimeout(() => {
+        this.dialogData?.loadCallback?.();
+        runNextClick();
       }, delayMs);
     });
 
@@ -84,6 +172,8 @@ class MockDialog {
 }
 
 describe("workflow editor host", function () {
+  let restorePrompt: (() => void) | null = null;
+
   beforeEach(function () {
     clearWorkflowEditorRendererRegistry();
     MockDialog.nextButtons = [];
@@ -109,6 +199,14 @@ describe("workflow editor host", function () {
       Dialog: MockDialog,
     };
     installWorkflowEditorHostBridge();
+    restorePrompt = installPromptConfirmMock(() => 1);
+  });
+
+  afterEach(function () {
+    if (restorePrompt) {
+      restorePrompt();
+      restorePrompt = null;
+    }
   });
 
   it("resolves save and cancel lifecycle consistently", async function () {
@@ -134,6 +232,90 @@ describe("workflow editor host", function () {
     });
     assert.isFalse(canceled.saved);
     assert.equal(canceled.reason, "canceled");
+  });
+
+  it("prompts dirty close and saves when user chooses save", async function () {
+    let promptCalls = 0;
+    if (restorePrompt) {
+      restorePrompt();
+    }
+    restorePrompt = installPromptConfirmMock(() => {
+      promptCalls += 1;
+      return 0;
+    });
+
+    registerWorkflowEditorRenderer("dirty-save-renderer", {
+      render: ({ state }) => {
+        (state as { edited?: boolean }).edited = true;
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("cancel");
+    const result = await openWorkflowEditorSession({
+      rendererId: "dirty-save-renderer",
+      title: "Dirty Save",
+      initialState: { edited: false },
+    });
+    assert.equal(promptCalls, 1);
+    assert.isTrue(result.saved);
+    assert.deepEqual(result.result, { edited: true });
+  });
+
+  it("prompts dirty close and discards when user chooses dont-save", async function () {
+    let promptCalls = 0;
+    if (restorePrompt) {
+      restorePrompt();
+    }
+    restorePrompt = installPromptConfirmMock(() => {
+      promptCalls += 1;
+      return 1;
+    });
+
+    registerWorkflowEditorRenderer("dirty-discard-renderer", {
+      render: ({ state }) => {
+        (state as { edited?: boolean }).edited = true;
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("cancel");
+    const result = await openWorkflowEditorSession({
+      rendererId: "dirty-discard-renderer",
+      title: "Dirty Discard",
+      initialState: { edited: false },
+    });
+    assert.equal(promptCalls, 1);
+    assert.isFalse(result.saved);
+    assert.equal(result.reason, "discarded");
+  });
+
+  it("keeps editor open when dirty close prompt chooses cancel", async function () {
+    let promptCalls = 0;
+    if (restorePrompt) {
+      restorePrompt();
+    }
+    restorePrompt = installPromptConfirmMock(() => {
+      promptCalls += 1;
+      return 2;
+    });
+
+    registerWorkflowEditorRenderer("dirty-cancel-renderer", {
+      render: ({ state }) => {
+        (state as { edited?: boolean }).edited = true;
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("cancel", "save");
+    const result = await openWorkflowEditorSession({
+      rendererId: "dirty-cancel-renderer",
+      title: "Dirty Cancel",
+      initialState: { edited: false },
+    });
+    assert.equal(promptCalls, 1);
+    assert.isTrue(result.saved);
+    assert.deepEqual(result.result, { edited: true });
   });
 
   it("fails fast when renderer id cannot be resolved", async function () {

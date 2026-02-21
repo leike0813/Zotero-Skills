@@ -2,6 +2,76 @@ import { assert } from "chai";
 import { compileDeclarativeRequest } from "../../src/workflows/declarativeRequestCompiler";
 
 describe("declarative request compiler guards", function () {
+  it("builds skillrunner request with inline input alongside upload selectors", function () {
+    const request = compileDeclarativeRequest({
+      kind: "skillrunner.job.v1",
+      selectionContext: {
+        items: {
+          attachments: [
+            {
+              filePath: "D:/fixtures/only.md",
+              mimeType: "text/markdown",
+              parent: { id: 103, title: "Parent C" },
+              item: { id: 9001, key: "AAA111" },
+            },
+          ],
+        },
+      },
+      manifest: {
+        id: "inline-input-pass-through",
+        label: "Inline Input Pass Through",
+        provider: "skillrunner",
+        request: {
+          kind: "skillrunner.job.v1",
+          create: {
+            skill_id: "tag-regulator",
+          },
+          input: {
+            inline: {
+              infer_tag: true,
+              source: "workflow",
+            },
+            upload: {
+              files: [
+                {
+                  key: "md_path",
+                  from: "selected.markdown",
+                },
+              ],
+            },
+          },
+        },
+        hooks: {
+          applyResult: "hooks/applyResult.js",
+        },
+      } as any,
+      executionOptions: {
+        workflowParams: {
+          profile: "default",
+        },
+      },
+    }) as {
+      kind: string;
+      skill_id: string;
+      input?: Record<string, unknown>;
+      upload_files: Array<{ key: string; path: string }>;
+      parameter?: Record<string, unknown>;
+    };
+
+    assert.equal(request.kind, "skillrunner.job.v1");
+    assert.equal(request.skill_id, "tag-regulator");
+    assert.deepEqual(request.upload_files, [
+      { key: "md_path", path: "D:/fixtures/only.md" },
+    ]);
+    assert.deepEqual(request.parameter, { profile: "default" });
+    assert.deepEqual(request.input, {
+      inline: {
+        infer_tag: true,
+        source: "workflow",
+      },
+    });
+  });
+
   it("Risk: HR-03 rejects selector cardinality violations for selected.markdown", function () {
     let thrown: unknown = null;
 

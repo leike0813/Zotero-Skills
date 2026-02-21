@@ -14,6 +14,70 @@ function createJsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("transport: upload fallback without FormData", function () {
+  it("forwards optional inline input to /v1/jobs create body", async function () {
+    let capturedCreateBody: unknown;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          capturedCreateBody = JSON.parse(String(init?.body || "{}"));
+          return createJsonResponse({ request_id: "req-1" });
+        }
+        if (url.endsWith("/v1/jobs/req-1/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-1")) {
+          return createJsonResponse({ request_id: "req-1", status: "succeeded" });
+        }
+        if (url.endsWith("/v1/jobs/req-1/result")) {
+          return createJsonResponse({
+            request_id: "req-1",
+            status: "succeeded",
+            data: { digest_path: "digest.md", references_path: "references.json" },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    const result = await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        upload_files: [
+          {
+            key: "md_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        parameter: { mode: "strict" },
+        input: {
+          metadata: { parentKey: "AAA111" },
+          valid_tags: ["alpha", "beta"],
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+      },
+    );
+
+    assert.equal(result.status, "succeeded");
+    assert.deepEqual(
+      (capturedCreateBody as { input?: unknown })?.input,
+      {
+        metadata: { parentKey: "AAA111" },
+        valid_tags: ["alpha", "beta"],
+      },
+      `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
+    );
+    assert.deepEqual(
+      (capturedCreateBody as { parameter?: unknown })?.parameter,
+      { mode: "strict" },
+      `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
+    );
+  });
+
   it("uploads using multipart bytes when FormData is unavailable", async function () {
     const originalFormData = (globalThis as { FormData?: unknown }).FormData;
     const originalBlob = (globalThis as { Blob?: unknown }).Blob;

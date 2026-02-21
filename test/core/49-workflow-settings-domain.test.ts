@@ -78,6 +78,46 @@ describe("workflow settings domain", function () {
     assert.equal(normalized.citekey_template, "title.unknown() + '_' + year");
   });
 
+  it("keeps non-enum string when allowCustom=true", function () {
+    const manifest = {
+      id: "literature-digest",
+      label: "Literature Digest",
+      hooks: { applyResult: "hooks/applyResult.js" },
+      parameters: {
+        language: {
+          type: "string",
+          enum: ["zh-CN", "en-US"],
+          allowCustom: true,
+          default: "zh-CN",
+        },
+      },
+    } as WorkflowManifest;
+    const normalized = normalizeWorkflowParamsBySchema(manifest, {
+      language: "fr-FR",
+    });
+    assert.equal(normalized.language, "fr-FR");
+  });
+
+  it("keeps strict enum fallback when allowCustom is false", function () {
+    const manifest = {
+      id: "literature-digest",
+      label: "Literature Digest",
+      hooks: { applyResult: "hooks/applyResult.js" },
+      parameters: {
+        language: {
+          type: "string",
+          enum: ["zh-CN", "en-US"],
+          allowCustom: false,
+          default: "zh-CN",
+        },
+      },
+    } as WorkflowManifest;
+    const normalized = normalizeWorkflowParamsBySchema(manifest, {
+      language: "fr-FR",
+    });
+    assert.equal(normalized.language, "zh-CN");
+  });
+
   it("builds dialog initial state with run-once defaults cloned from persisted values", function () {
     const saved: WorkflowExecutionOptions = {
       backendId: "skillrunner-local",

@@ -10,7 +10,6 @@ import {
 import {
   decodeBase64Utf8,
   encodeBase64Utf8,
-  expectWorkflowSummaryCounter,
   workflowsPath,
 } from "./workflow-test-utils";
 
@@ -339,7 +338,36 @@ describe("workflow: reference-note-editor", function () {
     const calls: Array<{ parentTitle: string; rendererId: string }> = [];
     let inFlight = 0;
     let maxInFlight = 0;
-    const runtime = globalThis as RuntimeWithEditorBridge;
+    const runtime = globalThis as RuntimeWithEditorBridge & {
+      ztoolkit?: {
+        ProgressWindow?: new (
+          title: string,
+          options?: Record<string, unknown>,
+        ) => {
+          createLine: (args: { text?: string }) => {
+            show: () => { startCloseTimer?: (delayMs: number) => unknown };
+          };
+        };
+      };
+    };
+    const toastLines: string[] = [];
+    const hadToolkit = Boolean(runtime.ztoolkit);
+    const prevProgressWindow = runtime.ztoolkit?.ProgressWindow;
+    runtime.ztoolkit = runtime.ztoolkit || {};
+    runtime.ztoolkit.ProgressWindow = class MockProgressWindow {
+      createLine(args: { text?: string }) {
+        toastLines.push(String(args?.text || ""));
+        return {
+          show() {
+            return {
+              startCloseTimer() {
+                return undefined;
+              },
+            };
+          },
+        };
+      }
+    };
     const restoreOpen = installEditorOpenMock(async (args) => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
@@ -370,6 +398,11 @@ describe("workflow: reference-note-editor", function () {
         workflow,
       });
     } finally {
+      if (hadToolkit) {
+        runtime.ztoolkit!.ProgressWindow = prevProgressWindow;
+      } else {
+        delete runtime.ztoolkit;
+      }
       restoreOpen();
     }
 
@@ -389,9 +422,8 @@ describe("workflow: reference-note-editor", function () {
           entry.rendererId === "reference-note-editor.default.v1",
       ),
     );
-    assert.lengthOf(alerts, 1);
-    expectWorkflowSummaryCounter(alerts[0], "succeeded", 2);
-    expectWorkflowSummaryCounter(alerts[0], "failed", 0);
+    assert.lengthOf(alerts, 0);
+    assert.lengthOf(toastLines, 0);
   });
 
   it("persists edit/add/delete/reorder after save", async function () {
@@ -519,10 +551,7 @@ describe("workflow: reference-note-editor", function () {
       restoreOpen();
     }
 
-    assert.lengthOf(alerts, 1);
-    expectWorkflowSummaryCounter(alerts[0], "succeeded", 0);
-    expectWorkflowSummaryCounter(alerts[0], "failed", 1);
-    assert.match(alerts[0], /cancel|close|canceled|cancelled/i);
+    assert.lengthOf(alerts, 0);
     assert.equal(Zotero.Items.get(note.id)!.getNote(), before);
   });
 });

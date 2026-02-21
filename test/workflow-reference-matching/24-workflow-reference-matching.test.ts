@@ -225,6 +225,17 @@ async function buildRunResultForNote(note: Zotero.Item, parameter?: Record<strin
   };
 }
 
+function listRelatedKeys(itemRef: Zotero.Item | number) {
+  const item = typeof itemRef === "number" ? Zotero.Items.get(itemRef)! : itemRef;
+  const keys = Array.isArray((item as unknown as { relatedItems?: string[] }).relatedItems)
+    ? ((item as unknown as { relatedItems?: string[] }).relatedItems || [])
+    : [];
+  return keys
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+}
+
 const itFullOnly = isFullTestMode() ? it : it.skip;
 
 describe("workflow: reference-matching", function () {
@@ -1257,6 +1268,211 @@ describe("workflow: reference-matching", function () {
     assert.isOk(thrown);
     assert.match(String(thrown), /bbt|json-rpc|127\.0\.0\.1|23119/i);
     assert.equal(Zotero.Items.get(referenceNote.id)!.getNote(), before);
+  });
+
+  it("adds matched library items to references note parent related items", async function () {
+    const workflow = await getReferenceMatchingWorkflow();
+    const matched = await createLibraryItem({
+      title: "Reference Matching Parent Related Exact",
+      year: "2038",
+      citekey: "ParentRelated2038",
+      firstCreator: "Relator",
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Reference Matching Parent Related Parent" },
+    });
+    const referenceNote = await handlers.parent.addNote(parent, {
+      content: buildReferencesNoteContent({
+        references: [
+          {
+            title: "Reference Matching Parent Related Exact",
+            year: "2038",
+            author: ["Relator"],
+          },
+        ],
+      }),
+    });
+
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: { readText: async () => "" },
+      runResult: await buildRunResultForNote(referenceNote),
+    })) as {
+      related_added?: number;
+      related_existing?: number;
+      related_skipped?: number;
+    };
+
+    const payload = decodeReferencesPayloadFromNote(
+      Zotero.Items.get(referenceNote.id)!.getNote(),
+    );
+    assert.equal(payload.references?.[0]?.citekey, "ParentRelated2038");
+    assert.includeMembers(listRelatedKeys(parent), [matched.key]);
+    assert.equal(applied.related_added, 1);
+    assert.equal(applied.related_existing, 0);
+    assert.equal(applied.related_skipped, 0);
+  });
+
+  it("adds only matched subset to parent related items when references are partially matched", async function () {
+    const workflow = await getReferenceMatchingWorkflow();
+    const matched = await createLibraryItem({
+      title: "Reference Matching Parent Related Partial Hit",
+      year: "2039",
+      citekey: "PartialHit2039",
+      firstCreator: "Subset",
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Reference Matching Parent Related Partial Parent" },
+    });
+    const referenceNote = await handlers.parent.addNote(parent, {
+      content: buildReferencesNoteContent({
+        references: [
+          {
+            title: "Reference Matching Parent Related Partial Hit",
+            year: "2039",
+            author: ["Subset"],
+          },
+          {
+            title: "Reference Matching Parent Related Partial Miss",
+            year: "2039",
+            author: ["Nope"],
+          },
+        ],
+      }),
+    });
+
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: { readText: async () => "" },
+      runResult: await buildRunResultForNote(referenceNote),
+    })) as {
+      related_added?: number;
+      related_existing?: number;
+      related_skipped?: number;
+    };
+
+    const related = listRelatedKeys(parent);
+    assert.includeMembers(related, [matched.key]);
+    assert.lengthOf(related, 1);
+    assert.equal(applied.related_added, 1);
+    assert.equal(applied.related_existing, 0);
+    assert.equal(applied.related_skipped, 0);
+  });
+
+  it("keeps parent related updates idempotent and only fills missing links", async function () {
+    const workflow = await getReferenceMatchingWorkflow();
+    const matchedA = await createLibraryItem({
+      title: "Reference Matching Parent Related Idempotent A",
+      year: "2040",
+      citekey: "IdempotentA2040",
+      firstCreator: "StableA",
+    });
+    const matchedB = await createLibraryItem({
+      title: "Reference Matching Parent Related Idempotent B",
+      year: "2040",
+      citekey: "IdempotentB2040",
+      firstCreator: "StableB",
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Reference Matching Parent Related Idempotent Parent" },
+    });
+    await handlers.parent.addRelated(parent, matchedA);
+    const referenceNote = await handlers.parent.addNote(parent, {
+      content: buildReferencesNoteContent({
+        references: [
+          {
+            title: "Reference Matching Parent Related Idempotent A",
+            year: "2040",
+            author: ["StableA"],
+          },
+          {
+            title: "Reference Matching Parent Related Idempotent B",
+            year: "2040",
+            author: ["StableB"],
+          },
+        ],
+      }),
+    });
+
+    const first = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: { readText: async () => "" },
+      runResult: await buildRunResultForNote(referenceNote),
+    })) as {
+      related_added?: number;
+      related_existing?: number;
+      related_skipped?: number;
+    };
+    const second = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: { readText: async () => "" },
+      runResult: await buildRunResultForNote(referenceNote),
+    })) as {
+      related_added?: number;
+      related_existing?: number;
+      related_skipped?: number;
+    };
+
+    const related = listRelatedKeys(parent);
+    assert.includeMembers(related, [matchedA.key, matchedB.key]);
+    assert.lengthOf(related, 2);
+    assert.equal(first.related_added, 1);
+    assert.equal(first.related_existing, 1);
+    assert.equal(first.related_skipped, 0);
+    assert.equal(second.related_added, 0);
+    assert.equal(second.related_existing, 2);
+    assert.equal(second.related_skipped, 0);
+  });
+
+  it("keeps matching flow running when references note has no parent item", async function () {
+    const workflow = await getReferenceMatchingWorkflow();
+    await createLibraryItem({
+      title: "Reference Matching Orphan References Note",
+      year: "2041",
+      citekey: "Orphan2041",
+      firstCreator: "Orphaner",
+    });
+    const orphanNote = await handlers.note.create({
+      content: buildReferencesNoteContent({
+        references: [
+          {
+            title: "Reference Matching Orphan References Note",
+            year: "2041",
+            author: ["Orphaner"],
+          },
+        ],
+      }),
+    });
+
+    const applied = (await executeApplyResult({
+      workflow,
+      parent: orphanNote,
+      bundleReader: { readText: async () => "" },
+      runResult: await buildRunResultForNote(orphanNote),
+    })) as {
+      updated?: number;
+      matched?: number;
+      related_added?: number;
+      related_existing?: number;
+      related_skipped?: number;
+    };
+
+    const payload = decodeReferencesPayloadFromNote(
+      Zotero.Items.get(orphanNote.id)!.getNote(),
+    );
+    assert.equal(payload.references?.[0]?.citekey, "Orphan2041");
+    assert.equal(applied.updated, 1);
+    assert.equal(applied.matched, 1);
+    assert.equal(applied.related_added, 0);
+    assert.equal(applied.related_existing, 0);
+    assert.equal(applied.related_skipped, 1);
   });
 
   it("runs end-to-end from references note selection to overwrite", async function () {

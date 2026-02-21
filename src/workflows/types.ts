@@ -6,6 +6,7 @@ export type WorkflowParameterSchema = {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  allowCustom?: boolean;
   min?: number;
   max?: number;
 };
@@ -32,6 +33,9 @@ export type WorkflowExecutionSpec = {
   mode?: "auto" | "sync" | "async";
   poll_interval_ms?: number;
   timeout_ms?: number;
+  feedback?: {
+    showNotifications?: boolean;
+  };
 };
 
 export type WorkflowResultSpec = {
@@ -56,6 +60,7 @@ export type WorkflowRequestSpec = {
         from: "selected.markdown" | "selected.pdf";
       }>;
     };
+    [key: string]: unknown;
   };
   poll?: {
     interval_ms?: number;

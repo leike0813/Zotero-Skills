@@ -21,35 +21,74 @@ workflows/
 
 ## Manifest（当前实现）
 
-```ts
-type WorkflowManifest = {
-  id: string;
-  label: string;
-  provider?: string;
-  version?: string;
-  parameters?: Record<string, WorkflowParameterSchema>;
-  inputs?: {
-    unit: "attachment" | "parent" | "note";
-    accepts?: { mime?: string[] };
-    per_parent?: { min?: number; max?: number };
-  };
-  execution?: {
-    mode?: "auto" | "sync" | "async";
-    poll_interval_ms?: number;
-    timeout_ms?: number;
-  };
-  result?: {
-    fetch?: { type?: "bundle" | "result" };
-    expects?: { result_json?: string; artifacts?: string[] };
-  };
-  request?: WorkflowRequestSpec;
-  hooks: {
-    filterInputs?: string;
-    buildRequest?: string;
-    normalizeSettings?: string;
-    applyResult: string;
-  };
-};
+Manifest 契约由以下 schema 唯一定义（SSOT）：
+
+- `src/schemas/workflow.schema.json`
+- 该文件同时用于“作者编写参考”和“loader 运行时结构校验”
+
+最小合法示例：
+
+```json
+{
+  "id": "minimal-pass-through",
+  "label": "Minimal Pass Through",
+  "provider": "pass-through",
+  "hooks": {
+    "applyResult": "hooks/applyResult.js"
+  }
+}
+```
+
+包含常见可选字段的示例：
+
+```json
+{
+  "id": "declarative-skillrunner",
+  "label": "Declarative SkillRunner",
+  "provider": "skillrunner",
+  "parameters": {
+    "language": {
+      "type": "string",
+      "enum": ["zh-CN", "en-US"],
+      "allowCustom": true,
+      "default": "zh-CN"
+    }
+  },
+  "inputs": {
+    "unit": "attachment",
+    "accepts": {
+      "mime": ["text/markdown"]
+    }
+  },
+  "execution": {
+    "mode": "auto",
+    "poll_interval_ms": 2000,
+    "timeout_ms": 1200000,
+    "feedback": {
+      "showNotifications": true
+    }
+  },
+  "result": {
+    "fetch": {
+      "type": "bundle"
+    }
+  },
+  "request": {
+    "kind": "skillrunner.job.v1",
+    "create": {
+      "skill_id": "literature-digest"
+    },
+    "input": {
+      "upload": {
+        "files": [{ "key": "md_path", "from": "selected.markdown" }]
+      }
+    }
+  },
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.js",
+    "applyResult": "hooks/applyResult.js"
+  }
+}
 ```
 
 说明：
@@ -62,6 +101,12 @@ type WorkflowManifest = {
 - 例外：当 `provider = "pass-through"` 时，允许最小声明（仅 `hooks.applyResult`，可选 `hooks.filterInputs`），runtime 会补全 request。
 - 两者同时存在时，优先 `hooks.buildRequest`。
 - `provider` 建议显式声明；若缺失，loader 会按 `request.kind` 推断。
+- `execution.feedback.showNotifications`（可选，默认 `true`）语义：
+  - `false`：禁用 workflow 执行提醒（开始/单任务 Toast + 结束汇总 alert）；
+  - `true` 或缺省：保持默认提醒行为。
+- `parameters.<key>.allowCustom`（仅 `type=string` 生效）语义：
+  - `true`：`enum` 作为推荐选项，settings UI 提供“推荐下拉 + 可编辑输入”，运行时允许非枚举字符串值；
+  - `false` 或缺省：`enum` 作为硬约束，非枚举值会在归一化时回退默认值或被丢弃。
 
 ## 已废弃字段（会被视为非法 manifest）
 
@@ -165,8 +210,13 @@ type WorkflowManifest = {
   - 统一管理编辑窗体生命周期（打开、保存、取消、销毁）；
   - 提供 renderer 分发（按 `rendererId`）与显式错误上报；
   - 对多输入触发场景按队列串行打开窗体（一次仅一个窗体）。
+- 关闭语义（当前实现）：
+  - 未修改直接关闭：直接关闭，不弹二次确认；
+  - 已修改后关闭：弹出“是否保存修改”确认；
+  - 选择保存：按 Save 路径序列化并返回；
+  - 选择不保存：按未保存关闭返回。
 - workflow 侧负责 renderer（业务 UI 与字段绑定），核心不再承载 workflow 专用编辑界面实现。
-- 迁移说明：`reference-note-editor` 已从旧的核心耦合桥接迁移到 host+renderer；取消/关闭未保存的失败语义保持不变。
+- 迁移说明：`reference-note-editor` 已从旧的核心耦合桥接迁移到 host+renderer；未保存关闭时仍保持“当前 job 不保存并返回未保存原因”的语义。
 
 ## reference-matching workflow（新增）
 

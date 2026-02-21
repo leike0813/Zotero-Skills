@@ -67,6 +67,18 @@
 - `parameters`（workflow 参数 schema）
 - `execution` / `result`（执行与返回约束）
 
+参数声明补充：
+
+- `parameters.<key>.allowCustom` 可用于 `type=string` + `enum` 场景。
+- `allowCustom=true` 时，`enum` 是推荐值集合，允许用户输入并保存枚举外字符串。
+- 未声明 `allowCustom` 或为 `false` 时，`enum` 继续作为严格约束。
+
+唯一契约来源（SSOT）：
+
+- `src/schemas/workflow.schema.json`
+- loader 在扫描 `workflow.json` 时直接使用该 schema 做结构校验
+- 作者编写 manifest 时应以该 schema 为准，而不是阅读 loader 源码猜测规则
+
 已废弃字段（出现即非法）：
 
 - 顶层 `backend`, `defaults`
@@ -125,6 +137,7 @@ Provider runtime options：
 
 - 架构总览：`doc/architecture-flow.md`
 - Workflows：`doc/components/workflows.md`
+- Workflow Manifest Schema：`src/schemas/workflow.schema.json`
 - Workflow Hook Helpers：`doc/components/workflow-hook-helpers.md`
 - Providers：`doc/components/providers.md`
 - Selection/Context：`doc/components/selection-context.md`

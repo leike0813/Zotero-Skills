@@ -27,9 +27,15 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 - **THEN** 系统 SHALL 返回标准化 contract 错误
 - **AND** 当前输入单元 SHALL 终止执行
 
+#### Scenario: skillrunner mixed-input payload is accepted
+- **WHEN** `skillrunner.job.v1` payload carries optional `input` object with existing `parameter`
+- **THEN** contract validation SHALL accept payload as long as mandatory fields remain valid
+- **AND** provider execution path SHALL forward both `input` and `parameter` to backend `/v1/jobs`
+
 ### Requirement: Provider 执行结果必须统一为标准模型
 系统 MUST 将不同 Provider 的执行输出归一为统一结果结构，供 runtime 与 `applyResult` 消费。
 
 #### Scenario: 成功执行
 - **WHEN** Provider 完成执行
 - **THEN** 返回统一的 `status/requestId/fetchType/result` 语义
+

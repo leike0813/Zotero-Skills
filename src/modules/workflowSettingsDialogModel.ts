@@ -14,6 +14,7 @@ export type FormSchemaEntry = {
   title?: string;
   description?: string;
   enumValues?: string[];
+  allowCustom?: boolean;
   defaultValue?: unknown;
 };
 
@@ -59,6 +60,7 @@ function fromWorkflowParameterSchema(
     title: schema.title,
     description: schema.description,
     enumValues: schema.type === "string" ? normalizeEnum(schema.enum) : [],
+    allowCustom: schema.type === "string" && schema.allowCustom === true,
     defaultValue: schema.default,
   }));
 }
@@ -198,4 +200,3 @@ export function buildWorkflowSettingsDialogDraft(args: {
     },
   };
 }
-

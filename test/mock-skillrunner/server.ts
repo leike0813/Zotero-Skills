@@ -31,6 +31,27 @@ type TrafficRecord = {
     | { kind: "text"; value: string };
 };
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as string[];
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const entry of value) {
+    const text = String(entry || "").trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    normalized.push(text);
+  }
+  return normalized;
+}
+
 export type MockSkillRunnerServer = {
   baseUrl: string;
   close: () => Promise<void>;
@@ -268,15 +289,74 @@ export async function startMockSkillRunnerServer(args: {
           res.end(JSON.stringify({ error: "upload missing" }));
           return;
         }
+        const createPayload = isObject(job.createPayload)
+          ? job.createPayload
+          : {};
+        const skillId = String(createPayload.skill_id || "").trim();
+        if (skillId === "tag-regulator") {
+          const inlineInput = isObject(createPayload.input)
+            ? createPayload.input
+            : {};
+          const parameter = isObject(createPayload.parameter)
+            ? createPayload.parameter
+            : {};
+          const tagNoteLanguage = String(
+            parameter.tag_note_language || "zh-CN",
+          ).trim() || "zh-CN";
+          const inputTags = normalizeStringArray(inlineInput.input_tags);
+          const removeTags = inputTags.includes("topic:legacy")
+            ? ["topic:legacy"]
+            : inputTags.length > 0
+              ? [inputTags[0]]
+              : [];
+          const addTags = inputTags.includes("topic:tunnel")
+            ? []
+            : ["topic:tunnel"];
+          res.statusCode = 200;
+          res.setHeader("content-type", "application/json");
+          res.end(
+            JSON.stringify({
+              request_id: requestId,
+              result: {
+                status: "success",
+                data: {
+                  metadata: isObject(inlineInput.metadata)
+                    ? inlineInput.metadata
+                    : {},
+                  input_tags: inputTags,
+                  remove_tags: removeTags,
+                  add_tags: addTags,
+                  suggest_tags: [
+                    {
+                      tag: "topic:suggested-by-mock",
+                      note: `[${tagNoteLanguage}] suggested by mock`,
+                    },
+                  ],
+                  warnings: ["mock-tag-regulator"],
+                  error: null,
+                },
+                artifacts: [],
+                validation_warnings: [],
+                error: null,
+              },
+            }),
+          );
+          return;
+        }
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
         res.end(
           JSON.stringify({
             request_id: requestId,
-            status: "succeeded",
-            data: {
-              digest_path: "digest.md",
-              references_path: "references.json",
+            result: {
+              status: "success",
+              data: {
+                digest_path: "digest.md",
+                references_path: "references.json",
+              },
+              artifacts: [],
+              validation_warnings: [],
+              error: null,
             },
           }),
         );

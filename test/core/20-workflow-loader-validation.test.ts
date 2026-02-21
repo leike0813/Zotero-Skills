@@ -308,6 +308,325 @@ describe("workflow loader validation", function () {
     }
   });
 
+  it("reports schema-required errors for missing hooks.applyResult", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "missing-required-apply-result",
+      {
+        id: "missing-required-apply-result",
+        label: "Missing Required Apply Result",
+        request: { kind: "skillrunner.job.v1" },
+        hooks: {},
+      },
+      {},
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+
+    const diagnostic = (loaded.diagnostics || []).find(
+      (entry) =>
+        entry.category === "manifest_validation_error" &&
+        entry.entry === "missing-required-apply-result",
+    );
+    assert.isOk(
+      diagnostic,
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+    assert.include(
+      String(diagnostic?.reason || ""),
+      "missing required property \"applyResult\"",
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+  });
+
+  it("accepts workflow manifest when parameter allowCustom is boolean", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "allow-custom-valid",
+      {
+        id: "allow-custom-valid",
+        label: "Allow Custom Valid",
+        request: { kind: "skillrunner.job.v1" },
+        parameters: {
+          language: {
+            type: "string",
+            enum: ["zh-CN", "en-US"],
+            allowCustom: true,
+            default: "zh-CN",
+          },
+        },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(
+      loaded.workflows,
+      1,
+      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+    );
+  });
+
+  it("rejects workflow manifest when parameter allowCustom is not boolean", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "allow-custom-invalid",
+      {
+        id: "allow-custom-invalid",
+        label: "Allow Custom Invalid",
+        request: { kind: "skillrunner.job.v1" },
+        parameters: {
+          language: {
+            type: "string",
+            enum: ["zh-CN", "en-US"],
+            allowCustom: "yes",
+            default: "zh-CN",
+          },
+        },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    const diagnostic = (loaded.diagnostics || []).find(
+      (entry) =>
+        entry.category === "manifest_validation_error" &&
+        entry.entry === "allow-custom-invalid",
+    );
+    assert.isOk(
+      diagnostic,
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+    assert.include(
+      String(diagnostic?.reason || ""),
+      "/parameters/language/allowCustom",
+    );
+    assert.include(String(diagnostic?.reason || ""), "must be boolean");
+  });
+
+  it("accepts workflow manifest when execution.feedback.showNotifications is boolean", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "execution-feedback-valid",
+      {
+        id: "execution-feedback-valid",
+        label: "Execution Feedback Valid",
+        provider: "pass-through",
+        execution: {
+          feedback: {
+            showNotifications: false,
+          },
+        },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(
+      loaded.workflows,
+      1,
+      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+    );
+  });
+
+  it("rejects workflow manifest when execution.feedback.showNotifications is not boolean", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "execution-feedback-invalid",
+      {
+        id: "execution-feedback-invalid",
+        label: "Execution Feedback Invalid",
+        provider: "pass-through",
+        execution: {
+          feedback: {
+            showNotifications: "no",
+          },
+        },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    const diagnostic = (loaded.diagnostics || []).find(
+      (entry) =>
+        entry.category === "manifest_validation_error" &&
+        entry.entry === "execution-feedback-invalid",
+    );
+    assert.isOk(
+      diagnostic,
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+    assert.include(
+      String(diagnostic?.reason || ""),
+      "/execution/feedback/showNotifications",
+    );
+    assert.include(String(diagnostic?.reason || ""), "must be boolean");
+  });
+
+  it("rejects manifests containing deprecated fields through schema validation", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    const cases: Array<{
+      id: string;
+      manifest: Record<string, unknown>;
+      reasonIncludes: string;
+    }> = [
+      {
+        id: "deprecated-backend",
+        reasonIncludes: "/backend uses deprecated field",
+        manifest: {
+          id: "deprecated-backend",
+          label: "Deprecated Backend",
+          backend: "legacy-backend",
+          request: { kind: "skillrunner.job.v1" },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-defaults",
+        reasonIncludes: "/defaults uses deprecated field",
+        manifest: {
+          id: "deprecated-defaults",
+          label: "Deprecated Defaults",
+          defaults: {},
+          request: { kind: "skillrunner.job.v1" },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-request-result",
+        reasonIncludes: "/request/result uses deprecated field",
+        manifest: {
+          id: "deprecated-request-result",
+          label: "Deprecated Request Result",
+          request: {
+            kind: "skillrunner.job.v1",
+            result: {},
+          },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-request-create-engine",
+        reasonIncludes: "/request/create/engine uses deprecated field",
+        manifest: {
+          id: "deprecated-request-create-engine",
+          label: "Deprecated Request Create Engine",
+          request: {
+            kind: "skillrunner.job.v1",
+            create: {
+              skill_id: "literature-digest",
+              engine: "openai",
+            },
+          },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-request-create-parameter",
+        reasonIncludes: "/request/create/parameter uses deprecated field",
+        manifest: {
+          id: "deprecated-request-create-parameter",
+          label: "Deprecated Request Create Parameter",
+          request: {
+            kind: "skillrunner.job.v1",
+            create: {
+              skill_id: "literature-digest",
+              parameter: {},
+            },
+          },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-request-create-model",
+        reasonIncludes: "/request/create/model uses deprecated field",
+        manifest: {
+          id: "deprecated-request-create-model",
+          label: "Deprecated Request Create Model",
+          request: {
+            kind: "skillrunner.job.v1",
+            create: {
+              skill_id: "literature-digest",
+              model: "gpt-4o-mini",
+            },
+          },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+      {
+        id: "deprecated-request-create-runtime-options",
+        reasonIncludes: "/request/create/runtime_options uses deprecated field",
+        manifest: {
+          id: "deprecated-request-create-runtime-options",
+          label: "Deprecated Request Create Runtime Options",
+          request: {
+            kind: "skillrunner.job.v1",
+            create: {
+              skill_id: "literature-digest",
+              runtime_options: {},
+            },
+          },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+      },
+    ];
+
+    for (const entry of cases) {
+      await makeWorkflow(
+        tmpRoot,
+        entry.id,
+        entry.manifest,
+        {
+          "applyResult.js":
+            "export async function applyResult(){ return { ok: true }; }",
+        },
+      );
+    }
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+
+    for (const entry of cases) {
+      const diagnostic = (loaded.diagnostics || []).find(
+        (item) =>
+          item.category === "manifest_validation_error" && item.entry === entry.id,
+      );
+      assert.isOk(
+        diagnostic,
+        `missing diagnostic entry=${entry.id}; diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+      );
+      assert.include(
+        String(diagnostic?.reason || ""),
+        entry.reasonIncludes,
+        `entry=${entry.id}; diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+      );
+    }
+  });
+
   it("emits deterministic ordering for loaded workflows and diagnostics", async function () {
     const tmpRoot = await mkTempDir("zotero-skills-wf");
     await makeWorkflow(

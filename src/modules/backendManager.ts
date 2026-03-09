@@ -8,6 +8,10 @@ import { getPref, setPref } from "../utils/prefs";
 import { loadBackendsRegistry } from "../backends/registry";
 import { isWindowAlive } from "../utils/window";
 import { getString } from "../utils/locale";
+import {
+  buildSkillRunnerManagementUiUrl,
+  openSkillRunnerManagementDialog,
+} from "./skillRunnerManagementDialog";
 import type { BackendInstance } from "../backends/types";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
@@ -34,6 +38,12 @@ type EditableBackendRow = {
   authKind: "none" | "bearer";
   authToken: string;
   timeoutMs: string;
+};
+
+export type SkillRunnerManagementLaunchPayload = {
+  backendId: string;
+  baseUrl: string;
+  uiUrl: string;
 };
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -324,13 +334,39 @@ function appendSelectCell(
   cell.appendChild(control);
 }
 
-function appendRemoveCell(row: HTMLElement) {
-  const cell = appendCell(row);
-  const button = createHtmlElement(row.ownerDocument!, "button");
+export function getBackendRowActionKindsForType(type: string) {
+  const normalizedType = String(type || "").trim();
+  if (normalizedType === DEFAULT_BACKEND_TYPE) {
+    return ["manage-ui", "remove"] as const;
+  }
+  return ["remove"] as const;
+}
+
+function appendActionCell(args: {
+  row: HTMLElement;
+  backendType: string;
+  onOpenManagement?: (row: HTMLElement) => void;
+}) {
+  const cell = appendCell(args.row);
+  if (String(args.backendType || "").trim() === DEFAULT_BACKEND_TYPE) {
+    const manageButton = createHtmlElement(args.row.ownerDocument!, "button");
+    manageButton.type = "button";
+    manageButton.textContent = getString("backend-manager-open-management" as any);
+    manageButton.setAttribute("data-zs-backend-action", "open-management");
+    manageButton.addEventListener("click", () => {
+      if (typeof args.onOpenManagement === "function") {
+        args.onOpenManagement(args.row);
+      }
+    });
+    manageButton.style.marginRight = "6px";
+    cell.appendChild(manageButton);
+  }
+  const button = createHtmlElement(args.row.ownerDocument!, "button");
   button.type = "button";
   button.textContent = getString("backend-manager-remove" as any);
+  button.setAttribute("data-zs-backend-action", "remove");
   button.addEventListener("click", () => {
-    row.remove();
+    args.row.remove();
   });
   cell.appendChild(button);
 }
@@ -338,6 +374,7 @@ function appendRemoveCell(row: HTMLElement) {
 function appendBackendRow(args: {
   tbody: HTMLElement;
   backend: EditableBackendRow;
+  onOpenManagement?: (row: HTMLElement) => void;
 }) {
   const row = createHtmlElement(args.tbody.ownerDocument!, "tr");
   row.setAttribute("data-zs-backend-row", "1");
@@ -362,7 +399,11 @@ function appendBackendRow(args: {
   );
   appendTextCell(row, "authToken", args.backend.authToken, "220px");
   appendTextCell(row, "timeoutMs", args.backend.timeoutMs, "110px");
-  appendRemoveCell(row);
+  appendActionCell({
+    row,
+    backendType: args.backend.type,
+    onOpenManagement: args.onOpenManagement,
+  });
   args.tbody.appendChild(row);
 }
 
@@ -461,6 +502,29 @@ function readRowField(row: Element, field: string) {
     return "";
   }
   return getElementValue(control);
+}
+
+export function resolveSkillRunnerManagementLaunchPayloadFromRow(
+  row: Element,
+): SkillRunnerManagementLaunchPayload {
+  const backendId = String(readRowField(row, "id") || "").trim();
+  const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
+  const uiUrl = buildSkillRunnerManagementUiUrl(baseUrl);
+  return {
+    backendId: backendId || DEFAULT_BACKEND_ID,
+    baseUrl,
+    uiUrl,
+  };
+}
+
+export async function launchSkillRunnerManagementFromRow(args: {
+  row: Element;
+  openDialog?: (payload: SkillRunnerManagementLaunchPayload) => Promise<void>;
+}) {
+  const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(args.row);
+  const openDialog = args.openDialog || openSkillRunnerManagementDialog;
+  await openDialog(payload);
+  return payload;
 }
 
 export function collectBackendsFromDialog(doc: Document): {
@@ -647,6 +711,18 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
         }
       });
 
+      const openManagementFromRow = (row: HTMLElement) => {
+        void launchSkillRunnerManagementFromRow({
+          row,
+        }).catch((error) => {
+          alertWindow?.alert?.(
+            getString("backend-manager-open-management-failed" as any, {
+              args: { error: String(error) },
+            }),
+          );
+        });
+      };
+
       initialRows.forEach((backend) => {
         const tbody = bodyMap.get(backend.type);
         if (!tbody) {
@@ -655,6 +731,7 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
         appendBackendRow({
           tbody,
           backend,
+          onOpenManagement: openManagementFromRow,
         });
       });
 
@@ -682,6 +759,7 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
               authToken: "",
               timeoutMs: "",
             },
+            onOpenManagement: openManagementFromRow,
           });
         });
       });

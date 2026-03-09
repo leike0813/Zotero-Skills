@@ -26,6 +26,7 @@
 - `src/jobQueue/manager.ts`：任务队列
 - `src/modules/workflowExecute.ts`：执行主链路
 - `src/modules/*Dialog.ts`：设置/任务管理/日志窗口
+- `src/modules/skillRunnerManagementDialog.ts`：SkillRunner 管理页内嵌宿主
 
 说明：`src/transport/` 当前未启用，网络逻辑在 provider 内部实现。
 
@@ -56,6 +57,8 @@
 
 - 整体 JSON 非法：阻断 workflow 执行
 - 单条 backend 非法：仅影响绑定该 backend/provider 的 workflow
+- SkillRunner profile 行支持“进入管理页面”，使用当前行 `baseUrl` 打开 `${baseUrl}/ui`
+- 管理页 Basic Auth 通过浏览器认证弹窗处理，不在 backend profile 中保存用户名/密码
 
 ## 5. Workflow 声明模型
 

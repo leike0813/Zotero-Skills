@@ -57,6 +57,13 @@
   - 鉴权等待流程（`waiting_auth`、`auth/session`）
   - management API 迁移（`/v1/management/*`）
 
+## SkillRunner 管理页入口（当前）
+
+- Backend Manager 为 `type=skillrunner` 的 profile 提供“进入管理页面”动作。
+- 插件在 Zotero 对话框内直接加载 `${baseUrl}/ui`，复用后端原生管理 UI。
+- 该能力与 provider 执行链解耦：不影响 `skillrunner.job.v1` 请求与执行语义。
+- 若后端 UI 启用 Basic Auth，插件依赖浏览器标准认证弹窗；不在 backend profile 存储 basic 用户名/密码。
+
 ## generic-http 语义（当前）
 
 - 支持 request kind：

@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import {
   collectBackendsFromDialog,
+  getBackendRowActionKindsForType,
+  launchSkillRunnerManagementFromRow,
   persistBackendsConfig,
+  resolveSkillRunnerManagementLaunchPayloadFromRow,
 } from "../../src/modules/backendManager";
 
 type FakeControl = {
@@ -12,6 +15,7 @@ type FakeControl = {
 type FakeRow = {
   getAttribute: (name: string) => string | null;
   querySelector: (selector: string) => Element | null;
+  __controls?: Map<string, FakeControl>;
 };
 
 function makeTextControl(value: string): FakeControl {
@@ -65,6 +69,7 @@ function makeRow(args: {
       }
       return (controls.get(match[1]) || null) as unknown as Element | null;
     },
+    __controls: controls,
   };
 }
 
@@ -118,6 +123,112 @@ describe("backend manager risk regression", function () {
 
     assert.isOk(thrown);
     assert.match(String(thrown), /duplicate|重复/i);
+  });
+
+  it("Risk: HR-01 exposes management action only for skillrunner rows", function () {
+    assert.deepEqual(getBackendRowActionKindsForType("skillrunner"), [
+      "manage-ui",
+      "remove",
+    ]);
+    assert.deepEqual(getBackendRowActionKindsForType("generic-http"), [
+      "remove",
+    ]);
+    assert.deepEqual(getBackendRowActionKindsForType(""), ["remove"]);
+  });
+
+  it("Risk: HR-01 resolves management launch payload from current row values", function () {
+    const row = makeRow({
+      type: "skillrunner",
+      id: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
+      "skillrunner-edited";
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:9030/";
+
+    const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(
+      row as unknown as Element,
+    );
+    assert.equal(payload.backendId, "skillrunner-edited");
+    assert.equal(payload.baseUrl, "http://127.0.0.1:9030/");
+    assert.equal(payload.uiUrl, "http://127.0.0.1:9030/ui");
+  });
+
+  it("Risk: HR-01 normalizes endpoint baseUrl to origin-level /ui URL", function () {
+    const row = makeRow({
+      type: "skillrunner",
+      id: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030/v1",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+    const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(
+      row as unknown as Element,
+    );
+    assert.equal(payload.baseUrl, "http://127.0.0.1:8030/v1");
+    assert.equal(payload.uiUrl, "http://127.0.0.1:8030/ui");
+  });
+
+  it("Risk: HR-01 rejects invalid management baseUrl deterministically", function () {
+    const row = makeRow({
+      type: "skillrunner",
+      id: "skillrunner-local",
+      baseUrl: "ftp://127.0.0.1:8030",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+
+    let thrown: unknown = null;
+    try {
+      resolveSkillRunnerManagementLaunchPayloadFromRow(row as unknown as Element);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.isOk(thrown);
+    assert.match(
+      String(thrown),
+      /baseUrl|http\/https|management-base-url-invalid/i,
+    );
+  });
+
+  it("Risk: HR-01 launches management host with unsaved row edits", async function () {
+    const row = makeRow({
+      type: "skillrunner",
+      id: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
+      "skillrunner-unsaved";
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:18030";
+
+    const launched: Array<{
+      backendId: string;
+      baseUrl: string;
+      uiUrl: string;
+    }> = [];
+    await launchSkillRunnerManagementFromRow({
+      row: row as unknown as Element,
+      openDialog: async (payload) => {
+        launched.push(payload);
+      },
+    });
+
+    assert.lengthOf(launched, 1);
+    assert.deepEqual(launched[0], {
+      backendId: "skillrunner-unsaved",
+      baseUrl: "http://127.0.0.1:18030",
+      uiUrl: "http://127.0.0.1:18030/ui",
+    });
   });
 
   it("Risk: HR-01 rejects bearer backend rows without token", function () {

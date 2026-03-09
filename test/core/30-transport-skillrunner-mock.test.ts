@@ -103,6 +103,73 @@ describe("transport: skillrunner mock", function () {
     }
   });
 
+  it("fails fast when mock poll reaches canceled terminal status", async function () {
+    if (!(await isMockSkillRunnerReachable(MOCK_SKILLRUNNER_BASE_URL))) {
+      this.skip();
+    }
+    try {
+      const parent = await handlers.item.create({
+        itemType: "journalArticle",
+        fields: { title: "Transport Canceled Parent" },
+      });
+      const mdFile = fixturePath("literature-digest", "example.md");
+      const attachment = await handlers.attachment.createFromPath({
+        parent,
+        path: mdFile,
+        title: "example.md",
+        mimeType: "text/markdown",
+      });
+      const selectionContext = await buildSelectionContext([attachment]);
+
+      const loaded = await loadWorkflowManifests(workflowsPath());
+      const workflow = loaded.workflows.find(
+        (entry) => entry.manifest.id === "literature-digest",
+      );
+      assert.isOk(workflow, "workflow literature-digest not found");
+      const requests = (await executeBuildRequests({
+        workflow: workflow!,
+        selectionContext,
+      })) as Array<{
+        poll?: { interval_ms?: number; timeout_ms?: number };
+        parameter?: Record<string, unknown>;
+      }>;
+      assert.lengthOf(requests, 1);
+
+      const request = requests[0];
+      request.poll = {
+        interval_ms: 40,
+        timeout_ms: 5000,
+      };
+      request.parameter = {
+        ...(request.parameter || {}),
+        __mock_final_status: "canceled",
+      };
+
+      const provider = new SkillRunnerProvider({
+        baseUrl: MOCK_SKILLRUNNER_BASE_URL,
+      });
+
+      let thrown: unknown = null;
+      try {
+        await provider.execute({
+          requestKind: workflow!.manifest.request!.kind,
+          request,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      assert.isOk(thrown);
+      assert.match(String(thrown), /terminal failure/i);
+      assert.match(String(thrown), /status=canceled/i);
+    } catch (error) {
+      console.error(
+        `[transport: skillrunner mock] canceled terminal test failed\n${formatError(error)}`,
+      );
+      throw error;
+    }
+  });
+
   itFullOnly("supports result fetch step without requiring bundle download", async function () {
     if (!(await isMockSkillRunnerReachable(MOCK_SKILLRUNNER_BASE_URL))) {
       this.skip();
@@ -159,6 +226,7 @@ describe("transport: skillrunner mock", function () {
           data: {
             digest_path: "digest.md",
             references_path: "references.json",
+            citation_analysis_path: "citation_analysis.json",
           },
           artifacts: [],
           validation_warnings: [],

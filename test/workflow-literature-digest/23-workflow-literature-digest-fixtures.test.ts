@@ -146,7 +146,7 @@ describeFixtureMatrixSuite("workflow: literature-digest fixture matrix", functio
         assert.equal(request.targetParentID, expected.targetParentID);
         assert.equal(request.skill_id, "literature-digest");
         assert.equal(request.parameter?.language, languageDefault);
-        assert.equal(request.upload_files?.[0].key, "md_path");
+        assert.equal(request.upload_files?.[0].key, "source_path");
         assert.equal(request.upload_files?.[0].path, expected.uploadPath);
       }
     });

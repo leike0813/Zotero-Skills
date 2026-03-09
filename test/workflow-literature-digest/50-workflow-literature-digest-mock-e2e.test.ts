@@ -146,7 +146,7 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
       assert.equal(requests[0].targetParentID, parent.id);
       assert.equal(requests[0].skill_id, "literature-digest");
       assert.equal(requests[0].parameter?.language, "zh-CN");
-      assert.equal(requests[0].upload_files?.[0].key, "md_path");
+      assert.equal(requests[0].upload_files?.[0].key, "source_path");
       assert.equal(requests[0].upload_files?.[0].path, attachmentAbsPath);
 
       const provider = new SkillRunnerProvider({
@@ -196,25 +196,31 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
         bundleReader,
         request: requests[0],
       })) as { notes: Zotero.Item[] };
-      assert.lengthOf(applyResult.notes, 2);
+      assert.lengthOf(applyResult.notes, 3);
       const firstNote = Zotero.Items.get(applyResult.notes[0].id)!;
       const secondNote = Zotero.Items.get(applyResult.notes[1].id)!;
+      const thirdNote = Zotero.Items.get(applyResult.notes[2].id)!;
       assert.equal(firstNote.parentItemID, parent.id);
       assert.equal(secondNote.parentItemID, parent.id);
+      assert.equal(thirdNote.parentItemID, parent.id);
       assert.match(firstNote.getNote(), /<h1>Digest<\/h1>/);
       assert.match(firstNote.getNote(), /data-zs-payload="digest-markdown"/);
       assert.include(
         firstNote.getNote(),
-        `data-zs-source_markdown_item_key="${attachment.key}"`,
+        `data-zs-source_attachment_item_key="${attachment.key}"`,
       );
       assert.match(firstNote.getNote(), /data-zs-value="/);
       assert.match(secondNote.getNote(), /<h1>References<\/h1>/);
       assert.match(secondNote.getNote(), /<table data-zs-view="references-table">/);
       assert.match(secondNote.getNote(), /data-zs-payload="references-json"/);
       assert.match(secondNote.getNote(), /data-zs-value="/);
+      assert.match(thirdNote.getNote(), /<h1>Citation Analysis<\/h1>/);
+      assert.match(thirdNote.getNote(), /data-zs-payload="citation-analysis-json"/);
+      assert.match(thirdNote.getNote(), /data-zs-value="/);
       const parentNotes = parent.getNotes();
       assert.include(parentNotes, firstNote.id);
       assert.include(parentNotes, secondNote.id);
+      assert.include(parentNotes, thirdNote.id);
     } catch (error) {
       console.error(
         `[integration: literature-digest with mock skill-runner] e2e failed\n${formatError(error)}`,

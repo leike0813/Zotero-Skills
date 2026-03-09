@@ -178,4 +178,106 @@ describe("transport: upload fallback without FormData", function () {
       (globalThis as { Blob?: unknown }).Blob = originalBlob;
     }
   });
+
+  it("fails fast with diagnostics when poll status is failed", async function () {
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-failed" });
+        }
+        if (url.endsWith("/v1/jobs/req-failed/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-failed")) {
+          return createJsonResponse({
+            request_id: "req-failed",
+            status: "failed",
+            error: "mock backend failed",
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    let thrown: unknown = null;
+    try {
+      await client.executeSkillRunnerJob(
+        {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          upload_files: [
+            {
+              key: "md_path",
+              path: fixturePath("literature-digest", "example.md"),
+            },
+          ],
+          fetch_type: "result",
+        },
+        { engine: "gemini" },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.isOk(thrown);
+    assert.match(String(thrown), /request_id=req-failed/i);
+    assert.match(String(thrown), /status=failed/i);
+    assert.match(String(thrown), /mock backend failed/i);
+  });
+
+  it("fails fast when poll status is canceled and skips result fetch", async function () {
+    let resultFetchCalled = false;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-canceled" });
+        }
+        if (url.endsWith("/v1/jobs/req-canceled/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-canceled")) {
+          return createJsonResponse({
+            request_id: "req-canceled",
+            status: "canceled",
+            error: "canceled by mock",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-canceled/result")) {
+          resultFetchCalled = true;
+          return createJsonResponse({
+            request_id: "req-canceled",
+            result: { status: "success", data: {} },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    let thrown: unknown = null;
+    try {
+      await client.executeSkillRunnerJob(
+        {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          upload_files: [
+            {
+              key: "md_path",
+              path: fixturePath("literature-digest", "example.md"),
+            },
+          ],
+          fetch_type: "result",
+        },
+        { engine: "gemini" },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.isOk(thrown);
+    assert.match(String(thrown), /request_id=req-canceled/i);
+    assert.match(String(thrown), /status=canceled/i);
+    assert.isFalse(resultFetchCalled, "result fetch should be skipped");
+  });
 });

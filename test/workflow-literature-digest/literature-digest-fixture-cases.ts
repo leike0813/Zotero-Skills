@@ -2,6 +2,7 @@ import multiMarkdownDiffParents from "../fixtures/selection-context/selection-co
 import multiMarkdownNoPdf from "../fixtures/selection-context/selection-context-multi-markdown-no-pdf.json";
 import multiMarkdownSameParent from "../fixtures/selection-context/selection-context-multi-markdown-same-parent.json";
 import multiMarkdownWithParent from "../fixtures/selection-context/selection-context-multi-markdown-with-parent.json";
+import singlePdf from "../fixtures/selection-context/selection-context-single-pdf.json";
 
 export type LiteratureDigestFixtureCase = {
   name: string;
@@ -73,6 +74,20 @@ export const LITERATURE_DIGEST_FIXTURE_CASES: LiteratureDigestFixtureCase[] = [
         targetParentID: 57,
         uploadPath:
           "attachments/NWU22TPK/Li 等 - 2022 - Panoptic SegFormer Delving Deeper Into Panoptic Segmentation With Transformers.md",
+      },
+    ],
+  },
+  {
+    name: "single-pdf-fallback",
+    context: singlePdf as unknown,
+    expectedFilteredPaths: [
+      "attachments/EXKUYHMH/Zhang 等 - 2022 - Accelerating DETR Convergence via Semantic-Aligned Matching.pdf",
+    ],
+    expectedRequests: [
+      {
+        targetParentID: 2,
+        uploadPath:
+          "attachments/EXKUYHMH/Zhang 等 - 2022 - Accelerating DETR Convergence via Semantic-Aligned Matching.pdf",
       },
     ],
   },

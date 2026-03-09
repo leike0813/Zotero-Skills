@@ -22,9 +22,9 @@ function parseNoteKind(noteContent: string) {
   return match ? match[2] : "";
 }
 
-function parseSourceMarkdownItemKey(noteContent: string) {
+function parseSourceAttachmentItemKey(noteContent: string) {
   const match = String(noteContent || "").match(
-    /data-zs-source_markdown_item_key=(["'])([^"']+)\1/i,
+    /data-zs-source_attachment_item_key=(["'])([^"']+)\1/i,
   );
   return match ? match[2] : "";
 }
@@ -93,11 +93,46 @@ describe("workflow: literature-digest", function () {
     assert.equal(request.targetParentID, parent.id);
     assert.equal(request.skill_id, "literature-digest");
     assert.equal(request.parameter?.language, "zh-CN");
-    assert.equal(request.upload_files?.[0].key, "md_path");
+    assert.equal(request.upload_files?.[0].key, "source_path");
     assert.equal(request.upload_files?.[0].path, mdFile);
   });
 
-  it("skips build when parent already has digest and references notes", async function () {
+  it("builds request from selected pdf attachment when markdown is unavailable", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Parent PDF Fallback" },
+    });
+
+    const pdfFile = fixturePath("selection-context", "attachments/EXKUYHMH/Zhang 等 - 2022 - Accelerating DETR Convergence via Semantic-Aligned Matching.pdf");
+    const attachment = await handlers.attachment.createFromPath({
+      parent,
+      path: pdfFile,
+      title: "example.pdf",
+      mimeType: "application/pdf",
+    });
+
+    const context = await buildSelectionContext([attachment]);
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    const requests = (await executeBuildRequests({
+      workflow: workflow!,
+      selectionContext: context,
+    })) as Array<{
+      kind: string;
+      upload_files: Array<{ key: string; path: string }>;
+    }>;
+
+    assert.lengthOf(requests, 1);
+    assert.equal(requests[0].kind, "skillrunner.job.v1");
+    assert.equal(requests[0].upload_files?.[0].key, "source_path");
+    assert.equal(requests[0].upload_files?.[0].path, pdfFile);
+  });
+
+  it("skips build when parent already has digest/references/citation-analysis notes", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Skip Parent" },
@@ -118,6 +153,10 @@ describe("workflow: literature-digest", function () {
     await handlers.parent.addNote(parent, {
       content:
         '<div data-zs-note-kind="references"><h1>References</h1></div>',
+    });
+    await handlers.parent.addNote(parent, {
+      content:
+        '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
     });
 
     const context = await buildSelectionContext([attachment]);
@@ -166,6 +205,10 @@ describe("workflow: literature-digest", function () {
       content:
         '<div><h1>References</h1><span data-zs-block="payload" data-zs-payload="references-json" data-zs-value="e30="></span></div>',
     });
+    await handlers.parent.addNote(parent, {
+      content:
+        '<div><h1>Citation Analysis</h1><span data-zs-block="payload" data-zs-payload="citation-analysis-json" data-zs-value="e30="></span></div>',
+    });
 
     const context = await buildSelectionContext([attachment]);
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -210,6 +253,9 @@ describe("workflow: literature-digest", function () {
     });
     await handlers.parent.addNote(parent, {
       content: "<div><h1>References JSON</h1><pre>[]</pre></div>",
+    });
+    await handlers.parent.addNote(parent, {
+      content: "<div><h1>Citation Analysis</h1><pre>{}</pre></div>",
     });
 
     const context = await buildSelectionContext([attachment]);
@@ -258,6 +304,10 @@ describe("workflow: literature-digest", function () {
       content:
         "<div><p><strong>References JSON</strong></p><pre>[]</pre></div>",
     });
+    await handlers.parent.addNote(parent, {
+      content:
+        "<div><p><strong>Citation Analysis</strong></p><pre>{}</pre></div>",
+    });
 
     const context = await buildSelectionContext([attachment]);
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -283,7 +333,7 @@ describe("workflow: literature-digest", function () {
     );
   });
 
-  it("applies bundle by creating digest and references child notes", async function () {
+  it("applies bundle by creating digest/references/citation-analysis child notes", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Result Parent" },
@@ -305,11 +355,13 @@ describe("workflow: literature-digest", function () {
       bundleReader: bundle,
     })) as { notes: Zotero.Item[] };
 
-    assert.lengthOf(applied.notes, 2);
+    assert.lengthOf(applied.notes, 3);
     const firstNote = Zotero.Items.get(applied.notes[0].id)!;
     const secondNote = Zotero.Items.get(applied.notes[1].id)!;
+    const thirdNote = Zotero.Items.get(applied.notes[2].id)!;
     assert.equal(firstNote.parentItemID, parent.id);
     assert.equal(secondNote.parentItemID, parent.id);
+    assert.equal(thirdNote.parentItemID, parent.id);
     assert.match(firstNote.getNote(), /<h1>Digest<\/h1>/);
     assert.match(firstNote.getNote(), /data-zs-payload="digest-markdown"/);
     assert.match(firstNote.getNote(), /data-zs-value="/);
@@ -317,10 +369,14 @@ describe("workflow: literature-digest", function () {
     assert.match(secondNote.getNote(), /<table data-zs-view="references-table">/);
     assert.match(secondNote.getNote(), /data-zs-payload="references-json"/);
     assert.match(secondNote.getNote(), /data-zs-value="/);
+    assert.match(thirdNote.getNote(), /<h1>Citation Analysis<\/h1>/);
+    assert.match(thirdNote.getNote(), /data-zs-payload="citation-analysis-json"/);
+    assert.match(thirdNote.getNote(), /data-zs-value="/);
 
     const parentNotes = parent.getNotes();
     assert.include(parentNotes, firstNote.id);
     assert.include(parentNotes, secondNote.id);
+    assert.include(parentNotes, thirdNote.id);
   });
 
   it("writes hidden source metadata with markdown attachment itemKey when request is provided", async function () {
@@ -365,17 +421,22 @@ describe("workflow: literature-digest", function () {
       request: requests[0],
     })) as { notes: Zotero.Item[] };
 
-    assert.lengthOf(applied.notes, 2);
+    assert.lengthOf(applied.notes, 3);
     const digestNote = Zotero.Items.get(applied.notes[0].id)!;
     const referencesNote = Zotero.Items.get(applied.notes[1].id)!;
+    const citationAnalysisNote = Zotero.Items.get(applied.notes[2].id)!;
     assert.match(digestNote.getNote(), /data-zs-block="meta"/);
-    assert.match(digestNote.getNote(), /data-zs-meta="source-markdown"/);
+    assert.match(digestNote.getNote(), /data-zs-meta="source-attachment"/);
     assert.equal(
-      parseSourceMarkdownItemKey(digestNote.getNote()),
+      parseSourceAttachmentItemKey(digestNote.getNote()),
       attachment.key,
     );
     assert.match(digestNote.getNote(), /data-zs-payload="digest-markdown"/);
     assert.match(referencesNote.getNote(), /data-zs-payload="references-json"/);
+    assert.match(
+      citationAnalysisNote.getNote(),
+      /data-zs-payload="citation-analysis-json"/,
+    );
   });
 
   itFullOnly("continues apply when source markdown itemKey cannot be resolved", async function () {
@@ -400,16 +461,21 @@ describe("workflow: literature-digest", function () {
       request: {
         targetParentID: parent.id,
         sourceAttachmentPaths: ["D:/not-found/example.md"],
-        upload_files: [{ key: "md_path", path: "D:/not-found/example.md" }],
+        upload_files: [{ key: "source_path", path: "D:/not-found/example.md" }],
       },
     })) as { notes: Zotero.Item[] };
 
-    assert.lengthOf(applied.notes, 2);
+    assert.lengthOf(applied.notes, 3);
     const digestNote = Zotero.Items.get(applied.notes[0].id)!;
     const referencesNote = Zotero.Items.get(applied.notes[1].id)!;
-    assert.notMatch(digestNote.getNote(), /data-zs-source_markdown_item_key=/);
+    const citationAnalysisNote = Zotero.Items.get(applied.notes[2].id)!;
+    assert.notMatch(digestNote.getNote(), /data-zs-source_attachment_item_key=/);
     assert.match(digestNote.getNote(), /data-zs-payload="digest-markdown"/);
     assert.match(referencesNote.getNote(), /data-zs-payload="references-json"/);
+    assert.match(
+      citationAnalysisNote.getNote(),
+      /data-zs-payload="citation-analysis-json"/,
+    );
   });
 
   itFullOnly("upserts existing generated notes and keeps each kind unique", async function () {
@@ -454,9 +520,13 @@ describe("workflow: literature-digest", function () {
     const referencesNotes = generated.filter(
       (note) => parseNoteKind(note.getNote()) === "references",
     );
+    const citationAnalysisNotes = generated.filter(
+      (note) => parseNoteKind(note.getNote()) === "citation-analysis",
+    );
 
     assert.lengthOf(digestNotes, 1);
     assert.lengthOf(referencesNotes, 1);
+    assert.lengthOf(citationAnalysisNotes, 1);
     assert.match(
       digestNotes[0].getNote(),
       /data-zs-payload="digest-markdown"/,
@@ -464,6 +534,10 @@ describe("workflow: literature-digest", function () {
     assert.match(
       referencesNotes[0].getNote(),
       /data-zs-payload="references-json"/,
+    );
+    assert.match(
+      citationAnalysisNotes[0].getNote(),
+      /data-zs-payload="citation-analysis-json"/,
     );
   });
 
@@ -488,6 +562,10 @@ describe("workflow: literature-digest", function () {
     await handlers.parent.addNote(parent, {
       content:
         '<div data-zs-note-kind="references"><h1>References</h1></div>',
+    });
+    await handlers.parent.addNote(parent, {
+      content:
+        '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
     });
 
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -563,6 +641,10 @@ describe("workflow: literature-digest", function () {
         content:
           '<div data-zs-note-kind="references"><h1>References</h1></div>',
       });
+      await handlers.parent.addNote(parent, {
+        content:
+          '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
+      });
     }
 
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -627,6 +709,10 @@ describe("workflow: literature-digest", function () {
       content:
         '<div data-zs-note-kind="references"><h1>References</h1></div>',
     });
+    await handlers.parent.addNote(parent, {
+      content:
+        '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
+    });
 
     const context = await buildSelectionContext([parent]);
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -683,6 +769,10 @@ describe("workflow: literature-digest", function () {
     await handlers.parent.addNote(parentSkipped, {
       content:
         '<div data-zs-note-kind="references"><h1>References</h1></div>',
+    });
+    await handlers.parent.addNote(parentSkipped, {
+      content:
+        '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
     });
 
     const context = await buildSelectionContext([parentSkipped, parentRun]);

@@ -170,6 +170,41 @@ describe("literature-digest filterInputs", function () {
     assert.equal(filtered.items.attachments[0].filePath, "attachments/A/paperA.md");
   });
 
+  it("fallbacks to earliest pdf when no markdown exists", async function () {
+    const filterInputs = await getFilterHook();
+    const context = makeSyntheticContext([
+      attachmentEntry({
+        id: 21,
+        title: "paper.pdf",
+        filePath: "attachments/B/paper.pdf",
+        parentId: 100020,
+        parentTitle: "P2",
+        dateAdded: "2026-01-02T00:00:00Z",
+        mimeType: "application/pdf",
+      }),
+      attachmentEntry({
+        id: 22,
+        title: "paper-v2.pdf",
+        filePath: "attachments/B/paper-v2.pdf",
+        parentId: 100020,
+        parentTitle: "P2",
+        dateAdded: "2026-01-03T00:00:00Z",
+        mimeType: "application/pdf",
+      }),
+    ]);
+
+    const filtered = filterInputs({
+      selectionContext: context,
+      manifest: {} as any,
+      runtime: hookRuntime,
+    }) as {
+      items: { attachments: Array<{ filePath?: string }> };
+    };
+
+    assert.lengthOf(filtered.items.attachments, 1);
+    assert.equal(filtered.items.attachments[0].filePath, "attachments/B/paper.pdf");
+  });
+
   it("ignores selected markdown attachments when their parent is selected", async function () {
     const filterInputs = await getFilterHook();
     const context = {

@@ -37,6 +37,26 @@
 - Provider 可返回动态枚举（如 `model` 随 `engine` 变化）
 - Provider 负责对 runtime options 做 normalize
 
+## skillrunner 语义（当前）
+
+- 支持 request kind：
+  - `skillrunner.job.v1`
+- 执行链固定为 Auto 模式：
+  - `POST /v1/jobs`
+  - `POST /v1/jobs/{request_id}/upload`
+  - `GET /v1/jobs/{request_id}` 轮询
+  - `GET /v1/jobs/{request_id}/result|bundle`
+- 轮询终态：
+  - `succeeded`：继续结果拉取并返回统一成功结果
+  - `failed` / `canceled`：立即失败并抛出可诊断错误
+- mixed-input 合同：
+  - `parameter` 保持 object
+  - `input` 允许任意 JSON（string/array/object）
+- deferred 范围（本实现未覆盖）：
+  - interactive 会话编排（`waiting_user`、`interaction/reply`）
+  - 鉴权等待流程（`waiting_auth`、`auth/session`）
+  - management API 迁移（`/v1/management/*`）
+
 ## generic-http 语义（当前）
 
 - 支持 request kind：

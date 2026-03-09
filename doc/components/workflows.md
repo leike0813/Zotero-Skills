@@ -80,7 +80,7 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
     },
     "input": {
       "upload": {
-        "files": [{ "key": "md_path", "from": "selected.markdown" }]
+        "files": [{ "key": "source_path", "from": "selected.source" }]
       }
     }
   },
@@ -147,6 +147,7 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
 - `files[].from` 当前支持：
   - `selected.markdown`
   - `selected.pdf`
+  - `selected.source`（由当前输入单元筛选后的唯一源附件，支持 markdown/pdf）
 - 每个 selector 在当前输入单元必须唯一命中，否则该输入单元报错/跳过
 
 ## 输入筛选策略

@@ -157,12 +157,12 @@ function renderPayloadBlock(payloadType, payload) {
   return `<span data-zs-block="payload" data-zs-payload="${escapeAttribute(payloadType)}" data-zs-version="1" data-zs-encoding="base64" data-zs-value="${escapeAttribute(encoded)}"></span>`;
 }
 
-function renderSourceMetadataBlock(sourceMarkdownItemKey) {
-  const itemKey = String(sourceMarkdownItemKey || "").trim();
+function renderSourceMetadataBlock(sourceAttachmentItemKey) {
+  const itemKey = String(sourceAttachmentItemKey || "").trim();
   if (!itemKey) {
     return "";
   }
-  return `<span data-zs-block="meta" data-zs-meta="source-markdown" data-zs-source_markdown_item_key="${escapeAttribute(itemKey)}" hidden="hidden"></span>`;
+  return `<span data-zs-block="meta" data-zs-meta="source-attachment" data-zs-source_attachment_item_key="${escapeAttribute(itemKey)}" hidden="hidden"></span>`;
 }
 
 function normalizePathForCompare(targetPath) {
@@ -208,7 +208,7 @@ function collectSourceAttachmentPathsFromRequest(request) {
   return Array.from(new Set(combined));
 }
 
-async function resolveSourceMarkdownItemKey({ parentItem, request, runtime }) {
+async function resolveSourceAttachmentItemKey({ parentItem, request, runtime }) {
   if (!parentItem) {
     return "";
   }
@@ -290,6 +290,9 @@ function parseGeneratedNoteKind(noteContent) {
   if (/data-zs-payload=(["'])references-json\1/i.test(text)) {
     return "references";
   }
+  if (/data-zs-payload=(["'])citation-analysis-json\1/i.test(text)) {
+    return "citation-analysis";
+  }
 
   const kindMatch = text.match(
     /data-zs-note-kind\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i,
@@ -297,7 +300,7 @@ function parseGeneratedNoteKind(noteContent) {
   const kind = kindMatch
     ? String(kindMatch[1] || kindMatch[2] || kindMatch[3] || "")
     : "";
-  if (kind === "digest" || kind === "references") {
+  if (kind === "digest" || kind === "references" || kind === "citation-analysis") {
     return kind;
   }
   if (kind === "literature-digest") {
@@ -321,12 +324,21 @@ function parseGeneratedNoteKind(noteContent) {
       text,
     ) ||
     /(^|\n)\s*#\s*References(?:\s+JSON)?\s*($|\n)/i.test(text);
+  const hasCitationHeading =
+    /<h1[^>]*>\s*Citation Analysis\s*<\/h1>/i.test(text) ||
+    /<p[^>]*>\s*(?:<strong>)?\s*Citation Analysis\s*(?:<\/strong>)?\s*<\/p>/i.test(
+      text,
+    ) ||
+    /(^|\n)\s*#\s*Citation Analysis\s*($|\n)/i.test(text);
 
   if (hasDigestHeading) {
     return "digest";
   }
   if (hasReferencesHeading) {
     return "references";
+  }
+  if (hasCitationHeading) {
+    return "citation-analysis";
   }
 
   return "";
@@ -336,6 +348,7 @@ function collectGeneratedNotesByKind(parentItem, runtime) {
   const byKind = new Map([
     ["digest", []],
     ["references", []],
+    ["citation-analysis", []],
   ]);
   const noteIds = parentItem.getNotes?.() || [];
   for (const noteRef of noteIds) {
@@ -389,9 +402,14 @@ export async function applyResult({ parent, bundleReader, request, runtime }) {
     result?.data?.references_path,
     "references.json",
   )}`;
+  const citationAnalysisEntry = `artifacts/${helpers.basenameOrFallback(
+    result?.data?.citation_analysis_path,
+    "citation_analysis.json",
+  )}`;
 
   const digestMarkdown = await bundleReader.readText(digestEntry);
   const referencesJson = await bundleReader.readText(referencesEntry);
+  const citationAnalysisJson = await bundleReader.readText(citationAnalysisEntry);
 
   let parsedReferences;
   try {
@@ -400,15 +418,26 @@ export async function applyResult({ parent, bundleReader, request, runtime }) {
     parsedReferences = [];
   }
   const references = normalizeReferences(parsedReferences);
-  const sourceMarkdownItemKey = await resolveSourceMarkdownItemKey({
+  const sourceAttachmentItemKey = await resolveSourceAttachmentItemKey({
     parentItem,
     request,
     runtime,
   });
 
+  let parsedCitationAnalysis = {};
+  try {
+    parsedCitationAnalysis = JSON.parse(citationAnalysisJson) || {};
+  } catch {
+    parsedCitationAnalysis = {};
+  }
+  const citationReportMarkdown =
+    parsedCitationAnalysis && typeof parsedCitationAnalysis === "object"
+      ? String(parsedCitationAnalysis.report_md || "")
+      : "";
+
   const digestNoteContent = [
     '<div data-zs-note-kind="digest">',
-    renderSourceMetadataBlock(sourceMarkdownItemKey),
+    renderSourceMetadataBlock(sourceAttachmentItemKey),
     "<h1>Digest</h1>",
     '<div data-zs-view="digest-html">',
     renderMarkdownToHtml(digestMarkdown),
@@ -435,6 +464,21 @@ export async function applyResult({ parent, bundleReader, request, runtime }) {
     "</div>",
   ].join("\n");
 
+  const citationAnalysisNoteContent = [
+    '<div data-zs-note-kind="citation-analysis">',
+    "<h1>Citation Analysis</h1>",
+    '<div data-zs-view="citation-analysis-html">',
+    renderMarkdownToHtml(citationReportMarkdown),
+    "</div>",
+    renderPayloadBlock("citation-analysis-json", {
+      version: 1,
+      entry: citationAnalysisEntry,
+      format: "json",
+      citation_analysis: parsedCitationAnalysis,
+    }),
+    "</div>",
+  ].join("\n");
+
   const existingByKind = collectGeneratedNotesByKind(parentItem, runtime);
 
   const digestNote = await upsertUniqueGeneratedNote({
@@ -451,7 +495,14 @@ export async function applyResult({ parent, bundleReader, request, runtime }) {
     existingNotes: existingByKind.get("references"),
   });
 
+  const citationAnalysisNote = await upsertUniqueGeneratedNote({
+    runtime,
+    parentItem,
+    content: citationAnalysisNoteContent,
+    existingNotes: existingByKind.get("citation-analysis"),
+  });
+
   return {
-    notes: [digestNote, referencesNote],
+    notes: [digestNote, referencesNote, citationAnalysisNote],
   };
 }

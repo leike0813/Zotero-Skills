@@ -1,48 +1,12 @@
-function pickByParentFromSelectedAttachments(
-  selectedAttachments,
-  selectedParentIds,
-  helpers,
-  runtime,
-  skipCache,
-) {
-  const groupedByParent = new Map();
-  const selectedPdfByParent = new Map();
-
-  for (const entry of selectedAttachments) {
-    const parentId = helpers.getAttachmentParentId(entry);
-    if (!parentId || selectedParentIds.has(parentId)) {
-      continue;
-    }
-    if (hasBothDigestAndReferencesNotes(parentId, runtime, skipCache)) {
-      continue;
-    }
-    if (helpers.isPdfAttachment(entry)) {
-      const existingPdfs = selectedPdfByParent.get(parentId) || [];
-      existingPdfs.push(entry);
-      selectedPdfByParent.set(parentId, existingPdfs);
-      continue;
-    }
-    if (!helpers.isMarkdownAttachment(entry)) {
-      continue;
-    }
-    const existing = groupedByParent.get(parentId) || [];
-    existing.push(entry);
-    groupedByParent.set(parentId, existing);
+function compareByDateAndName(left, right, helpers) {
+  const dateDelta =
+    helpers.getAttachmentDateAdded(left) - helpers.getAttachmentDateAdded(right);
+  if (dateDelta !== 0) {
+    return dateDelta;
   }
-
-  const chosen = [];
-  for (const [parentId, mdEntries] of groupedByParent.entries()) {
-    if (mdEntries.length === 1) {
-      chosen.push(mdEntries[0]);
-      continue;
-    }
-    const pdfEntries = selectedPdfByParent.get(parentId) || [];
-    const resolved = chooseMarkdownByPdfOrEarliest(mdEntries, pdfEntries, helpers);
-    if (resolved) {
-      chosen.push(resolved);
-    }
-  }
-  return chosen;
+  return helpers
+    .getAttachmentFileName(left)
+    .localeCompare(helpers.getAttachmentFileName(right));
 }
 
 function chooseMarkdownByPdfOrEarliest(mdEntries, pdfEntries, helpers) {
@@ -57,17 +21,67 @@ function chooseMarkdownByPdfOrEarliest(mdEntries, pdfEntries, helpers) {
     }
   }
 
-  const sortedMds = [...mdEntries].sort((a, b) => {
-    const delta =
-      helpers.getAttachmentDateAdded(a) - helpers.getAttachmentDateAdded(b);
-    if (delta !== 0) {
-      return delta;
-    }
-    return helpers
-      .getAttachmentFileName(a)
-      .localeCompare(helpers.getAttachmentFileName(b));
-  });
+  const sortedMds = [...mdEntries].sort((a, b) => compareByDateAndName(a, b, helpers));
   return sortedMds[0] || null;
+}
+
+function chooseSourceByPolicy(mdEntries, pdfEntries, helpers) {
+  if (mdEntries.length > 0) {
+    if (mdEntries.length === 1) {
+      return mdEntries[0];
+    }
+    return chooseMarkdownByPdfOrEarliest(mdEntries, pdfEntries, helpers);
+  }
+  if (pdfEntries.length > 0) {
+    const sortedPdfs = [...pdfEntries].sort((a, b) =>
+      compareByDateAndName(a, b, helpers),
+    );
+    return sortedPdfs[0] || null;
+  }
+  return null;
+}
+
+function pickByParentFromSelectedAttachments(
+  selectedAttachments,
+  selectedParentIds,
+  helpers,
+  runtime,
+  skipCache,
+) {
+  const groupedByParent = new Map();
+
+  for (const entry of selectedAttachments) {
+    const parentId = helpers.getAttachmentParentId(entry);
+    if (!parentId || selectedParentIds.has(parentId)) {
+      continue;
+    }
+    if (hasAllGeneratedNotes(parentId, runtime, skipCache)) {
+      continue;
+    }
+    if (!helpers.isMarkdownAttachment(entry) && !helpers.isPdfAttachment(entry)) {
+      continue;
+    }
+    const bucket = groupedByParent.get(parentId) || { mdEntries: [], pdfEntries: [] };
+    if (helpers.isMarkdownAttachment(entry)) {
+      bucket.mdEntries.push(entry);
+    } else if (helpers.isPdfAttachment(entry)) {
+      bucket.pdfEntries.push(entry);
+    }
+    groupedByParent.set(parentId, bucket);
+  }
+
+  const chosen = [];
+  for (const [, grouped] of groupedByParent.entries()) {
+    const resolved = chooseSourceByPolicy(
+      grouped.mdEntries,
+      grouped.pdfEntries,
+      helpers,
+    );
+    if (resolved) {
+      chosen.push(resolved);
+    }
+  }
+  return chosen;
 }
 
 function pickBySelectedParents(selectedParents, helpers, runtime, skipCache) {
@@ -77,24 +91,17 @@ function pickBySelectedParents(selectedParents, helpers, runtime, skipCache) {
     if (!parentId) {
       continue;
     }
-    if (hasBothDigestAndReferencesNotes(parentId, runtime, skipCache)) {
+    if (hasAllGeneratedNotes(parentId, runtime, skipCache)) {
       continue;
     }
     const allAttachments = parent?.attachments || [];
     const mdEntries = allAttachments.filter((entry) =>
       helpers.isMarkdownAttachment(entry),
     );
-    if (mdEntries.length === 0) {
-      continue;
-    }
-    if (mdEntries.length === 1) {
-      chosen.push(mdEntries[0]);
-      continue;
-    }
     const pdfEntries = allAttachments.filter((entry) =>
       helpers.isPdfAttachment(entry),
     );
-    const resolved = chooseMarkdownByPdfOrEarliest(mdEntries, pdfEntries, helpers);
+    const resolved = chooseSourceByPolicy(mdEntries, pdfEntries, helpers);
     if (resolved) {
       chosen.push(resolved);
     }
@@ -111,6 +118,9 @@ function parseGeneratedNoteKind(noteContent) {
   if (/data-zs-payload=(["'])references-json\1/i.test(text)) {
     return "references";
   }
+  if (/data-zs-payload=(["'])citation-analysis-json\1/i.test(text)) {
+    return "citation-analysis";
+  }
 
   const kindMatch = text.match(
     /data-zs-note-kind\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i,
@@ -118,7 +128,7 @@ function parseGeneratedNoteKind(noteContent) {
   const kind = kindMatch
     ? String(kindMatch[1] || kindMatch[2] || kindMatch[3] || "")
     : "";
-  if (kind === "digest" || kind === "references") {
+  if (kind === "digest" || kind === "references" || kind === "citation-analysis") {
     return kind;
   }
   if (kind === "literature-digest") {
@@ -142,6 +152,12 @@ function parseGeneratedNoteKind(noteContent) {
       text,
     ) ||
     /(^|\n)\s*#\s*References(?:\s+JSON)?\s*($|\n)/i.test(text);
+  const hasCitationHeading =
+    /<h1[^>]*>\s*Citation Analysis\s*<\/h1>/i.test(text) ||
+    /<p[^>]*>\s*(?:<strong>)?\s*Citation Analysis\s*(?:<\/strong>)?\s*<\/p>/i.test(
+      text,
+    ) ||
+    /(^|\n)\s*#\s*Citation Analysis\s*($|\n)/i.test(text);
 
   if (hasDigestHeading) {
     return "digest";
@@ -149,17 +165,21 @@ function parseGeneratedNoteKind(noteContent) {
   if (hasReferencesHeading) {
     return "references";
   }
+  if (hasCitationHeading) {
+    return "citation-analysis";
+  }
 
   return "";
 }
 
-function hasBothDigestAndReferencesNotes(parentId, runtime, cache) {
+function hasAllGeneratedNotes(parentId, runtime, cache) {
   if (!parentId || cache.has(parentId)) {
     return cache.get(parentId) === true;
   }
 
   let hasDigest = false;
   let hasReferences = false;
+  let hasCitationAnalysis = false;
   try {
     const parentItem = runtime.helpers.resolveItemRef(parentId);
     const noteIds = parentItem.getNotes?.() || [];
@@ -180,20 +200,23 @@ function hasBothDigestAndReferencesNotes(parentId, runtime, cache) {
       if (kind === "references") {
         hasReferences = true;
       }
-      if (hasDigest && hasReferences) {
+      if (kind === "citation-analysis") {
+        hasCitationAnalysis = true;
+      }
+      if (hasDigest && hasReferences && hasCitationAnalysis) {
         break;
       }
     }
     if (typeof console !== "undefined") {
       console.info(
-        `[literature-digest/filterInputs] parent=${parentId} notes=${noteIds.length} digest=${hasDigest} references=${hasReferences}`,
+        `[literature-digest/filterInputs] parent=${parentId} notes=${noteIds.length} digest=${hasDigest} references=${hasReferences} citationAnalysis=${hasCitationAnalysis}`,
       );
     }
   } catch {
     // ignore note scan failures and keep workflow runnable
   }
 
-  const matched = hasDigest && hasReferences;
+  const matched = hasDigest && hasReferences && hasCitationAnalysis;
   cache.set(parentId, matched);
   return matched;
 }

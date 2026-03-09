@@ -141,7 +141,7 @@ describe("workflow settings execution", function () {
     assert.equal(requests[0].skill_id, "literature-digest");
     assert.equal(requests[0].parameter?.language, "en-US");
     assert.equal(requests[0].fetch_type, "bundle");
-    assert.equal(requests[0].upload_files?.[0].key, "md_path");
+    assert.equal(requests[0].upload_files?.[0].key, "source_path");
   });
 
   it("consumes run-once overrides exactly once", async function () {

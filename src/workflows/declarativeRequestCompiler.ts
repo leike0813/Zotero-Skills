@@ -104,13 +104,16 @@ function isPdfAttachment(entry: AttachmentLike) {
 
 function resolveAttachmentBySelector(
   attachments: AttachmentLike[],
-  selector: "selected.markdown" | "selected.pdf",
+  selector: "selected.markdown" | "selected.pdf" | "selected.source",
 ) {
   const matched = attachments.filter((entry) => {
     if (selector === "selected.markdown") {
       return isMarkdownAttachment(entry);
     }
-    return isPdfAttachment(entry);
+    if (selector === "selected.pdf") {
+      return isPdfAttachment(entry);
+    }
+    return true;
   });
   if (matched.length !== 1) {
     throw new Error(
@@ -250,7 +253,7 @@ function buildSkillRunnerJobRequest(args: {
       key: entry.key,
       path: resolveAttachmentBySelector(
         attachments,
-        entry.from as "selected.markdown" | "selected.pdf",
+        entry.from as "selected.markdown" | "selected.pdf" | "selected.source",
       ),
     };
   });

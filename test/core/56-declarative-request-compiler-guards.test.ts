@@ -34,8 +34,8 @@ describe("declarative request compiler guards", function () {
             upload: {
               files: [
                 {
-                  key: "md_path",
-                  from: "selected.markdown",
+                  key: "source_path",
+                  from: "selected.source",
                 },
               ],
             },
@@ -61,7 +61,7 @@ describe("declarative request compiler guards", function () {
     assert.equal(request.kind, "skillrunner.job.v1");
     assert.equal(request.skill_id, "tag-regulator");
     assert.deepEqual(request.upload_files, [
-      { key: "md_path", path: "D:/fixtures/only.md" },
+      { key: "source_path", path: "D:/fixtures/only.md" },
     ]);
     assert.deepEqual(request.parameter, { profile: "default" });
     assert.deepEqual(request.input, {
@@ -109,6 +109,64 @@ describe("declarative request compiler guards", function () {
                   {
                     key: "md_path",
                     from: "selected.markdown",
+                  },
+                ],
+              },
+            },
+          },
+          hooks: {
+            applyResult: "hooks/applyResult.js",
+          },
+        } as any,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.isOk(thrown);
+    assert.match(
+      String(thrown),
+      /requires exactly 1 matched attachment, got 2/i,
+    );
+  });
+
+  it("Risk: HR-03 rejects selector cardinality violations for selected.source", function () {
+    let thrown: unknown = null;
+
+    try {
+      compileDeclarativeRequest({
+        kind: "skillrunner.job.v1",
+        selectionContext: {
+          items: {
+            attachments: [
+              {
+                filePath: "D:/fixtures/a.md",
+                mimeType: "text/markdown",
+                parent: { id: 101, title: "Parent A" },
+              },
+              {
+                filePath: "D:/fixtures/a.pdf",
+                mimeType: "application/pdf",
+                parent: { id: 101, title: "Parent A" },
+              },
+            ],
+          },
+        },
+        manifest: {
+          id: "hr03-selector-source-cardinality",
+          label: "HR03 Selector Source Cardinality",
+          provider: "skillrunner",
+          request: {
+            kind: "skillrunner.job.v1",
+            create: {
+              skill_id: "literature-digest",
+            },
+            input: {
+              upload: {
+                files: [
+                  {
+                    key: "source_path",
+                    from: "selected.source",
                   },
                 ],
               },

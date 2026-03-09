@@ -117,10 +117,17 @@ function extractPayloadJson(payloadKind) {
   return null;
 }
 
-function extractSourceMarkdownItemKeyFromRaw(raw) {
+function extractSourceAttachmentItemKeyFromRaw(raw) {
   const spans = String(raw || "").match(/<span\b[^>]*>/gi) || [];
   for (const span of spans) {
     const attrs = parseAttrs(span);
+    if (
+      attrs["data-zs-block"] === "meta" &&
+      attrs["data-zs-meta"] === "source-attachment" &&
+      attrs["data-zs-source_attachment_item_key"]
+    ) {
+      return String(attrs["data-zs-source_attachment_item_key"]).trim();
+    }
     if (
       attrs["data-zs-block"] === "meta" &&
       attrs["data-zs-meta"] === "source-markdown" &&
@@ -132,15 +139,19 @@ function extractSourceMarkdownItemKeyFromRaw(raw) {
   return "";
 }
 
-function extractSourceMarkdownItemKey() {
+function extractSourceAttachmentItemKey() {
   const notes = Array.isArray(it.notes) ? it.notes : [];
   for (const n of notes) {
     const raw = String((n && n.note) || "");
-    const k = extractSourceMarkdownItemKeyFromRaw(raw);
+    const k = extractSourceAttachmentItemKeyFromRaw(raw);
     if (k) return k;
   }
   const digestPayload = extractPayloadJson("digest-markdown");
-  return String(digestPayload?.source_markdown_item_key || "").trim();
+  return String(
+    digestPayload?.source_attachment_item_key ||
+      digestPayload?.source_markdown_item_key ||
+      "",
+  ).trim();
 }
 
 /** ====== 附件匹配（关键：使用 it.allAttachments） ====== */
@@ -181,14 +192,14 @@ function findAttachmentByKey(itemKey) {
 }
 
 function buildSourceMarkdownLink() {
-  const sourceKey = extractSourceMarkdownItemKey();
+  const sourceKey = extractSourceAttachmentItemKey();
   if (!sourceKey) return "";
 
   const att = findAttachmentByKey(sourceKey);
-  if (!att) return "source_markdown_item_key: `" + sourceKey + "`";
+  if (!att) return "source_attachment_item_key: `" + sourceKey + "`";
 
   const absPath = normalizeAttachmentPath(getAttachmentPath(att));
-  if (!absPath) return "source_markdown_item_key: `" + sourceKey + "`";
+  if (!absPath) return "source_attachment_item_key: `" + sourceKey + "`";
 
   const rel = toVaultRelative(absPath);
   if (rel) return "[[" + rel + "]]";

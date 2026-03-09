@@ -188,6 +188,7 @@ describe("reference table canonical rendering parity", function () {
             data: {
               digest_path: "digest.md",
               references_path: "references.json",
+              citation_analysis_path: "citation_analysis.json",
             },
           });
         }
@@ -196,6 +197,9 @@ describe("reference table canonical rendering parity", function () {
         }
         if (entryPath === "artifacts/references.json") {
           return JSON.stringify({ references });
+        }
+        if (entryPath === "artifacts/citation_analysis.json") {
+          return JSON.stringify({ report_md: "## Citation Analysis\n\n- parity" });
         }
         throw new Error(`unexpected bundle entry: ${entryPath}`);
       },

@@ -28,10 +28,10 @@
 
 ## 5. Week 5 - Tag Capability Planning
 
-- [ ] 5.1 Draft `tag-manager` workflow plan (controlled vocabulary CRUD/import/export/audit trail)
-- [ ] 5.2 Draft `tag-regulator` workflow plan (backend invocation, add/remove/suggested-tag handling)
-- [ ] 5.3 Define traceability model between vocabulary evolution and regulator suggestions
-- [ ] 5.4 Split Tag implementation into staged follow-up changes (foundation, MVP, hardening)
+- [x] 5.1 Draft `tag-manager` workflow plan (controlled vocabulary CRUD/import/export/audit trail)
+- [x] 5.2 Draft `tag-regulator` workflow plan (backend invocation, add/remove/suggested-tag handling)
+- [x] 5.3 Define traceability model between vocabulary evolution and regulator suggestions
+- [x] 5.4 Split Tag implementation into staged follow-up changes (foundation, MVP, hardening)
 
 ## 6. Week 6 - Governance, DoD, and M4 Entry Gate
 

@@ -32,7 +32,7 @@ export type SkillRunnerJobRequestV1 = ProviderExecutionRequestMeta & {
   kind: "skillrunner.job.v1";
   skill_id: string;
   upload_files: Array<{ key: string; path: string }>;
-  input?: Record<string, unknown>;
+  input?: unknown;
   parameter?: Record<string, unknown>;
   poll?: {
     interval_ms?: number;

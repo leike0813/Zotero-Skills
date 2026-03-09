@@ -3,6 +3,7 @@ import {
   validateMultipartHasField,
 } from "./contracts";
 import { joinPath } from "../../src/utils/path";
+import { ZipBundleReader } from "../../src/workflows/zipBundleReader";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 const dynamicImport: DynamicImport = new Function(
@@ -15,6 +16,7 @@ type MockJob = {
   createPayload: unknown;
   uploadReceived: boolean;
   pollCount: number;
+  terminalStatus: "succeeded" | "failed" | "canceled";
 };
 
 type TrafficRecord = {
@@ -72,6 +74,33 @@ export async function startMockSkillRunnerServer(args: {
   const traffic: TrafficRecord[] = [];
   let nextId = 1;
   const bundleBytes = Buffer.from(await fsMod.readFile(args.bundlePath));
+  const bundleReader = new ZipBundleReader(args.bundlePath);
+  let literatureDigestResultTemplate: Record<string, unknown> = {
+    status: "success",
+    data: {
+      digest_path: "digest.md",
+      references_path: "references.json",
+      citation_analysis_path: "citation_analysis.json",
+    },
+    artifacts: [],
+    validation_warnings: [],
+    error: null,
+  };
+  try {
+    const resultJsonText = await bundleReader.readText("result/result.json");
+    const parsed = JSON.parse(resultJsonText);
+    const parsedResult =
+      isObject(parsed) && isObject(parsed.result)
+        ? parsed.result
+        : isObject(parsed)
+          ? parsed
+          : null;
+    if (parsedResult) {
+      literatureDigestResultTemplate = JSON.parse(JSON.stringify(parsedResult));
+    }
+  } catch {
+    // keep fallback result template when fixture result JSON is unavailable
+  }
   const pollDelayMs = Math.max(0, args.pollDelayMs ?? 50);
 
   const server = createServer((req, res) => {
@@ -166,6 +195,17 @@ export async function startMockSkillRunnerServer(args: {
           createPayload: payload,
           uploadReceived: false,
           pollCount: 0,
+          terminalStatus: (() => {
+            const body = isObject(payload) ? payload : {};
+            const parameter = isObject(body.parameter) ? body.parameter : {};
+            const value = String(parameter.__mock_final_status || "")
+              .trim()
+              .toLowerCase();
+            if (value === "failed" || value === "canceled") {
+              return value;
+            }
+            return "succeeded";
+          })(),
         });
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
@@ -243,11 +283,21 @@ export async function startMockSkillRunnerServer(args: {
         } else if (job.pollCount === 1) {
           status = "running";
         } else {
-          status = "succeeded";
+          status = job.terminalStatus;
         }
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ request_id: requestId, status }));
+        res.end(
+          JSON.stringify({
+            request_id: requestId,
+            status,
+            ...(status === "failed"
+              ? { error: "mock terminal failed" }
+              : status === "canceled"
+                ? { error: "mock terminal canceled" }
+                : {}),
+          }),
+        );
         return;
       }
 
@@ -348,16 +398,7 @@ export async function startMockSkillRunnerServer(args: {
         res.end(
           JSON.stringify({
             request_id: requestId,
-            result: {
-              status: "success",
-              data: {
-                digest_path: "digest.md",
-                references_path: "references.json",
-              },
-              artifacts: [],
-              validation_warnings: [],
-              error: null,
-            },
+            result: JSON.parse(JSON.stringify(literatureDigestResultTemplate)),
           }),
         );
         return;

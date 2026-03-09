@@ -329,6 +329,7 @@ export class SkillRunnerClient {
         },
       );
       const body = (await readJsonOrThrow(response)) as {
+        request_id?: string;
         status?: string;
         error?: string;
       };
@@ -336,8 +337,13 @@ export class SkillRunnerClient {
       if (status === "succeeded") {
         return body;
       }
-      if (status === "failed") {
-        throw new Error(`SkillRunner job failed: ${body.error || "unknown error"}`);
+      if (status === "failed" || status === "canceled") {
+        const normalizedRequestId = String(body.request_id || requestId || "").trim();
+        const terminalStatus = String(status || "unknown").trim() || "unknown";
+        const terminalError = String(body.error || "").trim() || "unknown error";
+        throw new Error(
+          `SkillRunner job terminal failure: request_id=${normalizedRequestId}, status=${terminalStatus}, error=${terminalError}`,
+        );
       }
       if (Date.now() - startedAt > timeoutMs) {
         throw new Error(`SkillRunner polling timeout after ${timeoutMs}ms`);

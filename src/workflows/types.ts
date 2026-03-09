@@ -57,7 +57,7 @@ export type WorkflowRequestSpec = {
     upload?: {
       files?: Array<{
         key: string;
-        from: "selected.markdown" | "selected.pdf";
+        from: "selected.markdown" | "selected.pdf" | "selected.source";
       }>;
     };
     [key: string]: unknown;

@@ -278,7 +278,7 @@
         },
         "from": {
           "type": "string",
-          "enum": ["selected.markdown", "selected.pdf"]
+          "enum": ["selected.markdown", "selected.pdf", "selected.source"]
         }
       },
       "additionalProperties": false

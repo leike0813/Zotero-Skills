@@ -4,6 +4,7 @@ import type {
   SkillRunnerHttpStepsRequest,
   SkillRunnerJobRequestV1,
 } from "../contracts";
+import type { ProviderProgressEvent } from "../types";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type DynamicImport = (specifier: string) => Promise<any>;
@@ -460,6 +461,9 @@ export class SkillRunnerClient {
 
   async executeHttpSteps(
     request: SkillRunnerHttpStepsRequest,
+    options?: {
+      onProgress?: (event: ProviderProgressEvent) => void;
+    },
   ): Promise<ProviderExecutionResult> {
     if (request.kind !== "http.steps") {
       throw new Error(`Unsupported transport request kind: ${request.kind}`);
@@ -478,6 +482,10 @@ export class SkillRunnerClient {
     }
 
     const requestId = await this.executeCreateStep(createStep);
+    options?.onProgress?.({
+      type: "request-created",
+      requestId,
+    });
     await this.executeUploadStep(uploadStep, requestId);
     const pollResult = await this.executePollStep(request, pollStep, requestId);
     if (bundleStep) {
@@ -503,9 +511,13 @@ export class SkillRunnerClient {
   async executeSkillRunnerJob(
     request: SkillRunnerJobRequestV1,
     providerOptions: Record<string, unknown>,
+    options?: {
+      onProgress?: (event: ProviderProgressEvent) => void;
+    },
   ) {
     return this.executeHttpSteps(
       this.toHttpStepsRequest(request, providerOptions),
+      options,
     );
   }
 }

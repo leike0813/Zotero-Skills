@@ -25,8 +25,10 @@
 - `src/providers/*`：provider 执行层
 - `src/jobQueue/manager.ts`：任务队列
 - `src/modules/workflowExecute.ts`：执行主链路
-- `src/modules/*Dialog.ts`：设置/任务管理/日志窗口
+- `src/modules/*Dialog.ts`：设置/Dashboard/日志窗口
+- `src/modules/taskDashboardHistory.ts`：Dashboard 历史持久层（30 天保留）
 - `src/modules/skillRunnerManagementDialog.ts`：SkillRunner 管理页内嵌宿主
+- `src/providers/skillrunner/managementClient.ts`：SkillRunner 管理 API 客户端（Dashboard 观察页）
 
 说明：`src/transport/` 当前未启用，网络逻辑在 provider 内部实现。
 
@@ -58,7 +60,8 @@
 - 整体 JSON 非法：阻断 workflow 执行
 - 单条 backend 非法：仅影响绑定该 backend/provider 的 workflow
 - SkillRunner profile 行支持“进入管理页面”，使用当前行 `baseUrl` 打开 `${baseUrl}/ui`
-- 管理页 Basic Auth 通过浏览器认证弹窗处理，不在 backend profile 中保存用户名/密码
+- SkillRunner 可选 `management_auth` 字段，仅用于 Dashboard 管理 API 调用，不影响执行链
+- `management_auth.kind="basic"` 时凭据可由 Dashboard 首次访问弹窗采集并回写配置；401 时会提示重输并覆盖
 
 ## 5. Workflow 声明模型
 
@@ -115,16 +118,33 @@ Provider runtime options：
 5. 根据 provider 结果调用 `applyResult`
 6. 汇总 succeeded/failed/skipped 消息
 
-## 8. 任务管理与日志窗口
+## 8. Dashboard 与日志窗口
 
-任务管理窗口当前能力：
+Dashboard 当前能力：
 
-- 展示任务名、workflow、状态
-- 打开窗口时清理已完成任务
+- Browser-hosted 本地 Web 面板：
+  - host：`src/modules/taskManagerDialog.ts`
+  - web panel：`addon/content/dashboard/*`
+  - host/web 桥接：`dashboard:init` / `dashboard:snapshot` / `dashboard:action`
+- 整页 tab：
+  - Home：总任务统计 + 当前运行任务表格
+  - backend 页面：按 backend 分组表格与操作区
+- Detail：
+  - Generic HTTP：任务表格 + runtime logs 过滤
+  - SkillRunner：run 表格、状态、聊天记录、pending、reply、cancel
+- SkillRunner 观察链路：SSE 主通道 + history 补偿
+- 历史持久化：本地 JSON，固定保留 30 天
+- backend 视图数据源：running 任务 + 历史任务合并
+- SkillRunner requestId 早可见：`/v1/jobs` create 后 progress 回写 `job.meta.requestId`
+- Pass-through：不展示、不计数、不入历史
 
-任务管理窗口当前不支持：
+- 执行链与 Dashboard 边界：
+  - Dashboard 的 management auth 不注入 provider 执行请求
+  - provider 执行链仍走 `/v1/jobs*`
 
-- 取消任务
+Dashboard 当前不支持：
+
+- 后端 runs 的全量视图（当前仅展示本前端发起并落到本地历史的记录）
 
 日志窗口当前能力：
 

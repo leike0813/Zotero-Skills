@@ -475,7 +475,7 @@ describe("gui: workflow context menu", function () {
     assert.equal(settingsPopup.children[0].getAttribute("disabled"), "true");
     assertMenuLabel(
       popup!.children[2].getAttribute("label"),
-      ["Open Task Manager...", "打开任务管理窗口..."],
+      ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
     assertMenuLabel(
@@ -524,7 +524,7 @@ describe("gui: workflow context menu", function () {
     assert.equal(settingsPopup.children[1].getAttribute("label"), "Workflow B");
     assertMenuLabel(
       popup.children[2].getAttribute("label"),
-      ["Open Task Manager...", "打开任务管理窗口..."],
+      ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
     assertMenuLabel(
@@ -635,7 +635,7 @@ describe("gui: workflow context menu", function () {
     );
   });
 
-  itFullOnly("dispatches openTaskManager from context-menu task manager action", async function () {
+  itFullOnly("dispatches openDashboard from context-menu dashboard action", async function () {
     setWorkflowState([]);
     const calls: Array<{ type: string; data: unknown }> = [];
     (
@@ -660,7 +660,7 @@ describe("gui: workflow context menu", function () {
     popup.children[2].dispatch("command");
 
     assert.lengthOf(calls, 1);
-    assert.equal(calls[0].type, "openTaskManager");
+    assert.equal(calls[0].type, "openDashboard");
     assert.deepEqual(calls[0].data, { window: win });
   });
 

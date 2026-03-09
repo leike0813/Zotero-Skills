@@ -12,6 +12,10 @@ import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { openLogViewerDialog } from "./modules/logViewerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
+import {
+  ensureDashboardToolbarButton,
+  removeDashboardToolbarButton,
+} from "./modules/dashboardToolbarButton";
 import { resolveRuntimeToolkit } from "./utils/runtimeBridge";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
@@ -121,6 +125,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   addon.data.ztoolkit = createZToolkit();
 
   await ensureWorkflowRegistryAndMenu(win);
+  ensureDashboardToolbarButton(win);
 
   win.MozXULElement.insertFTLIfNeeded(
     `${addon.data.config.addonRef}-mainWindow.ftl`,
@@ -163,11 +168,15 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  removeDashboardToolbarButton(win);
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
 }
 
 function onShutdown(): void {
+  for (const win of Zotero.getMainWindows?.() || []) {
+    removeDashboardToolbarButton(win);
+  }
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
   // Remove addon object
@@ -243,6 +252,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       });
       break;
     case "openTaskManager":
+    case "openDashboard":
       await openTaskManagerDialog();
       break;
     case "openLogViewer":

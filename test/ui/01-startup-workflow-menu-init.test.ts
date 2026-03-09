@@ -258,7 +258,7 @@ describe("startup workflow scan + menu init", function () {
     assert.equal(popup!.children[1].getAttribute("disabled"), null);
     assertMenuLabel(
       popup!.children[2].getAttribute("label"),
-      ["Open Task Manager...", "打开任务管理窗口..."],
+      ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
     assert.equal(popup!.children[2].getAttribute("disabled"), null);

@@ -8,7 +8,11 @@ import type {
   SkillRunnerHttpStepsRequest,
   SkillRunnerJobRequestV1,
 } from "../contracts";
-import type { Provider, ProviderSupportsArgs } from "../types";
+import type {
+  Provider,
+  ProviderProgressEvent,
+  ProviderSupportsArgs,
+} from "../types";
 import {
   getDefaultSkillRunnerEngine,
   listSkillRunnerEngines,
@@ -140,6 +144,7 @@ export class SkillRunnerProvider implements Provider {
     request: unknown;
     backend?: BackendInstance;
     providerOptions?: Record<string, unknown>;
+    onProgress?: (event: ProviderProgressEvent) => void;
   }): Promise<ProviderExecutionResult> {
     const backend = this.resolveBackend(args);
     if (backend && !this.supports({ requestKind: args.requestKind, backend })) {
@@ -162,7 +167,9 @@ export class SkillRunnerProvider implements Provider {
       typeof args.request === "object" &&
       (args.request as { kind?: unknown }).kind === "http.steps"
     ) {
-      return client.executeHttpSteps(args.request as SkillRunnerHttpStepsRequest);
+      return client.executeHttpSteps(args.request as SkillRunnerHttpStepsRequest, {
+        onProgress: args.onProgress,
+      });
     }
     const request = args.request as SkillRunnerJobRequestV1;
     if (request.kind !== "skillrunner.job.v1") {
@@ -170,6 +177,8 @@ export class SkillRunnerProvider implements Provider {
         `Unsupported skillrunner request payload kind: ${String(request.kind || "")}`,
       );
     }
-    return client.executeSkillRunnerJob(request, normalizedProviderOptions);
+    return client.executeSkillRunnerJob(request, normalizedProviderOptions, {
+      onProgress: args.onProgress,
+    });
   }
 }

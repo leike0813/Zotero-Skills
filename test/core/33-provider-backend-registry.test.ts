@@ -108,6 +108,33 @@ describe("provider/backend registry", function () {
     assert.isOk(loaded.backends.find((entry) => entry.id === "generic-http-local"));
   });
 
+  it("loads optional management_auth for skillrunner backend", async function () {
+    setBackendsConfig({
+      backends: [
+        {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+          management_auth: {
+            kind: "basic",
+            username: "admin",
+            password: "secret",
+          },
+        },
+      ],
+    });
+
+    const loaded = await loadBackendsRegistry();
+    assert.isUndefined(loaded.fatalError);
+    assert.lengthOf(loaded.backends, 1);
+    assert.deepEqual(loaded.backends[0].management_auth, {
+      kind: "basic",
+      username: "admin",
+      password: "secret",
+    });
+  });
+
   it("resolves first provider-compatible backend when no preferred profile is set", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
     const workflow = loaded.workflows.find(

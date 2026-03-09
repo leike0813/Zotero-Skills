@@ -1,3 +1,5 @@
+import { getPref, setPref } from "../utils/prefs";
+
 export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
 
 export type RuntimeLogScope =
@@ -46,9 +48,17 @@ type RuntimeLogSnapshot = {
   maxEntries: number;
 };
 
+type RuntimeLogDocument = {
+  entries?: unknown;
+  droppedEntries?: unknown;
+};
+
 type RuntimeLogListener = (snapshot: RuntimeLogSnapshot) => void;
 
 const MAX_ENTRIES = 2000;
+const HISTORY_PREF_KEY = "runtimeLogsJson";
+const RETENTION_DAYS = 30;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MAX_STRING_LENGTH = 4000;
 const MAX_DEPTH = 6;
 const MAX_ARRAY_ITEMS = 100;
@@ -62,6 +72,11 @@ let droppedEntries = 0;
 const entries: RuntimeLogEntry[] = [];
 const listeners = new Set<RuntimeLogListener>();
 const allowedLevels = new Set<RuntimeLogLevel>(DEFAULT_ALLOWED_LEVELS);
+let hydrated = false;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 
 function cloneEntry(entry: RuntimeLogEntry): RuntimeLogEntry {
   return {
@@ -211,6 +226,146 @@ function normalizeId(input: unknown) {
   return value || undefined;
 }
 
+function parseSequenceFromLogId(id: string) {
+  const matched = /^log-(\d+)$/.exec(String(id || "").trim());
+  if (!matched) {
+    return 0;
+  }
+  const parsed = Number(matched[1]);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.floor(parsed);
+}
+
+function parseRuntimeLogEntry(raw: unknown): RuntimeLogEntry | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const id = String(raw.id || "").trim();
+  const ts = String(raw.ts || "").trim();
+  const stage = String(raw.stage || "").trim();
+  const message = String(raw.message || "").trim();
+  if (!id || !ts || !stage || !message) {
+    return null;
+  }
+  const entry: RuntimeLogEntry = {
+    id,
+    ts,
+    level: normalizeLevel(raw.level),
+    scope: normalizeScope(raw.scope),
+    workflowId: normalizeId(raw.workflowId),
+    requestId: normalizeId(raw.requestId),
+    jobId: normalizeId(raw.jobId),
+    stage,
+    message: sanitizeString(message),
+  };
+  if (typeof raw.details !== "undefined") {
+    entry.details = sanitizeValue(raw.details);
+  }
+  if (isRecord(raw.error)) {
+    const name = String(raw.error.name || "").trim() || "Error";
+    const errorMessage = String(raw.error.message || "").trim();
+    if (errorMessage) {
+      entry.error = {
+        name,
+        message: sanitizeString(errorMessage),
+        stack: normalizeId(raw.error.stack),
+      };
+    }
+  }
+  return entry;
+}
+
+function persistRuntimeLogs() {
+  try {
+    setPref(
+      HISTORY_PREF_KEY,
+      JSON.stringify({
+        entries,
+        droppedEntries,
+      }),
+    );
+  } catch {
+    // Ignore prefs persistence failures in runtime logger.
+  }
+}
+
+function pruneExpiredRuntimeLogs(nowMs = Date.now()) {
+  const threshold = nowMs - RETENTION_MS;
+  let removed = 0;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const ts = Date.parse(entries[i].ts || "");
+    if (!Number.isFinite(ts) || ts >= threshold) {
+      continue;
+    }
+    entries.splice(i, 1);
+    removed += 1;
+  }
+  if (removed > 0) {
+    droppedEntries += removed;
+  }
+  return removed;
+}
+
+function pruneOverflowRuntimeLogs() {
+  if (entries.length <= MAX_ENTRIES) {
+    return 0;
+  }
+  const overflow = entries.length - MAX_ENTRIES;
+  entries.splice(0, overflow);
+  droppedEntries += overflow;
+  return overflow;
+}
+
+function hydrateRuntimeLogsIfNeeded() {
+  if (hydrated) {
+    return;
+  }
+  hydrated = true;
+  let raw = "";
+  try {
+    raw = String(getPref(HISTORY_PREF_KEY) || "").trim();
+  } catch {
+    raw = "";
+  }
+  if (!raw) {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw) as RuntimeLogDocument | unknown[];
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.entries)
+        ? parsed.entries
+        : [];
+    entries.length = 0;
+    droppedEntries = Math.max(
+      0,
+      Math.floor(Number(Array.isArray(parsed) ? 0 : parsed?.droppedEntries || 0) || 0),
+    );
+    let maxSeq = 0;
+    for (const row of rows) {
+      const parsedEntry = parseRuntimeLogEntry(row);
+      if (!parsedEntry) {
+        continue;
+      }
+      entries.push(parsedEntry);
+      maxSeq = Math.max(maxSeq, parseSequenceFromLogId(parsedEntry.id));
+    }
+    sequence = Math.max(sequence, maxSeq);
+    const expired = pruneExpiredRuntimeLogs();
+    const overflow = pruneOverflowRuntimeLogs();
+    if (expired > 0 || overflow > 0) {
+      persistRuntimeLogs();
+    }
+  } catch {
+    entries.length = 0;
+    droppedEntries = 0;
+    persistRuntimeLogs();
+  }
+}
+
 function emitChanged() {
   if (listeners.size === 0) {
     return;
@@ -236,6 +391,7 @@ export function resetRuntimeLogAllowedLevels() {
 }
 
 export function appendRuntimeLog(input: RuntimeLogInput) {
+  hydrateRuntimeLogsIfNeeded();
   const level = normalizeLevel(input.level);
   if (!allowedLevels.has(level)) {
     return null;
@@ -262,15 +418,15 @@ export function appendRuntimeLog(input: RuntimeLogInput) {
   }
 
   entries.push(entry);
-  if (entries.length > MAX_ENTRIES) {
-    entries.shift();
-    droppedEntries += 1;
-  }
+  pruneExpiredRuntimeLogs();
+  pruneOverflowRuntimeLogs();
+  persistRuntimeLogs();
   emitChanged();
   return cloneEntry(entry);
 }
 
 export function listRuntimeLogs(filters: RuntimeLogListFilters = {}) {
+  hydrateRuntimeLogsIfNeeded();
   const levels = Array.isArray(filters.levels) ? new Set(filters.levels) : null;
   const scopes = Array.isArray(filters.scopes) ? new Set(filters.scopes) : null;
   const workflowId = normalizeId(filters.workflowId);
@@ -309,12 +465,15 @@ export function listRuntimeLogs(filters: RuntimeLogListFilters = {}) {
 }
 
 export function clearRuntimeLogs() {
+  hydrateRuntimeLogsIfNeeded();
   entries.length = 0;
   droppedEntries = 0;
+  persistRuntimeLogs();
   emitChanged();
 }
 
 export function snapshotRuntimeLogs(): RuntimeLogSnapshot {
+  hydrateRuntimeLogsIfNeeded();
   return {
     entries: entries.map((entry) => cloneEntry(entry)),
     droppedEntries,
@@ -323,6 +482,7 @@ export function snapshotRuntimeLogs(): RuntimeLogSnapshot {
 }
 
 export function subscribeRuntimeLogs(listener: RuntimeLogListener) {
+  hydrateRuntimeLogsIfNeeded();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -340,5 +500,7 @@ export function formatRuntimeLogsAsNDJSON(entriesToFormat: RuntimeLogEntry[]) {
 export function getRuntimeLogRetentionConfig() {
   return {
     maxEntries: MAX_ENTRIES,
+    retentionDays: RETENTION_DAYS,
+    retentionMs: RETENTION_MS,
   };
 }

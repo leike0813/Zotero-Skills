@@ -155,6 +155,45 @@ function normalizeBackendEntry(
     }
   }
 
+  const managementAuthRaw =
+    rawEntry.management_auth ?? rawEntry.managementAuth;
+  let managementAuth: BackendInstance["management_auth"] | undefined;
+  if (typeof managementAuthRaw !== "undefined") {
+    if (!isObject(managementAuthRaw)) {
+      return {
+        error: `entry[${index}] (${id}) management_auth must be an object`,
+      };
+    }
+    const kindRaw = managementAuthRaw.kind;
+    if (
+      typeof kindRaw !== "undefined" &&
+      kindRaw !== "none" &&
+      kindRaw !== "basic"
+    ) {
+      return {
+        error: `entry[${index}] (${id}) management_auth.kind must be "none" or "basic"`,
+      };
+    }
+    if (kindRaw === "basic") {
+      const usernameRaw = managementAuthRaw.username;
+      const passwordRaw = managementAuthRaw.password;
+      if (!isNonEmptyString(usernameRaw) || !isNonEmptyString(passwordRaw)) {
+        return {
+          error: `entry[${index}] (${id}) management_auth.username/password are required for basic auth`,
+        };
+      }
+      managementAuth = {
+        kind: "basic",
+        username: usernameRaw.trim(),
+        password: passwordRaw.trim(),
+      };
+    } else {
+      managementAuth = {
+        kind: "none",
+      };
+    }
+  }
+
   const defaultsRaw = rawEntry.defaults;
   let defaults: BackendInstance["defaults"] | undefined;
   if (typeof defaultsRaw !== "undefined") {
@@ -204,6 +243,7 @@ function normalizeBackendEntry(
       baseUrl,
       ...(auth ? { auth } : {}),
       ...(defaults ? { defaults } : {}),
+      ...(managementAuth ? { management_auth: managementAuth } : {}),
     },
   };
 }

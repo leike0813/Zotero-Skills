@@ -19,18 +19,35 @@ export type JobRecord = {
   updatedAt: string;
 };
 
+export type JobProgressEvent = {
+  type: string;
+  [key: string]: unknown;
+};
+
 type QueueConfig = {
   concurrency: number;
-  executeJob: (job: JobRecord) => Promise<unknown>;
+  executeJob: (
+    job: JobRecord,
+    runtime: {
+      reportProgress: (event: JobProgressEvent) => void;
+    },
+  ) => Promise<unknown>;
   onJobUpdated?: (job: JobRecord) => void;
+  onJobProgress?: (job: JobRecord, event: JobProgressEvent) => void;
 };
 
 export class JobQueueManager {
   private readonly concurrency: number;
 
-  private readonly executeJob: (job: JobRecord) => Promise<unknown>;
+  private readonly executeJob: (
+    job: JobRecord,
+    runtime: {
+      reportProgress: (event: JobProgressEvent) => void;
+    },
+  ) => Promise<unknown>;
 
   private readonly onJobUpdated?: (job: JobRecord) => void;
+  private readonly onJobProgress?: (job: JobRecord, event: JobProgressEvent) => void;
 
   private readonly jobs = new Map<string, JobRecord>();
 
@@ -46,6 +63,7 @@ export class JobQueueManager {
     this.concurrency = Math.max(1, config.concurrency);
     this.executeJob = config.executeJob;
     this.onJobUpdated = config.onJobUpdated;
+    this.onJobProgress = config.onJobProgress;
   }
 
   enqueue(args: {
@@ -146,7 +164,29 @@ export class JobQueueManager {
     });
     this.runningCount += 1;
     try {
-      job.result = await this.executeJob({ ...job });
+      job.result = await this.executeJob(
+        { ...job },
+        {
+          reportProgress: (event: JobProgressEvent) => {
+            if (!event || typeof event !== "object") {
+              return;
+            }
+            this.onJobProgress?.(job, event);
+            this.touch(job);
+            this.emitJobUpdated(job);
+            appendRuntimeLog({
+              level: "debug",
+              scope: "job",
+              workflowId: job.workflowId,
+              jobId: job.id,
+              requestId: String(job.meta.requestId || "").trim() || undefined,
+              stage: "dispatch-progress",
+              message: `provider progress: ${String(event.type || "unknown")}`,
+              details: event,
+            });
+          },
+        },
+      );
       job.state = "succeeded";
       this.touch(job);
       this.emitJobUpdated(job);

@@ -642,6 +642,53 @@ const defaultBackendPersistenceDeps: BackendPersistenceDeps = {
   refreshWorkflowMenus,
 };
 
+function readPersistedManagementAuthByBackendId() {
+  const map = new Map<string, BackendInstance["management_auth"]>();
+  const raw = String(getPref(BACKENDS_CONFIG_PREF_KEY) || "").trim();
+  if (!raw) {
+    return map;
+  }
+  try {
+    const parsed = JSON.parse(raw) as {
+      backends?: Array<{ id?: unknown; management_auth?: unknown }>;
+    };
+    const entries = Array.isArray(parsed?.backends) ? parsed.backends : [];
+    for (const entry of entries) {
+      const id = String(entry?.id || "").trim();
+      if (!id) {
+        continue;
+      }
+      const managementAuth = entry?.management_auth;
+      if (!managementAuth || typeof managementAuth !== "object") {
+        continue;
+      }
+      const typed = managementAuth as {
+        kind?: unknown;
+        username?: unknown;
+        password?: unknown;
+      };
+      const kind = String(typed.kind || "").trim();
+      if (kind === "basic") {
+        const username = String(typed.username || "").trim();
+        const password = String(typed.password || "").trim();
+        if (!username || !password) {
+          continue;
+        }
+        map.set(id, {
+          kind: "basic",
+          username,
+          password,
+        });
+        continue;
+      }
+      map.set(id, { kind: "none" });
+    }
+  } catch {
+    return map;
+  }
+  return map;
+}
+
 export function persistBackendsConfig(
   backends: BackendInstance[],
   deps: Partial<BackendPersistenceDeps> = {},
@@ -650,10 +697,25 @@ export function persistBackendsConfig(
     ...defaultBackendPersistenceDeps,
     ...deps,
   };
+  const existingManagementAuth = readPersistedManagementAuthByBackendId();
+  const mergedBackends = backends.map((backend) => {
+    const explicit = backend.management_auth;
+    if (explicit && typeof explicit === "object") {
+      return backend;
+    }
+    const persisted = existingManagementAuth.get(backend.id);
+    if (!persisted) {
+      return backend;
+    }
+    return {
+      ...backend,
+      management_auth: persisted,
+    };
+  });
   resolved.setPref(
     BACKENDS_CONFIG_PREF_KEY,
     JSON.stringify({
-      backends,
+      backends: mergedBackends,
     }),
   );
   resolved.refreshWorkflowMenus();

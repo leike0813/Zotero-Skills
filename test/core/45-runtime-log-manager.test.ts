@@ -1,7 +1,9 @@
 import { assert } from "chai";
+import { config } from "../../package.json";
 import {
   appendRuntimeLog,
   clearRuntimeLogs,
+  getRuntimeLogRetentionConfig,
   listRuntimeLogs,
   resetRuntimeLogAllowedLevels,
   setRuntimeLogAllowedLevels,
@@ -121,5 +123,40 @@ describe("runtime log manager", function () {
     });
     assert.lengthOf(filtered, 1);
     assert.equal(filtered[0].stage, "warn-stage");
+  });
+
+  it("persists logs into prefs and clears persisted payload", function () {
+    appendRuntimeLog({
+      level: "info",
+      scope: "system",
+      stage: "persist-stage",
+      message: "persist message",
+    });
+    const prefKey = `${config.prefsPrefix}.runtimeLogsJson`;
+    const rawPersisted = String((globalThis as any).Zotero.Prefs.get(prefKey) || "");
+    assert.isTrue(rawPersisted.length > 0);
+    const parsedPersisted = JSON.parse(rawPersisted) as { entries?: unknown[] };
+    assert.equal(parsedPersisted.entries?.length || 0, 1);
+
+    clearRuntimeLogs();
+    const rawCleared = String((globalThis as any).Zotero.Prefs.get(prefKey) || "");
+    assert.isTrue(rawCleared.length > 0);
+    const parsedCleared = JSON.parse(rawCleared) as { entries?: unknown[] };
+    assert.equal(parsedCleared.entries?.length || 0, 0);
+  });
+
+  it("drops expired logs older than retention window", function () {
+    const retentionMs = getRuntimeLogRetentionConfig().retentionMs;
+    const expiredTs = new Date(Date.now() - retentionMs - 24 * 60 * 60 * 1000).toISOString();
+    appendRuntimeLog({
+      ts: expiredTs,
+      level: "info",
+      scope: "system",
+      stage: "expired-stage",
+      message: "expired-message",
+    });
+    const entries = listRuntimeLogs();
+    assert.lengthOf(entries, 0);
+    assert.isAtLeast(snapshotRuntimeLogs().droppedEntries, 1);
   });
 });

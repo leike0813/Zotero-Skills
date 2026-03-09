@@ -4,11 +4,16 @@ export type WorkflowTaskRecord = {
   id: string;
   runId: string;
   jobId: string;
+  requestId?: string;
   workflowId: string;
   workflowLabel: string;
   taskName: string;
   inputUnitIdentity?: string;
   inputUnitLabel?: string;
+  providerId?: string;
+  backendId?: string;
+  backendType?: string;
+  backendBaseUrl?: string;
   state: JobState;
   error?: string;
   createdAt: string;
@@ -33,7 +38,21 @@ function getTaskIdFromJob(job: JobRecord) {
   return `${job.workflowId}:${job.id}:${job.createdAt}`;
 }
 
-function buildTaskRecordFromJob(job: JobRecord): WorkflowTaskRecord {
+function resolveRequestIdFromJob(job: JobRecord) {
+  const fromMeta = normalizeMetaString(job.meta, "requestId");
+  if (fromMeta) {
+    return fromMeta;
+  }
+  const candidate = (job.result as { requestId?: unknown } | undefined)?.requestId;
+  if (typeof candidate === "string" && candidate.trim()) {
+    return candidate.trim();
+  }
+  return "";
+}
+
+export function buildWorkflowTaskRecordFromJob(
+  job: JobRecord,
+): WorkflowTaskRecord {
   const runId =
     normalizeMetaString(job.meta, "runId") ||
     `${job.workflowId}:${job.createdAt}`;
@@ -43,15 +62,25 @@ function buildTaskRecordFromJob(job: JobRecord): WorkflowTaskRecord {
   const inputUnitIdentity = normalizeMetaString(job.meta, "inputUnitIdentity");
   const inputUnitLabel =
     normalizeMetaString(job.meta, "inputUnitLabel") || taskName;
+  const requestId = resolveRequestIdFromJob(job);
+  const providerId = normalizeMetaString(job.meta, "providerId");
+  const backendId = normalizeMetaString(job.meta, "backendId");
+  const backendType = normalizeMetaString(job.meta, "backendType");
+  const backendBaseUrl = normalizeMetaString(job.meta, "backendBaseUrl");
   return {
     id: getTaskIdFromJob(job),
     runId,
     jobId: job.id,
+    requestId: requestId || undefined,
     workflowId: job.workflowId,
     workflowLabel,
     taskName,
     inputUnitIdentity: inputUnitIdentity || undefined,
     inputUnitLabel: inputUnitLabel || undefined,
+    providerId: providerId || undefined,
+    backendId: backendId || undefined,
+    backendType: backendType || undefined,
+    backendBaseUrl: backendBaseUrl || undefined,
     state: job.state,
     error: job.error,
     createdAt: job.createdAt,
@@ -71,7 +100,7 @@ function isFinishedState(state: JobState) {
 }
 
 export function recordWorkflowTaskUpdate(job: JobRecord) {
-  const record = buildTaskRecordFromJob(job);
+  const record = buildWorkflowTaskRecordFromJob(job);
   taskRecords.set(record.id, record);
   emitTasksChanged();
 }

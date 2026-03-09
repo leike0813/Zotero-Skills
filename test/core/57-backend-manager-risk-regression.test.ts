@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { config } from "../../package.json";
 import {
   collectBackendsFromDialog,
   getBackendRowActionKindsForType,
@@ -286,6 +287,65 @@ describe("backend manager risk regression", function () {
     };
     assert.equal(parsed.backends?.[0]?.id, "skillrunner-local");
     assert.equal(refreshCalls, 1);
+  });
+
+  it("Risk: HR-01 preserves existing management_auth when dialog row omits it", function () {
+    const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
+    const previous = Zotero.Prefs.get(prefKey, true);
+    Zotero.Prefs.set(
+      prefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "skillrunner-local",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+            management_auth: {
+              kind: "basic",
+              username: "admin",
+              password: "secret",
+            },
+          },
+        ],
+      }),
+      true,
+    );
+
+    let persisted = "";
+    try {
+      persistBackendsConfig(
+        [
+          {
+            id: "skillrunner-local",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+          },
+        ],
+        {
+          setPref: ((_: string, value: string) => {
+            persisted = value;
+          }) as any,
+          refreshWorkflowMenus: () => {},
+        },
+      );
+    } finally {
+      if (typeof previous === "undefined") {
+        Zotero.Prefs.clear(prefKey, true);
+      } else {
+        Zotero.Prefs.set(prefKey, previous, true);
+      }
+    }
+
+    const parsed = JSON.parse(persisted) as {
+      backends: Array<{ management_auth?: { kind?: string; username?: string } }>;
+    };
+    assert.deepEqual(parsed.backends[0].management_auth, {
+      kind: "basic",
+      username: "admin",
+      password: "secret",
+    });
   });
 
   it("Risk: HR-01 surfaces persistence failures without swallowing storage errors", function () {

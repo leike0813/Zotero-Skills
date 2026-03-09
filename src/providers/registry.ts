@@ -9,6 +9,7 @@ import {
   assertRequestKindProviderCompatible,
 } from "./requestContracts";
 import { SkillRunnerProvider } from "./skillrunner/provider";
+import type { ProviderProgressEvent } from "./types";
 import type { Provider } from "./types";
 
 const providers: Provider[] = [
@@ -135,6 +136,7 @@ export async function executeWithProvider(args: {
   request: unknown;
   backend: BackendInstance;
   providerOptions?: Record<string, unknown>;
+  onProgress?: (event: ProviderProgressEvent) => void;
 }): Promise<ProviderExecutionResult> {
   const provider = resolveProvider(args);
   assertProviderRequestDispatchContract({

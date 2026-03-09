@@ -4,6 +4,8 @@ type BasePluginPrefsMap = _ZoteroTypes.Prefs["PluginPrefsMap"];
 type PluginPrefsMap = BasePluginPrefsMap & {
   backendsConfigJson: string;
   workflowSettingsJson: string;
+  taskDashboardHistoryJson: string;
+  runtimeLogsJson: string;
 };
 
 const PREFS_PREFIX = config.prefsPrefix;

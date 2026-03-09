@@ -14,6 +14,69 @@ function createJsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("transport: upload fallback without FormData", function () {
+  it("emits request-created progress right after create step", async function () {
+    const progressEvents: Array<{ type: string; requestId?: string }> = [];
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-progress-1" });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1")) {
+          return createJsonResponse({
+            request_id: "req-progress-1",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1/result")) {
+          return createJsonResponse({
+            request_id: "req-progress-1",
+            result: {
+              status: "success",
+              data: {},
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+      },
+      {
+        onProgress: (event) => {
+          progressEvents.push({
+            type: String(event.type || ""),
+            requestId: String((event as { requestId?: unknown }).requestId || ""),
+          });
+        },
+      },
+    );
+
+    assert.deepEqual(progressEvents, [
+      {
+        type: "request-created",
+        requestId: "req-progress-1",
+      },
+    ]);
+  });
+
   it("forwards optional inline input to /v1/jobs create body", async function () {
     let capturedCreateBody: unknown;
     const client = new SkillRunnerClient({

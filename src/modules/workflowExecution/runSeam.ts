@@ -2,6 +2,7 @@ import { JobQueueManager } from "../../jobQueue/manager";
 import { executeWithProvider } from "../../providers/registry";
 import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
+import { recordTaskDashboardHistoryFromJob } from "../taskDashboardHistory";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
   resolveInputUnitIdentityFromRequest,
@@ -15,6 +16,7 @@ type RunSeamDeps = {
   executeWithProvider: typeof executeWithProvider;
   appendRuntimeLog: typeof appendRuntimeLog;
   recordWorkflowTaskUpdate: typeof recordWorkflowTaskUpdate;
+  recordTaskDashboardHistoryFromJob: typeof recordTaskDashboardHistoryFromJob;
 };
 
 const defaultRunSeamDeps: RunSeamDeps = {
@@ -22,6 +24,7 @@ const defaultRunSeamDeps: RunSeamDeps = {
   executeWithProvider,
   appendRuntimeLog,
   recordWorkflowTaskUpdate,
+  recordTaskDashboardHistoryFromJob,
 };
 
 export function runWorkflowExecutionSeam(args: {
@@ -36,15 +39,27 @@ export function runWorkflowExecutionSeam(args: {
     .slice(2, 10)}`;
   const queue = resolved.createQueue({
     concurrency: 1,
-    executeJob: (job) =>
+    executeJob: (job, runtime) =>
       resolved.executeWithProvider({
         requestKind: args.prepared.executionContext.requestKind,
         request: job.request,
         backend: args.prepared.executionContext.backend,
         providerOptions: args.prepared.executionContext.providerOptions,
+        onProgress: (event) => {
+          runtime.reportProgress(event);
+        },
       }),
+    onJobProgress: (job, event) => {
+      if (event.type === "request-created") {
+        const requestId = String(event.requestId || "").trim();
+        if (requestId) {
+          job.meta.requestId = requestId;
+        }
+      }
+    },
     onJobUpdated: (job) => {
       resolved.recordWorkflowTaskUpdate(job);
+      resolved.recordTaskDashboardHistoryFromJob(job);
     },
   });
 
@@ -63,6 +78,10 @@ export function runWorkflowExecutionSeam(args: {
         inputUnitIdentity,
         inputUnitLabel,
         targetParentID: resolveTargetParentIDFromRequest(request),
+        providerId: args.prepared.executionContext.providerId,
+        backendId: args.prepared.executionContext.backend.id,
+        backendType: args.prepared.executionContext.backend.type,
+        backendBaseUrl: args.prepared.executionContext.backend.baseUrl,
       },
     });
     resolved.appendRuntimeLog({

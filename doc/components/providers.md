@@ -19,6 +19,7 @@
 - `request`：由 `compileDeclarativeRequest` 或 `hooks.buildRequest` 产出
 - `backend`：由 backend registry + workflow settings 解析出的 profile；对本地 provider（如 `pass-through`）可为 runtime 构建的虚拟 backend（`local://...`）
 - `providerOptions`：运行时选项（持久化或 run-once 覆盖）
+- `onProgress?`：可选运行进度回调（用于 running 阶段元数据增量同步）
 
 ## 输出
 
@@ -46,6 +47,9 @@
   - `POST /v1/jobs/{request_id}/upload`
   - `GET /v1/jobs/{request_id}` 轮询
   - `GET /v1/jobs/{request_id}/result|bundle`
+- progress 事件：
+  - create 成功后发出 `request-created`（含 `requestId`）
+  - 供 JobQueue 在 running 阶段写回 `job.meta.requestId`，让 Dashboard 立即可见 run 入口
 - 轮询终态：
   - `succeeded`：继续结果拉取并返回统一成功结果
   - `failed` / `canceled`：立即失败并抛出可诊断错误
@@ -55,14 +59,19 @@
 - deferred 范围（本实现未覆盖）：
   - interactive 会话编排（`waiting_user`、`interaction/reply`）
   - 鉴权等待流程（`waiting_auth`、`auth/session`）
-  - management API 迁移（`/v1/management/*`）
+  - 将执行链迁移到 management API（执行链仍走 `/v1/jobs*`）
 
-## SkillRunner 管理页入口（当前）
+## SkillRunner 管理 UI 与管理 API（当前）
 
 - Backend Manager 为 `type=skillrunner` 的 profile 提供“进入管理页面”动作。
 - 插件在 Zotero 对话框内直接加载 `${baseUrl}/ui`，复用后端原生管理 UI。
 - 该能力与 provider 执行链解耦：不影响 `skillrunner.job.v1` 请求与执行语义。
-- 若后端 UI 启用 Basic Auth，插件依赖浏览器标准认证弹窗；不在 backend profile 存储 basic 用户名/密码。
+- Dashboard 内置 SkillRunner 观察页使用 `/v1/management/*` 读取 run/chat/pending 并支持 reply/cancel。
+- management API 的鉴权使用 backend profile 可选字段 `management_auth`（仅 SkillRunner）：
+  - 支持 `none` 与 `basic`
+  - 首次访问时可弹窗采集 basic 凭据
+  - 401 时触发重新输入并覆盖保存
+- `management_auth` 仅用于 Dashboard 管理能力，不注入 `skillrunner.job.v1` 执行链请求。
 
 ## generic-http 语义（当前）
 

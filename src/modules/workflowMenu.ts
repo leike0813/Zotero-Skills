@@ -89,10 +89,10 @@ function appendTaskManagerItem(win: _ZoteroTypes.MainWindow, popup: XULElement) 
   const item = win.document.createXULElement("menuitem");
   item.setAttribute(
     "label",
-    getMenuLabel("menu-workflows-task-manager", "Open Task Manager..."),
+    getMenuLabel("menu-workflows-task-manager", "Open Dashboard..."),
   );
   item.addEventListener("command", () => {
-    void addon.hooks.onPrefsEvent("openTaskManager", { window: win });
+    void addon.hooks.onPrefsEvent("openDashboard", { window: win });
   });
   popup.appendChild(item);
 }

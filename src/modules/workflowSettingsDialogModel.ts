@@ -1,5 +1,6 @@
 import { resolveProviderById } from "../providers/registry";
 import type { ProviderRuntimeOptionSchemaEntry } from "../providers/types";
+import type { BackendInstance } from "../backends/types";
 import type { WorkflowParameterSchema } from "../workflows/types";
 import type {
   WorkflowExecutionOptions,
@@ -88,6 +89,7 @@ function getElementValue(control: Element) {
 export function resolveProviderSchemaEntries(args: {
   providerId: string;
   currentValues?: Record<string, unknown>;
+  backend?: BackendInstance;
 }) {
   try {
     const provider = resolveProviderById(args.providerId);
@@ -101,6 +103,7 @@ export function resolveProviderSchemaEntries(args: {
       const dynamicEnum = provider.getRuntimeOptionEnumValues?.({
         key: entry.key,
         options: values,
+        backend: args.backend,
       });
       if (Array.isArray(dynamicEnum) && dynamicEnum.length > 0) {
         return {

@@ -1,3 +1,5 @@
+import type { SkillRunnerProviderState } from "../modules/skillRunnerProviderStateMachine";
+
 export type ProviderExecutionRequestMeta = {
   targetParentID?: number;
   taskName?: string;
@@ -31,9 +33,13 @@ export type SkillRunnerHttpStepsRequest = ProviderExecutionRequestMeta & {
 export type SkillRunnerJobRequestV1 = ProviderExecutionRequestMeta & {
   kind: "skillrunner.job.v1";
   skill_id: string;
-  upload_files: Array<{ key: string; path: string }>;
+  upload_files?: Array<{ key: string; path: string }>;
   input?: unknown;
   parameter?: Record<string, unknown>;
+  runtime_options?: {
+    execution_mode?: "auto" | "interactive" | string;
+    [key: string]: unknown;
+  };
   poll?: {
     interval_ms?: number;
     timeout_ms?: number;
@@ -95,7 +101,9 @@ export type PassThroughRunRequestV1 = ProviderExecutionRequestMeta & {
   parameter?: Record<string, unknown>;
 };
 
-export type ProviderExecutionResult = {
+export type SkillRunnerBackendRunStatus = SkillRunnerProviderState;
+
+export type ProviderExecutionSucceededResult = {
   status: "succeeded";
   requestId: string;
   fetchType: "bundle" | "result";
@@ -103,3 +111,21 @@ export type ProviderExecutionResult = {
   resultJson?: unknown;
   responseJson?: unknown;
 };
+
+export type ProviderExecutionDeferredResult = {
+  status: "deferred";
+  requestId: string;
+  fetchType: "bundle" | "result";
+  backendStatus:
+    | "queued"
+    | "running"
+    | "waiting_user"
+    | "waiting_auth";
+  bundleBytes?: undefined;
+  resultJson?: undefined;
+  responseJson?: unknown;
+};
+
+export type ProviderExecutionResult =
+  | ProviderExecutionSucceededResult
+  | ProviderExecutionDeferredResult;

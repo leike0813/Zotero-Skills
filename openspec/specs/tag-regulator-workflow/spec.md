@@ -46,39 +46,30 @@ The workflow MUST apply `remove_tags` and `add_tags` only when output is valid a
 - **AND** SHALL emit warnings/diagnostics for user review
 
 ### Requirement: Suggested tags SHALL remain advisory outputs
-Tags in `suggest_tags` MUST NOT be written directly to parent items, and SHALL support user-confirmed intake into controlled vocabulary.
+Tags in `suggest_tags` MUST NOT be written directly to parent items, and SHALL support user-confirmed intake into controlled vocabulary or staged inbox.
 
-#### Scenario: No suggest_tags skips intake dialog
-- **WHEN** skill output has empty or missing `suggest_tags`
-- **THEN** workflow SHALL NOT open suggest-tag intake dialog
-- **AND** workflow SHALL NOT modify controlled vocabulary via this branch
+#### Scenario: Suggest intake dialog supports immediate row actions
+- **WHEN** output contains non-empty `suggest_tags`
+- **THEN** workflow SHALL open a suggest-intake dialog with row-level `加入` and `拒绝` actions
+- **AND** row-level `加入` SHALL write directly to controlled vocabulary on success and remove the row
+- **AND** row-level `拒绝` SHALL discard the row immediately
 
-#### Scenario: Non-empty suggest_tags objects open confirm dialog
-- **WHEN** skill output contains non-empty `suggest_tags` object array with `{tag,note}`
-- **THEN** workflow SHALL open a dialog listing suggested tag rows
-- **AND** each row SHALL display both `tag` and `note`
-- **AND** user SHALL be able to select entries individually before submission
+#### Scenario: Global actions include join/stage/reject
+- **WHEN** suggest-intake dialog is open
+- **THEN** global actions SHALL be `全部加入` / `全部暂存` / `全部拒绝`
+- **AND** `全部加入` SHALL keep invalid rows visible with diagnostics
+- **AND** `全部暂存` SHALL write remaining rows to staged inbox
+- **AND** `全部拒绝` SHALL discard all remaining rows
 
-#### Scenario: Confirmed subset is added through tag-manager vocabulary interface
-- **WHEN** user clicks `加入受控词表` with one or more selected suggested tags
-- **THEN** workflow SHALL call tag-manager vocabulary persistence interface to add only selected entries
-- **AND** each newly added entry SHALL set `source = agent-suggest`
-- **AND** each newly added entry SHALL persist the selected `note`
+#### Scenario: Timeout and manual close default to staged intake
+- **WHEN** suggest-intake dialog reaches 10-second timeout
+- **THEN** system SHALL execute staged intake for all remaining rows and close the dialog
+- **AND WHEN** user manually closes the dialog
+- **THEN** system SHALL apply the same default staged-intake policy
 
-#### Scenario: Canceling suggest-tags intake keeps vocabulary unchanged
-- **WHEN** user closes or cancels the suggest-tags intake dialog
-- **THEN** workflow SHALL NOT call vocabulary persistence
-- **AND** controlled vocabulary content SHALL remain unchanged by this branch
-
-#### Scenario: Intake path remains idempotent
-- **WHEN** selected suggested tags already exist in controlled vocabulary
-- **THEN** workflow SHALL skip duplicates without creating additional entries
-- **AND** workflow SHALL report deterministic `added/skipped/invalid` summary
-
-#### Scenario: Parent item tags are not auto-mutated by suggest_tags
-- **WHEN** workflow processes `suggest_tags`
-- **THEN** workflow SHALL NOT append these tags directly to parent item tags
-- **AND** parent mutation SHALL remain limited to `remove_tags/add_tags` semantics
+#### Scenario: Suggest-intake summary is deterministic
+- **WHEN** suggest-intake completes
+- **THEN** workflow SHALL return deterministic summary fields including `addedDirect`, `staged`, `rejected`, `invalid`, `timedOut`, and `closePolicyApplied`
 
 ### Requirement: Tag regulator workflow SHALL expose tag_note_language parameter
 `tag-regulator` workflow MUST declare and pass through `tag_note_language` for backend note-language control.

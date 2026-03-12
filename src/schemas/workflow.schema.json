@@ -41,6 +41,51 @@
     "backend": false,
     "defaults": false
   },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "provider": {
+                "const": "skillrunner"
+              }
+            },
+            "required": ["provider"]
+          },
+          {
+            "properties": {
+              "request": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "skillrunner.job.v1"
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["request"]
+          }
+        ]
+      },
+      "then": {
+        "required": ["execution"],
+        "properties": {
+          "execution": {
+            "type": "object",
+            "properties": {
+              "skillrunner_mode": {
+                "type": "string",
+                "enum": ["auto", "interactive"]
+              }
+            },
+            "required": ["skillrunner_mode"]
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true,
   "$defs": {
     "nonEmptyString": {
@@ -166,6 +211,10 @@
           "type": "string",
           "enum": ["auto", "sync", "async"]
         },
+        "skillrunner_mode": {
+          "type": "string",
+          "enum": ["auto", "interactive"]
+        },
         "poll_interval_ms": {
           "type": "number"
         },
@@ -274,7 +323,8 @@
       "required": ["key", "from"],
       "properties": {
         "key": {
-          "$ref": "#/$defs/nonEmptyString"
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "Field name written to request.input.<key> for uploaded file relative path."
         },
         "from": {
           "type": "string",

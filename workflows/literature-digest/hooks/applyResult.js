@@ -185,6 +185,25 @@ function getBaseNameFromPath(targetPath) {
   return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : "";
 }
 
+function resolveBundleEntryPath(rawPath, fallbackPath) {
+  const fallback = normalizePathForCompare(fallbackPath);
+  const normalized = normalizePathForCompare(rawPath);
+  if (!normalized) {
+    return fallback;
+  }
+  if (/^(artifacts|result|bundle)\//i.test(normalized)) {
+    return normalized;
+  }
+  const lowered = normalized.toLowerCase();
+  for (const marker of ["/artifacts/", "/result/", "/bundle/"]) {
+    const index = lowered.lastIndexOf(marker);
+    if (index >= 0) {
+      return normalized.slice(index + 1);
+    }
+  }
+  return fallback || normalized;
+}
+
 function collectSourceAttachmentPathsFromRequest(request) {
   if (!request || typeof request !== "object") {
     return [];
@@ -394,18 +413,18 @@ export async function applyResult({ parent, bundleReader, request, runtime }) {
   const resultJsonText = await bundleReader.readText("result/result.json");
   const result = JSON.parse(resultJsonText);
 
-  const digestEntry = `artifacts/${helpers.basenameOrFallback(
+  const digestEntry = resolveBundleEntryPath(
     result?.data?.digest_path,
-    "digest.md",
-  )}`;
-  const referencesEntry = `artifacts/${helpers.basenameOrFallback(
+    "artifacts/digest.md",
+  );
+  const referencesEntry = resolveBundleEntryPath(
     result?.data?.references_path,
-    "references.json",
-  )}`;
-  const citationAnalysisEntry = `artifacts/${helpers.basenameOrFallback(
+    "artifacts/references.json",
+  );
+  const citationAnalysisEntry = resolveBundleEntryPath(
     result?.data?.citation_analysis_path,
-    "citation_analysis.json",
-  )}`;
+    "artifacts/citation_analysis.json",
+  );
 
   const digestMarkdown = await bundleReader.readText(digestEntry);
   const referencesJson = await bundleReader.readText(referencesEntry);

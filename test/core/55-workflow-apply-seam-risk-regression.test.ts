@@ -8,6 +8,7 @@ function createMessageFormatter() {
     overflow: (count: number) => `...and ${count} more`,
     unknownError: "unknown error",
     startToast: () => "",
+    waitingToast: () => "",
     jobToastSuccess: () => "",
     jobToastFailed: () => "",
   };
@@ -152,5 +153,44 @@ describe("workflow apply seam risk regression", function () {
     );
     assert.equal(applyCalls, 0);
     assert.include(runtimeStages, "provider-result-missing-request-id");
+  });
+
+  it("marks deferred backend job as pending instead of failed", async function () {
+    const runtimeStages: string[] = [];
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [{ taskName: "interactive.md", targetParentID: 3 }],
+          jobIds: ["job-4"],
+          jobsById: {
+            "job-4": {
+              id: "job-4",
+              state: "waiting_user",
+              meta: {
+                requestId: "req-deferred-4",
+                targetParentID: 3,
+              },
+              result: {
+                status: "deferred",
+                requestId: "req-deferred-4",
+                backendStatus: "waiting_user",
+              },
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        appendRuntimeLog: (entry) => {
+          runtimeStages.push(entry.stage);
+        },
+      },
+    );
+
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.pending, 1);
+    assert.lengthOf(summary.failureReasons, 0);
+    assert.include(runtimeStages, "job-pending");
   });
 });

@@ -2,6 +2,7 @@ import {
   buildWorkflowFinishMessage,
   buildWorkflowJobToastMessage,
   buildWorkflowStartToastMessage,
+  buildWorkflowWaitingToastMessage,
   type WorkflowMessageFormatter,
 } from "../workflowExecuteMessage";
 import {
@@ -92,6 +93,27 @@ export function emitWorkflowStartToast(args: {
       {
         workflowLabel: args.workflowLabel,
         totalJobs: args.totalJobs,
+      },
+      args.messageFormatter,
+    ),
+    type: "default",
+  });
+}
+
+export function emitWorkflowWaitingToast(args: {
+  workflowLabel: string;
+  pendingJobs: number;
+  messageFormatter: WorkflowMessageFormatter;
+}, deps: Partial<FeedbackDeps> = {}) {
+  const resolved = {
+    ...defaultFeedbackDeps,
+    ...deps,
+  };
+  resolved.showToast({
+    text: buildWorkflowWaitingToastMessage(
+      {
+        workflowLabel: args.workflowLabel,
+        pendingJobs: args.pendingJobs,
       },
       args.messageFormatter,
     ),

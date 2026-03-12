@@ -4,6 +4,10 @@ import { handlers } from "../../src/handlers";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
 import { rescanWorkflowRegistry } from "../../src/modules/workflowRuntime";
 import {
+  clearSkillRunnerModelCache,
+  upsertSkillRunnerModelCacheEntry,
+} from "../../src/providers/skillrunner/modelCache";
+import {
   clearRunOnceWorkflowOverrides,
   clearWorkflowSettings,
   resetRunOnceOverridesForSettingsOpen,
@@ -62,11 +66,13 @@ describe("workflow settings execution", function () {
       true,
     );
     Zotero.Prefs.clear(workflowSettingsPrefKey, true);
+    clearSkillRunnerModelCache();
     clearRunOnceWorkflowOverrides("literature-digest");
     clearRunOnceWorkflowOverrides("reference-matching");
   });
 
   afterEach(function () {
+    clearSkillRunnerModelCache();
     clearRunOnceWorkflowOverrides("literature-digest");
     clearRunOnceWorkflowOverrides("reference-matching");
     clearWorkflowSettings("literature-digest");
@@ -135,13 +141,17 @@ describe("workflow settings execution", function () {
       parameter?: { language?: string };
       skill_id?: string;
       fetch_type?: "bundle" | "result";
+      runtime_options?: { execution_mode?: string };
+      input?: { source_path?: string };
       upload_files?: Array<{ key: string; path: string }>;
     }>;
     assert.equal(requests[0].kind, "skillrunner.job.v1");
     assert.equal(requests[0].skill_id, "literature-digest");
     assert.equal(requests[0].parameter?.language, "en-US");
+    assert.equal(requests[0].runtime_options?.execution_mode, "auto");
     assert.equal(requests[0].fetch_type, "bundle");
     assert.equal(requests[0].upload_files?.[0].key, "source_path");
+    assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
   it("consumes run-once overrides exactly once", async function () {
@@ -189,6 +199,91 @@ describe("workflow settings execution", function () {
     assert.equal(second.providerOptions.engine, "gemini");
     assert.equal(second.providerOptions.model, "");
     assert.equal(second.providerOptions.no_cache, false);
+  });
+
+  it("normalizes opencode model_provider + model into provider/model payload", async function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-alt",
+      baseUrl: "http://127.0.0.1:18030",
+      updatedAt: "2026-03-12T00:00:00.000Z",
+      engines: ["opencode"],
+      modelsByEngine: {
+        opencode: [
+          {
+            id: "openai/gpt-5",
+            provider: "openai",
+            model: "gpt-5",
+            display_name: "OpenAI GPT-5",
+            deprecated: false,
+          },
+        ],
+      },
+    });
+
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-alt",
+      providerOptions: {
+        engine: "opencode",
+        model_provider: "openai",
+        model: "gpt-5",
+        no_cache: false,
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const context = await resolveWorkflowExecutionContext({
+      workflow: workflow!,
+      consumeRunOnce: false,
+    });
+    assert.equal(context.providerOptions.engine, "opencode");
+    assert.equal(context.providerOptions.model_provider, "openai");
+    assert.equal(context.providerOptions.model, "openai/gpt-5");
+  });
+
+  it("keeps legacy opencode provider/model string compatible", async function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-alt",
+      baseUrl: "http://127.0.0.1:18030",
+      updatedAt: "2026-03-12T00:00:00.000Z",
+      engines: ["opencode"],
+      modelsByEngine: {
+        opencode: [
+          {
+            id: "openai/gpt-5",
+            display_name: "OpenAI GPT-5",
+            deprecated: false,
+          },
+        ],
+      },
+    });
+
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-alt",
+      providerOptions: {
+        engine: "opencode",
+        model: "openai/gpt-5",
+        no_cache: false,
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const context = await resolveWorkflowExecutionContext({
+      workflow: workflow!,
+      consumeRunOnce: false,
+    });
+    assert.equal(context.providerOptions.engine, "opencode");
+    assert.equal(context.providerOptions.model_provider, "openai");
+    assert.equal(context.providerOptions.model, "openai/gpt-5");
   });
 
   it("resets run-once defaults to persisted snapshot when settings page opens", async function () {

@@ -15,6 +15,7 @@ export type SkillRunnerManagementRunSummary = {
   run_id: string;
   status: string;
   engine: string;
+  model?: string;
   skill_id: string;
   updated_at: string;
   pending_interaction_id?: number | null;
@@ -70,6 +71,11 @@ export type SkillRunnerManagementCancelResponse = {
   status: string;
   accepted: boolean;
   message: string;
+};
+
+export type SkillRunnerManagementAuthImportFile = {
+  name: string;
+  content_base64: string;
 };
 
 export type SkillRunnerManagementCredentials = {
@@ -151,6 +157,31 @@ function normalizeUrl(baseUrl: string, path: string, query?: URLSearchParams) {
     return url;
   }
   return `${url}?${query.toString()}`;
+}
+
+function decodeBase64ToBytes(input: string) {
+  const normalized = String(input || "").trim();
+  if (!normalized) {
+    return new Uint8Array();
+  }
+  const runtime = globalThis as {
+    atob?: (raw: string) => string;
+    Buffer?: {
+      from: (raw: string, encoding: string) => Uint8Array;
+    };
+  };
+  if (typeof runtime.atob === "function") {
+    const binary = runtime.atob(normalized);
+    const out = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      out[index] = binary.charCodeAt(index) & 0xff;
+    }
+    return out;
+  }
+  if (runtime.Buffer && typeof runtime.Buffer.from === "function") {
+    return new Uint8Array(runtime.Buffer.from(normalized, "base64"));
+  }
+  throw new Error("base64 decoder is unavailable in current runtime");
 }
 
 async function streamSseResponse(args: {
@@ -474,6 +505,47 @@ export class SkillRunnerManagementClient {
       throw new Error("management cancel response must be object");
     }
     return body as SkillRunnerManagementCancelResponse;
+  }
+
+  async submitAuthImport(args: {
+    requestId: string;
+    providerId?: string;
+    files: SkillRunnerManagementAuthImportFile[];
+  }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    const files = Array.isArray(args.files) ? args.files : [];
+    if (files.length === 0) {
+      throw new Error("files are required");
+    }
+    const form = new FormData();
+    const providerId = String(args.providerId || "").trim().toLowerCase();
+    if (providerId) {
+      form.append("provider_id", providerId);
+    }
+    for (const file of files) {
+      const name = String(file?.name || "").trim();
+      const contentBase64 = String(file?.content_base64 || "").trim();
+      if (!name || !contentBase64) {
+        continue;
+      }
+      const bytes = decodeBase64ToBytes(contentBase64);
+      const blob = new Blob([bytes], {
+        type: "application/octet-stream",
+      });
+      form.append("files", blob, name);
+    }
+    const body = await this.requestWithAuthRetry({
+      method: "POST",
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/interaction/auth/import`,
+      body: form,
+    });
+    if (!isObject(body)) {
+      throw new Error("auth import response must be object");
+    }
+    return body as SkillRunnerManagementReplyResponse;
   }
 
   async streamRunChat(args: {

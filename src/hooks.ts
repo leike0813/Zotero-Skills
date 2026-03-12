@@ -17,6 +17,14 @@ import {
   removeDashboardToolbarButton,
 } from "./modules/dashboardToolbarButton";
 import { resolveRuntimeToolkit } from "./utils/runtimeBridge";
+import {
+  startSkillRunnerModelCacheAutoRefresh,
+  stopSkillRunnerModelCacheAutoRefresh,
+} from "./providers/skillrunner/modelCache";
+import {
+  startSkillRunnerTaskReconciler,
+  stopSkillRunnerTaskReconciler,
+} from "./modules/skillRunnerTaskReconciler";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -108,6 +116,8 @@ async function onStartup() {
   installWorkflowEditorHostBridge();
 
   await rescanWorkflowRegistry();
+  startSkillRunnerModelCacheAutoRefresh();
+  startSkillRunnerTaskReconciler();
 
   BasicExampleFactory.registerPrefs();
 
@@ -174,6 +184,8 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  stopSkillRunnerModelCacheAutoRefresh();
+  stopSkillRunnerTaskReconciler();
   for (const win of Zotero.getMainWindows?.() || []) {
     removeDashboardToolbarButton(win);
   }

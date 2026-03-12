@@ -56,7 +56,12 @@
     return parsed.toLocaleString();
   }
 
-  function isTerminalStatus(status) {
+  function isTerminalStatus(status, semantics) {
+    if (semantics && typeof semantics === "object") {
+      if (typeof semantics.terminal === "boolean") {
+        return semantics.terminal;
+      }
+    }
     const normalized = String(status || "").trim().toLowerCase();
     return normalized === "succeeded" || normalized === "failed" || normalized === "canceled";
   }
@@ -70,6 +75,9 @@
     const rows = Array.isArray(args.rows) ? args.rows : [];
     const labels = args.labels;
     const wrap = el("div", "panel");
+    if (args.panelClassName) {
+      wrap.classList.add(args.panelClassName);
+    }
     if (rows.length === 0) {
       wrap.appendChild(el("div", "empty", args.emptyText));
       return wrap;
@@ -342,30 +350,73 @@
       renderTaskTable({
         rows: backend.rows || [],
         labels,
+        panelClassName: "skillrunner-task-panel",
         emptyText: backend.emptyRowsText || labels.backendNoTasks || labels.noHistory,
-        buildActions: (row) => {
-          const buttons = [];
-          if (!row.requestId) {
-            return buttons;
+        columns: [
+          labels.colTask,
+          labels.colWorkflow,
+          labels.colEngine || "Engine",
+          labels.colStatus,
+          labels.colRequestId,
+          labels.colUpdatedAt,
+          labels.colActions || "Actions",
+        ],
+        renderRow: (tr, row) => {
+          const taskCell = document.createElement("td");
+          taskCell.textContent = row.taskName;
+          tr.appendChild(taskCell);
+
+          const workflowCell = document.createElement("td");
+          workflowCell.textContent = row.workflowLabel;
+          tr.appendChild(workflowCell);
+
+          const engineCell = document.createElement("td");
+          engineCell.textContent = row.engine || "-";
+          tr.appendChild(engineCell);
+
+          const statusCell = document.createElement("td");
+          statusCell.appendChild(renderStatusBadge(row.state, row.stateLabel));
+          tr.appendChild(statusCell);
+
+          const requestCell = document.createElement("td");
+          requestCell.className = "mono";
+          requestCell.textContent = row.requestId || "-";
+          tr.appendChild(requestCell);
+
+          const updatedCell = document.createElement("td");
+          updatedCell.textContent = formatTime(row.updatedAt);
+          tr.appendChild(updatedCell);
+
+          const actionCell = document.createElement("td");
+          actionCell.className = "actions-cell";
+          const actionsWrap = el("div", "actions-wrap");
+          const actionButtons = [];
+          if (row.requestId) {
+            const openRun = el("button", "btn", labels.openRun);
+            openRun.addEventListener("click", function () {
+              sendAction("open-run", {
+                backendId: backend.backendId,
+                requestId: row.requestId,
+              });
+            });
+            actionButtons.push(openRun);
+            const cancelRun = el("button", "btn", labels.cancelRun);
+            cancelRun.disabled = isTerminalStatus(row.state, row.stateSemantics);
+            cancelRun.addEventListener("click", function () {
+              sendAction("cancel-run", {
+                backendId: backend.backendId,
+                requestId: row.requestId,
+              });
+            });
+            actionButtons.push(cancelRun);
           }
-          const openRun = el("button", "btn", labels.openRun);
-          openRun.addEventListener("click", function () {
-            sendAction("open-run", {
-              backendId: backend.backendId,
-              requestId: row.requestId,
-            });
-          });
-          buttons.push(openRun);
-          const cancelRun = el("button", "btn", labels.cancelRun);
-          cancelRun.disabled = isTerminalStatus(row.state);
-          cancelRun.addEventListener("click", function () {
-            sendAction("cancel-run", {
-              backendId: backend.backendId,
-              requestId: row.requestId,
-            });
-          });
-          buttons.push(cancelRun);
-          return buttons;
+          if (actionButtons.length === 0) {
+            actionsWrap.textContent = "-";
+          } else {
+            actionButtons.forEach((button) => actionsWrap.appendChild(button));
+          }
+          actionCell.appendChild(actionsWrap);
+          tr.appendChild(actionCell);
         },
       }),
     );
@@ -430,6 +481,7 @@
     app.appendChild(sidebar);
 
     const main = el("main", "main");
+    main.classList.remove("skillrunner-fill");
     if (snapshot.backendLoadError) {
       main.appendChild(el("div", "error-banner", snapshot.backendLoadError));
     }
@@ -437,6 +489,7 @@
       main.appendChild(el("h2", "page-title", snapshot.title));
       renderSummary(main, snapshot);
     } else if (snapshot.backendView && snapshot.backendView.backendType === "skillrunner") {
+      main.classList.add("skillrunner-fill");
       renderSkillRunnerBackend(main, snapshot);
     } else {
       renderGenericBackend(main, snapshot);

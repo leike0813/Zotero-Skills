@@ -82,6 +82,13 @@ body {
   overflow: auto;
 }
 
+.main.skillrunner-fill {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .page-title {
   margin: 0 0 14px;
   font-size: 18px;
@@ -135,6 +142,19 @@ body {
   max-height: 320px;
 }
 
+.main.skillrunner-fill .skillrunner-task-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.main.skillrunner-fill .skillrunner-task-panel .table-wrap {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
@@ -183,7 +203,9 @@ tr.clickable {
 }
 
 .status.running,
-.status.queued {
+.status.queued,
+.status.waiting_user,
+.status.waiting_auth {
   color: var(--warning);
   border-color: #f1d39b;
   background: #fff9ed;

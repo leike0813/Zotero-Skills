@@ -225,6 +225,7 @@ export async function resolveWorkflowExecutionContext(args: {
   const providerOptions = normalizeProviderRuntimeOptions({
     providerId: provider.id,
     options: merged.providerOptions,
+    backend,
   });
 
   return {

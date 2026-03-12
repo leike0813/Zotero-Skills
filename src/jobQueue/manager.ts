@@ -1,8 +1,15 @@
 import { appendRuntimeLog } from "../modules/runtimeLogManager";
+import {
+  normalizeStatusWithGuard,
+  validateTransition,
+  type SkillRunnerStateMachineViolation,
+} from "../modules/skillRunnerProviderStateMachine";
 
 export type JobState =
   | "queued"
   | "running"
+  | "waiting_user"
+  | "waiting_auth"
   | "succeeded"
   | "failed"
   | "canceled";
@@ -164,7 +171,7 @@ export class JobQueueManager {
     });
     this.runningCount += 1;
     try {
-      job.result = await this.executeJob(
+      const executionResult = await this.executeJob(
         { ...job },
         {
           reportProgress: (event: JobProgressEvent) => {
@@ -187,20 +194,66 @@ export class JobQueueManager {
           },
         },
       );
-      job.state = "succeeded";
+      job.result = executionResult;
+      if (
+        executionResult &&
+        typeof executionResult === "object" &&
+        (executionResult as { status?: unknown }).status === "deferred"
+      ) {
+        const requestId = String(
+          (executionResult as { requestId?: unknown }).requestId ||
+            job.meta.requestId ||
+            "",
+        ).trim();
+        const backendStatus = String(
+          (executionResult as { backendStatus?: unknown }).backendStatus || "",
+        ).trim();
+        const normalized = normalizeStatusWithGuard({
+          value: backendStatus,
+          fallback: "running",
+          requestId: requestId || undefined,
+        });
+        this.appendStateMachineWarning({
+          job,
+          requestId: requestId || undefined,
+          violation: normalized.violation,
+        });
+        const transition = validateTransition({
+          prev: job.state,
+          next: normalized.status,
+          requestId: requestId || undefined,
+        });
+        this.appendStateMachineWarning({
+          job,
+          requestId: requestId || undefined,
+          violation: transition.violation,
+        });
+        job.state = transition.ok ? transition.nextState : transition.prevState;
+      } else {
+        job.state = "succeeded";
+      }
       this.touch(job);
       this.emitJobUpdated(job);
       const requestId = String(
-        (job.result as { requestId?: unknown })?.requestId || "",
+        (executionResult as { requestId?: unknown })?.requestId || "",
       ).trim();
+      const stage =
+        executionResult &&
+        typeof executionResult === "object" &&
+        (executionResult as { status?: unknown }).status === "deferred"
+          ? "dispatch-deferred"
+          : "dispatch-succeeded";
       appendRuntimeLog({
         level: "info",
         scope: "job",
         workflowId: job.workflowId,
         jobId: job.id,
         requestId: requestId || undefined,
-        stage: "dispatch-succeeded",
-        message: "provider dispatch finished",
+        stage,
+        message:
+          stage === "dispatch-deferred"
+            ? "provider dispatch deferred to backend reconciler"
+            : "provider dispatch finished",
       });
     } catch (error) {
       this.logJobError(job, error);
@@ -239,6 +292,26 @@ export class JobQueueManager {
         error instanceof Error ? error : new Error(String(error));
       runtime.Zotero.logError(normalized);
     }
+  }
+
+  private appendStateMachineWarning(args: {
+    job: JobRecord;
+    requestId?: string;
+    violation?: SkillRunnerStateMachineViolation;
+  }) {
+    if (!args.violation) {
+      return;
+    }
+    appendRuntimeLog({
+      level: "warn",
+      scope: "state-machine",
+      workflowId: args.job.workflowId,
+      jobId: args.job.id,
+      requestId: args.requestId,
+      stage: "state-machine-guard",
+      message: "state machine guard degraded runtime state",
+      details: args.violation,
+    });
   }
 
   private async drain() {

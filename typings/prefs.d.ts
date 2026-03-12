@@ -10,6 +10,9 @@ declare namespace _ZoteroTypes {
       "skillRunnerEndpoint": string;
       "backendsConfigJson": string;
       "workflowSettingsJson": string;
+      "skillRunnerModelCacheJson": string;
+      "skillRunnerDeferredTasksJson": string;
+      "tagVocabularyStagedJson": string;
       "workflowDir": string;
       "sampleOutputDir": string;
     };

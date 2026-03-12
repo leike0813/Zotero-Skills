@@ -623,6 +623,7 @@ export async function openWorkflowSettingsDialog(args?: {
     return;
   }
   const profiles = await listProviderProfilesForWorkflow(workflow);
+  const profileById = new Map(profiles.map((entry) => [entry.id, entry]));
   const profileItems = profiles.map((profile) => ({
     id: profile.id,
     label: `${profile.id} (${profile.baseUrl})`,
@@ -790,14 +791,17 @@ export async function openWorkflowSettingsDialog(args?: {
         container: HTMLElement;
         idPrefix: string;
         values: Record<string, unknown>;
+        resolveBackend: () => (typeof profiles)[number] | undefined;
       }) => {
         const mergedValues = {
           ...args.values,
           ...collectSchemaValues(args.container),
         };
+        const backend = args.resolveBackend();
         const providerSchemaEntries = resolveProviderSchemaEntries({
           providerId,
           currentValues: mergedValues,
+          backend,
         });
         renderSchemaFields({
           doc,
@@ -807,11 +811,15 @@ export async function openWorkflowSettingsDialog(args?: {
           idPrefix: args.idPrefix,
           emptyText: getString("workflow-settings-no-provider-options" as any),
         });
-        const engineControl = args.container.querySelector(
-          '[data-zs-option-key="engine"]',
-        ) as Element | null;
-        if (engineControl) {
-          engineControl.addEventListener("change", () => {
+        const dynamicControls = ["engine", "model_provider"]
+          .map((key) =>
+            args.container.querySelector(
+              `[data-zs-option-key="${key}"]`,
+            ) as Element | null,
+          )
+          .filter(Boolean) as Element[];
+        for (const control of dynamicControls) {
+          control.addEventListener("change", () => {
             const currentValues = {
               ...args.values,
               ...collectSchemaValues(args.container),
@@ -820,19 +828,65 @@ export async function openWorkflowSettingsDialog(args?: {
               container: args.container,
               idPrefix: args.idPrefix,
               values: currentValues,
+              resolveBackend: args.resolveBackend,
             });
           });
         }
+      };
+      const resolvePersistedBackend = () => {
+        const selectedId = profileSelect ? getControlValue(profileSelect) : "";
+        return profileById.get(selectedId);
+      };
+      const resolveRunOnceBackend = () => {
+        const onceSelectedId = onceProfileSelect
+          ? getControlValue(onceProfileSelect)
+          : "";
+        const fallbackId =
+          profileSelect ? getControlValue(profileSelect) : renderModel.selectedProfile;
+        return profileById.get(onceSelectedId || fallbackId);
       };
       renderProviderOptionsFields({
         container: persistedProviderFields,
         idPrefix: "zs-workflow-persisted-provider-option",
         values: renderModel.persistedProviderOptions,
+        resolveBackend: resolvePersistedBackend,
       });
       renderProviderOptionsFields({
         container: onceProviderFields,
         idPrefix: "zs-workflow-once-provider-option",
         values: renderModel.runOnceProviderOptions,
+        resolveBackend: resolveRunOnceBackend,
+      });
+      profileSelect.addEventListener("change", () => {
+        renderProviderOptionsFields({
+          container: persistedProviderFields,
+          idPrefix: "zs-workflow-persisted-provider-option",
+          values: {
+            ...renderModel.persistedProviderOptions,
+            ...collectSchemaValues(persistedProviderFields),
+          },
+          resolveBackend: resolvePersistedBackend,
+        });
+        renderProviderOptionsFields({
+          container: onceProviderFields,
+          idPrefix: "zs-workflow-once-provider-option",
+          values: {
+            ...renderModel.runOnceProviderOptions,
+            ...collectSchemaValues(onceProviderFields),
+          },
+          resolveBackend: resolveRunOnceBackend,
+        });
+      });
+      onceProfileSelect.addEventListener("change", () => {
+        renderProviderOptionsFields({
+          container: onceProviderFields,
+          idPrefix: "zs-workflow-once-provider-option",
+          values: {
+            ...renderModel.runOnceProviderOptions,
+            ...collectSchemaValues(onceProviderFields),
+          },
+          resolveBackend: resolveRunOnceBackend,
+        });
       });
     },
     unloadCallback: () => {},

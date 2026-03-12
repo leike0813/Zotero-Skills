@@ -5,6 +5,10 @@ import {
   buildWorkflowTaskRecordFromJob,
   type WorkflowTaskRecord,
 } from "./taskRuntime";
+import {
+  isKnownStatus,
+  normalizeStatus,
+} from "./skillRunnerProviderStateMachine";
 
 const HISTORY_PREF_KEY = "taskDashboardHistoryJson";
 const RETENTION_DAYS = 30;
@@ -59,13 +63,7 @@ function parseHistoryRecord(raw: unknown): TaskDashboardHistoryRecord | null {
   ) {
     return null;
   }
-  if (
-    state !== "queued" &&
-    state !== "running" &&
-    state !== "succeeded" &&
-    state !== "failed" &&
-    state !== "canceled"
-  ) {
+  if (!isKnownStatus(state)) {
     return null;
   }
   return {
@@ -75,8 +73,9 @@ function parseHistoryRecord(raw: unknown): TaskDashboardHistoryRecord | null {
     workflowId,
     workflowLabel,
     taskName,
-    state: state as WorkflowTaskRecord["state"],
+    state: normalizeStatus(state) as WorkflowTaskRecord["state"],
     requestId: String(raw.requestId || "").trim() || undefined,
+    engine: String(raw.engine || "").trim() || undefined,
     inputUnitIdentity: String(raw.inputUnitIdentity || "").trim() || undefined,
     inputUnitLabel: String(raw.inputUnitLabel || "").trim() || undefined,
     providerId: String(raw.providerId || "").trim() || undefined,
@@ -221,29 +220,35 @@ export function summarizeTaskDashboardHistory(
     total: records.length,
     queued: 0,
     running: 0,
+    waiting_user: 0,
+    waiting_auth: 0,
     succeeded: 0,
     failed: 0,
     canceled: 0,
   };
   for (const record of records) {
-    if (record.state === "queued") {
-      summary.queued += 1;
-      continue;
-    }
-    if (record.state === "running") {
-      summary.running += 1;
-      continue;
-    }
-    if (record.state === "succeeded") {
-      summary.succeeded += 1;
-      continue;
-    }
-    if (record.state === "failed") {
-      summary.failed += 1;
-      continue;
-    }
-    if (record.state === "canceled") {
-      summary.canceled += 1;
+    switch (normalizeStatus(record.state)) {
+      case "queued":
+        summary.queued += 1;
+        break;
+      case "running":
+        summary.running += 1;
+        break;
+      case "waiting_user":
+        summary.waiting_user += 1;
+        break;
+      case "waiting_auth":
+        summary.waiting_auth += 1;
+        break;
+      case "succeeded":
+        summary.succeeded += 1;
+        break;
+      case "failed":
+        summary.failed += 1;
+        break;
+      case "canceled":
+        summary.canceled += 1;
+        break;
     }
   }
   return summary;

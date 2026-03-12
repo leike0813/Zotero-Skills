@@ -22,6 +22,7 @@ function makeJob(args: {
   backendId?: string;
   backendType?: string;
   backendBaseUrl?: string;
+  engine?: string;
   requestId?: string;
   error?: string;
 }) {
@@ -39,6 +40,7 @@ function makeJob(args: {
       backendId: args.backendId || "skillrunner-local",
       backendType: args.backendType || "skillrunner",
       backendBaseUrl: args.backendBaseUrl || "http://127.0.0.1:8030",
+      engine: args.engine || "",
     },
     state: args.state,
     createdAt: args.createdAt,
@@ -183,16 +185,32 @@ describe("task runtime", function () {
         inputUnitIdentity: "attachment-key:GHI789",
       }),
     );
+    recordWorkflowTaskUpdate(
+      makeJob({
+        id: "job-4",
+        state: "waiting_user",
+        createdAt: "2026-02-10T01:03:00.000Z",
+        updatedAt: "2026-02-10T01:03:01.000Z",
+        runId: "run-a",
+        taskName: "paper-d.pdf",
+        inputUnitIdentity: "attachment-key:JKL000",
+        inputUnitLabel: "paper-d.pdf",
+      }),
+    );
 
     const active = listActiveWorkflowTasks();
-    assert.lengthOf(active, 2);
+    assert.lengthOf(active, 3);
     assert.sameMembers(
       active.map((entry) => entry.inputUnitIdentity),
-      ["attachment-key:ABC123", "attachment-key:DEF456"],
+      [
+        "attachment-key:ABC123",
+        "attachment-key:DEF456",
+        "attachment-key:JKL000",
+      ],
     );
     assert.sameMembers(
       active.map((entry) => entry.inputUnitLabel),
-      ["paper-a.pdf", "paper-b.pdf"],
+      ["paper-a.pdf", "paper-b.pdf", "paper-d.pdf"],
     );
   });
 
@@ -212,6 +230,23 @@ describe("task runtime", function () {
     const tasks = listWorkflowTasks();
     assert.lengthOf(tasks, 1);
     assert.equal(tasks[0].requestId, "request-123");
+  });
+
+  it("captures engine metadata from job meta", function () {
+    recordWorkflowTaskUpdate(
+      makeJob({
+        id: "job-1",
+        state: "running",
+        createdAt: "2026-02-10T01:00:00.000Z",
+        updatedAt: "2026-02-10T01:00:01.000Z",
+        runId: "run-a",
+        taskName: "attachment-a.md",
+        engine: "codex",
+      }),
+    );
+    const tasks = listWorkflowTasks();
+    assert.lengthOf(tasks, 1);
+    assert.equal(tasks[0].engine, "codex");
   });
 
   it("prefers requestId from job meta during running phase", function () {

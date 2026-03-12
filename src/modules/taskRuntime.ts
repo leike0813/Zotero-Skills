@@ -1,10 +1,12 @@
 import type { JobRecord, JobState } from "../jobQueue/manager";
+import { isActive, isTerminal } from "./skillRunnerProviderStateMachine";
 
 export type WorkflowTaskRecord = {
   id: string;
   runId: string;
   jobId: string;
   requestId?: string;
+  engine?: string;
   workflowId: string;
   workflowLabel: string;
   taskName: string;
@@ -63,6 +65,7 @@ export function buildWorkflowTaskRecordFromJob(
   const inputUnitLabel =
     normalizeMetaString(job.meta, "inputUnitLabel") || taskName;
   const requestId = resolveRequestIdFromJob(job);
+  const engine = normalizeMetaString(job.meta, "engine");
   const providerId = normalizeMetaString(job.meta, "providerId");
   const backendId = normalizeMetaString(job.meta, "backendId");
   const backendType = normalizeMetaString(job.meta, "backendType");
@@ -72,6 +75,7 @@ export function buildWorkflowTaskRecordFromJob(
     runId,
     jobId: job.id,
     requestId: requestId || undefined,
+    engine: engine || undefined,
     workflowId: job.workflowId,
     workflowLabel,
     taskName,
@@ -96,7 +100,7 @@ function emitTasksChanged() {
 }
 
 function isFinishedState(state: JobState) {
-  return state === "succeeded" || state === "failed" || state === "canceled";
+  return isTerminal(state);
 }
 
 export function recordWorkflowTaskUpdate(job: JobRecord) {
@@ -112,9 +116,7 @@ export function listWorkflowTasks() {
 }
 
 export function listActiveWorkflowTasks() {
-  return listWorkflowTasks().filter(
-    (entry) => entry.state === "queued" || entry.state === "running",
-  );
+  return listWorkflowTasks().filter((entry) => isActive(entry.state));
 }
 
 export function clearFinishedWorkflowTasks() {

@@ -14,6 +14,7 @@ const dynamicImport: DynamicImport = new Function(
 type MockJob = {
   id: string;
   createPayload: unknown;
+  expectedUploadTargets: string[];
   uploadReceived: boolean;
   pollCount: number;
   terminalStatus: "succeeded" | "failed" | "canceled";
@@ -35,6 +36,29 @@ type TrafficRecord = {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeUploadRelativePath(value: unknown) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+/, "");
+}
+
+function resolveExpectedUploadTargets(createPayload: unknown) {
+  const payload = isObject(createPayload) ? createPayload : {};
+  const input = isObject(payload.input) ? payload.input : {};
+  const skillId = String(payload.skill_id || "").trim();
+  const targets: string[] = [];
+  if (skillId === "literature-digest") {
+    targets.push(normalizeUploadRelativePath(input.source_path));
+  }
+  if (skillId === "tag-regulator") {
+    targets.push(normalizeUploadRelativePath(input.valid_tags));
+  }
+  return targets.filter(Boolean);
 }
 
 function normalizeStringArray(value: unknown) {
@@ -190,10 +214,12 @@ export async function startMockSkillRunnerServer(args: {
           return;
         }
         const requestId = String(nextId++);
+        const expectedUploadTargets = resolveExpectedUploadTargets(payload);
         jobs.set(requestId, {
           id: requestId,
           createPayload: payload,
-          uploadReceived: false,
+          expectedUploadTargets,
+          uploadReceived: expectedUploadTargets.length === 0,
           pollCount: 0,
           terminalStatus: (() => {
             const body = isObject(payload) ? payload : {};
@@ -247,16 +273,27 @@ export async function startMockSkillRunnerServer(args: {
           return;
         }
         const hasFileField = validateMultipartHasField(bodyRaw, "file");
-        const hasLegacyField = validateMultipartHasField(bodyRaw, "md_path");
-        if (!hasFileField && !hasLegacyField) {
+        if (!hasFileField) {
           res.statusCode = 400;
           res.setHeader("content-type", "application/json");
           res.end(
             JSON.stringify({
-              error: "missing multipart field: file (or legacy md_path)",
+              error: "missing multipart field: file",
             }),
           );
           return;
+        }
+        for (const targetPath of job.expectedUploadTargets) {
+          if (!bodyRaw.includes(targetPath)) {
+            res.statusCode = 400;
+            res.setHeader("content-type", "application/json");
+            res.end(
+              JSON.stringify({
+                error: `missing uploaded file entry for input path: ${targetPath}`,
+              }),
+            );
+            return;
+          }
         }
         job.uploadReceived = true;
         res.statusCode = 200;

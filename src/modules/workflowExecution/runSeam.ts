@@ -3,6 +3,7 @@ import { executeWithProvider } from "../../providers/registry";
 import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
 import { recordTaskDashboardHistoryFromJob } from "../taskDashboardHistory";
+import { registerSkillRunnerDeferredTask } from "../skillRunnerTaskReconciler";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
   resolveInputUnitIdentityFromRequest,
@@ -17,6 +18,7 @@ type RunSeamDeps = {
   appendRuntimeLog: typeof appendRuntimeLog;
   recordWorkflowTaskUpdate: typeof recordWorkflowTaskUpdate;
   recordTaskDashboardHistoryFromJob: typeof recordTaskDashboardHistoryFromJob;
+  registerSkillRunnerDeferredTask: typeof registerSkillRunnerDeferredTask;
 };
 
 const defaultRunSeamDeps: RunSeamDeps = {
@@ -25,6 +27,7 @@ const defaultRunSeamDeps: RunSeamDeps = {
   appendRuntimeLog,
   recordWorkflowTaskUpdate,
   recordTaskDashboardHistoryFromJob,
+  registerSkillRunnerDeferredTask,
 };
 
 export function runWorkflowExecutionSeam(args: {
@@ -60,6 +63,26 @@ export function runWorkflowExecutionSeam(args: {
     onJobUpdated: (job) => {
       resolved.recordWorkflowTaskUpdate(job);
       resolved.recordTaskDashboardHistoryFromJob(job);
+      const requestIndex =
+        typeof job.meta.index === "number" && Number.isFinite(job.meta.index)
+          ? Math.floor(job.meta.index)
+          : -1;
+      const request =
+        requestIndex >= 0 && requestIndex < args.prepared.requests.length
+          ? args.prepared.requests[requestIndex]
+          : undefined;
+      if (request) {
+        resolved.registerSkillRunnerDeferredTask({
+          workflowId: args.prepared.workflow.manifest.id,
+          workflowLabel: args.prepared.workflow.manifest.label,
+          requestKind: args.prepared.executionContext.requestKind,
+          request,
+          backend: args.prepared.executionContext.backend,
+          providerId: args.prepared.executionContext.providerId,
+          providerOptions: args.prepared.executionContext.providerOptions,
+          job,
+        });
+      }
     },
   });
 
@@ -67,6 +90,9 @@ export function runWorkflowExecutionSeam(args: {
     const taskName = resolveTaskNameFromRequest(request, index);
     const inputUnitIdentity = resolveInputUnitIdentityFromRequest(request);
     const inputUnitLabel = resolveInputUnitLabelFromRequest(request, index);
+    const engine = String(
+      args.prepared.executionContext.providerOptions?.engine || "",
+    ).trim();
     const jobId = queue.enqueue({
       workflowId: args.prepared.workflow.manifest.id,
       request,
@@ -82,6 +108,7 @@ export function runWorkflowExecutionSeam(args: {
         backendId: args.prepared.executionContext.backend.id,
         backendType: args.prepared.executionContext.backend.type,
         backendBaseUrl: args.prepared.executionContext.backend.baseUrl,
+        engine: engine || undefined,
       },
     });
     resolved.appendRuntimeLog({

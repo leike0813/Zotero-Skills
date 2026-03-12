@@ -37,29 +37,38 @@
 - Provider 可声明可调选项 schema（如 skillrunner 的 `engine/model/no_cache`）
 - Provider 可返回动态枚举（如 `model` 随 `engine` 变化）
 - Provider 负责对 runtime options 做 normalize
+- SkillRunner 的 engine/model 枚举来源：
+  - backend 实时拉取并按 backend 维度缓存（优先）
+  - 静态内置目录（兜底）
+  - 刷新策略：startup 首刷 + 每小时自动刷新 + Backend Manager 行级手动刷新
 
 ## skillrunner 语义（当前）
 
 - 支持 request kind：
   - `skillrunner.job.v1`
-- 执行链固定为 Auto 模式：
-  - `POST /v1/jobs`
-  - `POST /v1/jobs/{request_id}/upload`
-  - `GET /v1/jobs/{request_id}` 轮询
-  - `GET /v1/jobs/{request_id}/result|bundle`
+- 执行链分两阶段：
+  - 提交阶段（Provider/Queue）：`POST /v1/jobs` -> `POST /v1/jobs/{request_id}/upload` -> 首轮轮询
+  - 收敛阶段（Reconciler）：对 deferred 任务持续轮询后端状态，直至终态
 - progress 事件：
   - create 成功后发出 `request-created`（含 `requestId`）
   - 供 JobQueue 在 running 阶段写回 `job.meta.requestId`，让 Dashboard 立即可见 run 入口
-- 轮询终态：
-  - `succeeded`：继续结果拉取并返回统一成功结果
-  - `failed` / `canceled`：立即失败并抛出可诊断错误
+- deferred 语义：
+  - 当后端进入 `waiting_user` / `waiting_auth`（或其他非终态）时，Provider 返回 `status=deferred`
+  - 任务后续状态推进由后台收敛器负责，前端不再用本地超时推断终态
+- 终态处理：
+  - `succeeded`：收敛器触发一次 `applyResult`
+  - `failed` / `canceled`：收敛器写入终态并停止追踪
 - mixed-input 合同：
   - `parameter` 保持 object
   - `input` 允许任意 JSON（string/array/object）
-- deferred 范围（本实现未覆盖）：
-  - interactive 会话编排（`waiting_user`、`interaction/reply`）
-  - 鉴权等待流程（`waiting_auth`、`auth/session`）
-  - 将执行链迁移到 management API（执行链仍走 `/v1/jobs*`）
+  - 当存在 `upload_files` 时，`input` 必须是 object，且每个 `upload_files[].key` 都要在 `input.<key>` 显式声明文件相对路径
+  - `input.<key>` 路径必须是 `uploads/` 根下相对路径（不含 `uploads/` 前缀）；provider 会按该路径写入 zip entry
+- 执行模式透传：
+  - workflow `execution.skillrunner_mode` 会映射为 `/v1/jobs` create body 的 `runtime_options.execution_mode`
+  - 主链路仍是 `/v1/jobs*`，management API 仅用于观察与交互（reply/auth-import）
+- 状态机 SSOT：
+  - 统一消费模块：`src/modules/skillRunnerProviderStateMachine.ts`
+  - 详细文档见：`doc/components/skillrunner-provider-state-machine-ssot.md`
 
 ## SkillRunner 管理 UI 与管理 API（当前）
 

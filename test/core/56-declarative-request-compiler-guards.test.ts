@@ -69,6 +69,7 @@ describe("declarative request compiler guards", function () {
         infer_tag: true,
         source: "workflow",
       },
+      source_path: "inputs/source_path/only.md",
     });
   });
 

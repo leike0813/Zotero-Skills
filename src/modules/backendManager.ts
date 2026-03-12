@@ -13,6 +13,7 @@ import {
   openSkillRunnerManagementDialog,
 } from "./skillRunnerManagementDialog";
 import type { BackendInstance } from "../backends/types";
+import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner/modelCache";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const PROVIDER_SECTIONS = [
@@ -337,7 +338,7 @@ function appendSelectCell(
 export function getBackendRowActionKindsForType(type: string) {
   const normalizedType = String(type || "").trim();
   if (normalizedType === DEFAULT_BACKEND_TYPE) {
-    return ["manage-ui", "remove"] as const;
+    return ["manage-ui", "refresh-model-cache", "remove"] as const;
   }
   return ["remove"] as const;
 }
@@ -346,6 +347,7 @@ function appendActionCell(args: {
   row: HTMLElement;
   backendType: string;
   onOpenManagement?: (row: HTMLElement) => void;
+  onRefreshModelCache?: (row: HTMLElement) => void;
 }) {
   const cell = appendCell(args.row);
   if (String(args.backendType || "").trim() === DEFAULT_BACKEND_TYPE) {
@@ -360,6 +362,20 @@ function appendActionCell(args: {
     });
     manageButton.style.marginRight = "6px";
     cell.appendChild(manageButton);
+
+    const refreshButton = createHtmlElement(args.row.ownerDocument!, "button");
+    refreshButton.type = "button";
+    refreshButton.textContent = getString(
+      "backend-manager-refresh-model-cache" as any,
+    );
+    refreshButton.setAttribute("data-zs-backend-action", "refresh-model-cache");
+    refreshButton.addEventListener("click", () => {
+      if (typeof args.onRefreshModelCache === "function") {
+        args.onRefreshModelCache(args.row);
+      }
+    });
+    refreshButton.style.marginRight = "6px";
+    cell.appendChild(refreshButton);
   }
   const button = createHtmlElement(args.row.ownerDocument!, "button");
   button.type = "button";
@@ -375,6 +391,7 @@ function appendBackendRow(args: {
   tbody: HTMLElement;
   backend: EditableBackendRow;
   onOpenManagement?: (row: HTMLElement) => void;
+  onRefreshModelCache?: (row: HTMLElement) => void;
 }) {
   const row = createHtmlElement(args.tbody.ownerDocument!, "tr");
   row.setAttribute("data-zs-backend-row", "1");
@@ -403,6 +420,7 @@ function appendBackendRow(args: {
     row,
     backendType: args.backend.type,
     onOpenManagement: args.onOpenManagement,
+    onRefreshModelCache: args.onRefreshModelCache,
   });
   args.tbody.appendChild(row);
 }
@@ -517,6 +535,62 @@ export function resolveSkillRunnerManagementLaunchPayloadFromRow(
   };
 }
 
+function resolveSkillRunnerBackendFromRow(
+  row: Element,
+): BackendInstance {
+  const type = String(row.getAttribute("data-zs-backend-type") || "").trim();
+  if (type !== DEFAULT_BACKEND_TYPE) {
+    throw new Error(
+      getString("backend-manager-error-unsupported-provider" as any, {
+        args: { row: "?", type },
+      }),
+    );
+  }
+  const backendId = String(readRowField(row, "id") || "").trim();
+  if (!backendId) {
+    throw new Error(
+      getString("backend-manager-error-model-cache-id-required" as any),
+    );
+  }
+  const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
+  if (!baseUrl) {
+    throw new Error(
+      getString("backend-manager-error-management-base-url-required" as any),
+    );
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("protocol");
+    }
+  } catch {
+    throw new Error(
+      getString("backend-manager-error-management-base-url-invalid" as any),
+    );
+  }
+  const authKind = String(readRowField(row, "authKind") || "none").trim();
+  const authToken = String(readRowField(row, "authToken") || "").trim();
+  if (authKind === "bearer" && !authToken) {
+    throw new Error(
+      getString("backend-manager-error-model-cache-bearer-required" as any),
+    );
+  }
+  return {
+    id: backendId,
+    type: DEFAULT_BACKEND_TYPE,
+    baseUrl,
+    auth:
+      authKind === "bearer"
+        ? {
+            kind: "bearer",
+            token: authToken,
+          }
+        : {
+            kind: "none",
+          },
+  };
+}
+
 export async function launchSkillRunnerManagementFromRow(args: {
   row: Element;
   openDialog?: (payload: SkillRunnerManagementLaunchPayload) => Promise<void>;
@@ -525,6 +599,17 @@ export async function launchSkillRunnerManagementFromRow(args: {
   const openDialog = args.openDialog || openSkillRunnerManagementDialog;
   await openDialog(payload);
   return payload;
+}
+
+export async function refreshSkillRunnerModelCacheFromRow(args: {
+  row: Element;
+  refresh?: (args: { backend: BackendInstance }) => Promise<unknown>;
+}) {
+  const backend = resolveSkillRunnerBackendFromRow(args.row);
+  const refresh = args.refresh || refreshSkillRunnerModelCacheForBackend;
+  return refresh({
+    backend,
+  });
 }
 
 export function collectBackendsFromDialog(doc: Document): {
@@ -784,6 +869,36 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
           );
         });
       };
+      const refreshModelCacheFromRow = (row: HTMLElement) => {
+        void refreshSkillRunnerModelCacheFromRow({
+          row,
+        })
+          .then((result) => {
+            const typed = (result || {}) as {
+              ok?: boolean;
+              refreshedAt?: string;
+              error?: string;
+            };
+            if (typed.ok === true) {
+              alertWindow?.alert?.(
+                getString("backend-manager-refresh-model-cache-success" as any, {
+                  args: {
+                    refreshedAt: String(typed.refreshedAt || ""),
+                  },
+                }),
+              );
+              return;
+            }
+            throw new Error(String(typed.error || "unknown error"));
+          })
+          .catch((error) => {
+            alertWindow?.alert?.(
+              getString("backend-manager-refresh-model-cache-failed" as any, {
+                args: { error: String(error) },
+              }),
+            );
+          });
+      };
 
       initialRows.forEach((backend) => {
         const tbody = bodyMap.get(backend.type);
@@ -794,6 +909,7 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
           tbody,
           backend,
           onOpenManagement: openManagementFromRow,
+          onRefreshModelCache: refreshModelCacheFromRow,
         });
       });
 
@@ -822,6 +938,7 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
               timeoutMs: "",
             },
             onOpenManagement: openManagementFromRow,
+            onRefreshModelCache: refreshModelCacheFromRow,
           });
         });
       });

@@ -13,20 +13,11 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 ### Requirement: 系统必须提供任务 UI 的最小可观测能力
 系统 MUST 以 Dashboard 形态提供任务可观测能力，而非仅单表视图。
 
-#### Scenario: 打开 Dashboard 默认显示摘要与运行中任务
-- **WHEN** 用户打开任务面板
-- **THEN** 系统 MUST 展示 Summary（总任务、运行中、成功、失败、取消）
-- **AND** 系统 MUST 展示当前运行中任务列表
-
-#### Scenario: Dashboard 按 backend 分组导航
-- **WHEN** 运行历史包含多个 backend profile
-- **THEN** 系统 MUST 在侧边栏按 backend 分组展示入口
-- **AND** 点击 backend 后 MUST 进入对应 backend 详情视图
-
-#### Scenario: Pass-through provider 不参与 Dashboard
-- **WHEN** 任务来源 provider 为 pass-through
-- **THEN** 系统 MUST NOT 在 Dashboard 中展示该任务
-- **AND** 该任务 MUST NOT 纳入 Dashboard 计数
+#### Scenario: SkillRunner backend run table includes local engine column
+- **WHEN** 用户进入 SkillRunner backend 的 run 列表页
+- **THEN** 系统 MUST 在表格中展示本地任务记录的 `engine` 列
+- **AND** `engine` 值 MUST 来自本地 runtime/history 任务模型
+- **AND** 系统 MUST NOT 因该列改造引入后端 runs 列表作为主数据源
 
 ### Requirement: Dashboard MUST provide main-window toolbar shortcut with project logo
 系统 MUST 在 Zotero 主窗口顶部工具栏提供 Dashboard 快捷入口，并使用项目图标。
@@ -52,4 +43,12 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 - **WHEN** 用户已进入某 backend tab 且该 backend 无历史/运行任务
 - **THEN** 页面 MUST 显示空表格
 - **AND** 文案 MUST 指示“当前 backend 无任务”
+
+### Requirement: Run Dialog chat viewport MUST preserve manual scroll position
+系统 MUST 在 Run Dialog 聊天区中仅在用户位于底部附近时自动跟随新消息，避免阅读旧消息时被强制跳转。
+
+#### Scenario: auto-follow only near bottom
+- **WHEN** 新 snapshot 到达且聊天区已有滚动位置
+- **THEN** 若用户位于底部附近，系统 MUST 自动滚动到底部
+- **AND** 若用户不在底部附近，系统 MUST 保持当前滚动位置不变
 

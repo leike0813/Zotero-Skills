@@ -4,6 +4,8 @@ const GLOBAL_TAG_VOCAB_BRIDGE_KEY = "__zsTagVocabularyBridge";
 const RENDERER_ID = "tag-manager.default.v1";
 const DEFAULT_PREFS_PREFIX = "extensions.zotero.zotero-skills";
 const TAG_VOCAB_PREF_SUFFIX = "tagVocabularyJson";
+const TAG_VOCAB_STAGED_PREF_SUFFIX = "tagVocabularyStagedJson";
+const STAGED_SOURCE_FLOW_DEFAULT = "manual-staged";
 const TAG_PATTERN = /^[a-z_]+:[a-zA-Z0-9/_.-]+$/;
 const MAX_TAG_LENGTH = 120;
 const ON_DUPLICATE_OPTIONS = ["skip", "overwrite", "error"];
@@ -212,9 +214,47 @@ function normalizeEntry(entry) {
   };
 }
 
+function toIsoTimestamp(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toISOString();
+}
+
+function nowIsoTimestamp() {
+  return new Date().toISOString();
+}
+
+function normalizeStagedEntry(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const normalized = normalizeEntry(source);
+  const now = nowIsoTimestamp();
+  const createdAt = toIsoTimestamp(source.createdAt) || now;
+  const updatedAt = toIsoTimestamp(source.updatedAt) || createdAt;
+  const sourceFlow =
+    String(source.sourceFlow || STAGED_SOURCE_FLOW_DEFAULT).trim() ||
+    STAGED_SOURCE_FLOW_DEFAULT;
+  return {
+    ...normalized,
+    createdAt,
+    updatedAt,
+    sourceFlow,
+  };
+}
+
 function normalizeEntriesInput(entries) {
   const list = Array.isArray(entries) ? entries : [];
   return list.map((entry) => normalizeEntry(entry));
+}
+
+function normalizeStagedEntriesInput(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  return list.map((entry) => normalizeStagedEntry(entry));
 }
 
 function sortEntries(entries) {
@@ -226,6 +266,32 @@ function sortEntries(entries) {
       return facetCmp;
     }
     return left.tag.localeCompare(right.tag, "en", {
+      sensitivity: "base",
+    });
+  });
+}
+
+function sortStagedEntries(entries) {
+  return [...entries].sort((left, right) => {
+    const facetCmp = String(left.facet || "").localeCompare(
+      String(right.facet || ""),
+      "en",
+      {
+        sensitivity: "base",
+      },
+    );
+    if (facetCmp !== 0) {
+      return facetCmp;
+    }
+    const tagCmp = String(left.tag || "").localeCompare(String(right.tag || ""), "en", {
+      sensitivity: "base",
+    });
+    if (tagCmp !== 0) {
+      return tagCmp;
+    }
+    const createdLeft = String(left.createdAt || "");
+    const createdRight = String(right.createdAt || "");
+    return createdLeft.localeCompare(createdRight, "en", {
       sensitivity: "base",
     });
   });
@@ -521,8 +587,18 @@ function resolvePrefsKey() {
   return `${resolvePrefsPrefix()}.${TAG_VOCAB_PREF_SUFFIX}`;
 }
 
+function resolveStagedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_STAGED_PREF_SUFFIX}`;
+}
+
 function readRawPersistedState() {
   const key = resolvePrefsKey();
+  const raw = Zotero.Prefs.get(key, true);
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function readRawPersistedStagedState() {
+  const key = resolveStagedPrefsKey();
   const raw = Zotero.Prefs.get(key, true);
   return typeof raw === "string" ? raw.trim() : "";
 }
@@ -582,6 +658,109 @@ function loadPersistedState() {
     corrupted: false,
     entries: normalized,
     issues: [],
+  };
+}
+
+function persistStagedEntries(entries) {
+  const normalized = sortStagedEntries(normalizeStagedEntriesInput(entries));
+  const payload = {
+    version: 1,
+    entries: normalized,
+  };
+  Zotero.Prefs.set(resolveStagedPrefsKey(), JSON.stringify(payload), true);
+  return payload;
+}
+
+function loadPersistedStagedState() {
+  const raw = readRawPersistedStagedState();
+  if (!raw) {
+    return {
+      corrupted: false,
+      entries: [],
+      issues: [],
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      corrupted: true,
+      entries: [],
+      issues: [
+        { code: "INVALID_JSON", message: "persisted staged payload is invalid JSON" },
+      ],
+    };
+  }
+  const candidateEntries = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.entries)
+      ? parsed.entries
+      : null;
+  if (!candidateEntries) {
+    return {
+      corrupted: true,
+      entries: [],
+      issues: [
+        {
+          code: "INVALID_PAYLOAD",
+          message: "persisted staged payload shape is invalid",
+        },
+      ],
+    };
+  }
+  const normalized = sortStagedEntries(normalizeStagedEntriesInput(candidateEntries));
+  return {
+    corrupted: false,
+    entries: normalized,
+    issues: [],
+  };
+}
+
+function removeStagedEntriesByTags(tags) {
+  const lowered = new Set(
+    (Array.isArray(tags) ? tags : [])
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter((entry) => !!entry),
+  );
+  const loaded = loadPersistedStagedState();
+  const kept = normalizeStagedEntriesInput(loaded.entries).filter(
+    (entry) => !lowered.has(String(entry.tag || "").trim().toLowerCase()),
+  );
+  return persistStagedEntries(kept);
+}
+
+function clearPersistedStagedEntries() {
+  return persistStagedEntries([]);
+}
+
+function promoteStagedEntryToControlledVocabulary(stagedEntry) {
+  const loaded = loadPersistedState();
+  if (loaded.corrupted) {
+    return {
+      ok: false,
+      reason: "controlled vocabulary is corrupted",
+    };
+  }
+  const candidate = normalizeEntry(stagedEntry);
+  const nextEntries = [...loaded.entries, candidate];
+  const issues = collectValidationIssues(nextEntries);
+  if (issues.length > 0) {
+    const targetIndex = nextEntries.length - 1;
+    const targetToken = `entry[${targetIndex}]`;
+    const preferred = issues.find((issue) =>
+      String(issue?.message || "").includes(targetToken),
+    );
+    const issue = preferred || issues[0];
+    return {
+      ok: false,
+      reason: String(issue?.message || issue?.code || "validation failed"),
+    };
+  }
+  persistEntries(nextEntries);
+  return {
+    ok: true,
+    reason: "",
   };
 }
 
@@ -703,6 +882,18 @@ async function copyTextToClipboard(doc, text) {
   return { ok: false, reason: "clipboard-unavailable" };
 }
 
+function confirmAction(doc, message) {
+  const view = doc && doc.defaultView ? doc.defaultView : null;
+  if (view && typeof view.confirm === "function") {
+    try {
+      return Boolean(view.confirm(String(message || "")));
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 function resolveEditorHostBridge() {
   const runtime = globalThis;
   const openFromGlobal =
@@ -733,10 +924,141 @@ function resolveEditorHostBridge() {
   };
 }
 
+function createInitialStagedPanelState(args) {
+  const loadedEntries = sortStagedEntries(
+    normalizeStagedEntriesInput(args?.entries || []),
+  );
+  return {
+    entries: loadedEntries,
+    query: "",
+    actionNotice: "",
+    validationIssues: [],
+    facetVisibility: createInitialFacetVisibilityState(),
+    facetMenuRowIndex: -1,
+    filterPanelOpen: false,
+    queryFocus: {
+      active: false,
+      start: 0,
+      end: 0,
+    },
+    editorFocus: {
+      active: false,
+      rowIndex: -1,
+      role: "",
+      start: 0,
+      end: 0,
+    },
+    listScrollTop: 0,
+    listScrollMode: "keep",
+    corrupted: Boolean(args?.corrupted),
+  };
+}
+
+function ensureStagedPanelState(hostState) {
+  if (
+    hostState &&
+    typeof hostState === "object" &&
+    hostState.stagedPanelState &&
+    typeof hostState.stagedPanelState === "object"
+  ) {
+    return hostState.stagedPanelState;
+  }
+  const loaded = loadPersistedStagedState();
+  const initial = createInitialStagedPanelState({
+    entries: loaded.entries,
+    corrupted: loaded.corrupted,
+  });
+  if (hostState && typeof hostState === "object") {
+    hostState.stagedPanelState = initial;
+  }
+  return initial;
+}
+
 function createTagManagerRenderer() {
   return {
     render({ doc, root, state, host }) {
       clearChildren(root);
+      const activePanel = String(state.activePanel || "controlled");
+      if (activePanel === "staged") {
+        if (typeof host.setFooterVisible === "function") {
+          host.setFooterVisible(false);
+        }
+        const panel = createHtmlElement(doc, "div");
+        panel.style.display = "flex";
+        panel.style.flexDirection = "column";
+        panel.style.gap = "8px";
+        panel.style.height = "100%";
+        panel.style.boxSizing = "border-box";
+
+        const toolbar = createHtmlElement(doc, "div");
+        toolbar.style.display = "flex";
+        toolbar.style.alignItems = "center";
+        toolbar.style.justifyContent = "space-between";
+        toolbar.style.gap = "8px";
+
+        const title = createHtmlElement(doc, "div");
+        title.textContent = "Staged Tags Inbox";
+        title.style.fontWeight = "600";
+        title.style.fontSize = "13px";
+        toolbar.appendChild(title);
+
+        const backBtn = createHtmlElement(doc, "button");
+        backBtn.type = "button";
+        backBtn.textContent = "Back To Controlled";
+        if (typeof backBtn.setAttribute === "function") {
+          backBtn.setAttribute("data-zs-role", "staged-back-btn");
+        }
+        backBtn.addEventListener("click", () => {
+          host.patchState((draft) => {
+            draft.activePanel = "controlled";
+          });
+        });
+        toolbar.appendChild(backBtn);
+        panel.appendChild(toolbar);
+
+        const stagedRoot = createHtmlElement(doc, "div");
+        stagedRoot.style.flex = "1 1 auto";
+        stagedRoot.style.minHeight = "0";
+        panel.appendChild(stagedRoot);
+
+        const stagedRenderer = createStagedTagInboxRenderer();
+        const stagedState = ensureStagedPanelState(state);
+        const stagedHost = {
+          rerender: () => {
+            if (typeof host.rerender === "function") {
+              host.rerender();
+            }
+          },
+          patchState: (updater) => {
+            host.patchState((draft) => {
+              const stagedDraft = ensureStagedPanelState(draft);
+              updater(stagedDraft);
+              draft.stagedPanelState = stagedDraft;
+            });
+          },
+          closeWithAction: (actionId) => {
+            if (typeof host.closeWithAction === "function") {
+              host.closeWithAction(actionId);
+            }
+          },
+          setFooterVisible: (visible) => {
+            if (typeof host.setFooterVisible === "function") {
+              host.setFooterVisible(visible);
+            }
+          },
+        };
+        stagedRenderer.render({
+          doc,
+          root: stagedRoot,
+          state: stagedState,
+          host: stagedHost,
+        });
+        root.appendChild(panel);
+        return;
+      }
+      if (typeof host.setFooterVisible === "function") {
+        host.setFooterVisible(true);
+      }
       if (!Array.isArray(state.entries)) {
         state.entries = [];
       }
@@ -870,6 +1192,17 @@ function createTagManagerRenderer() {
         });
       });
       mainActions.appendChild(filterBtn);
+
+      const stagedBtn = createHtmlElement(doc, "button");
+      stagedBtn.type = "button";
+      stagedBtn.textContent = "Staged Tags";
+      stagedBtn.addEventListener("click", () => {
+        patchStateKeepingScroll((draft) => {
+          draft.activePanel = "staged";
+          ensureStagedPanelState(draft);
+        });
+      });
+      mainActions.appendChild(stagedBtn);
 
       const addBtn = createHtmlElement(doc, "button");
       addBtn.type = "button";
@@ -1608,6 +1941,664 @@ function createTagManagerRenderer() {
   };
 }
 
+function createStagedTagInboxRenderer() {
+  return {
+    render({ doc, root, state, host }) {
+      clearChildren(root);
+      if (!Array.isArray(state.entries)) {
+        state.entries = [];
+      }
+      const allEntries = normalizeStagedEntriesInput(state.entries);
+      state.entries = allEntries;
+      state.facetVisibility = normalizeFacetVisibilityState(state.facetVisibility);
+      if (typeof state.listScrollTop !== "number") {
+        state.listScrollTop = 0;
+      }
+      if (typeof state.listScrollMode !== "string") {
+        state.listScrollMode = "keep";
+      }
+      if (typeof state.facetMenuRowIndex !== "number") {
+        state.facetMenuRowIndex = -1;
+      }
+      if (!state.editorFocus || typeof state.editorFocus !== "object") {
+        state.editorFocus = {
+          active: false,
+          rowIndex: -1,
+          role: "",
+          start: 0,
+          end: 0,
+        };
+      }
+
+      const filtered = filterEntriesByQueryAndFacet(
+        allEntries,
+        state.query,
+        state.facetVisibility,
+      );
+      let scrollContainerNode = null;
+      const readScrollTop = () =>
+        scrollContainerNode && typeof scrollContainerNode.scrollTop === "number"
+          ? Number(scrollContainerNode.scrollTop || 0)
+          : Number(state.listScrollTop || 0);
+      const patchStateKeepingScroll = (updater, options) => {
+        const scrollTop = readScrollTop();
+        const beforeEntriesSnapshot = JSON.stringify(
+          sortStagedEntries(normalizeStagedEntriesInput(state.entries)),
+        );
+        host.patchState((draft) => {
+          draft.listScrollTop = scrollTop;
+          draft.listScrollMode =
+            options && options.scrollMode === "bottom" ? "bottom" : "keep";
+          updater(draft);
+          const normalizedEntries = sortStagedEntries(
+            normalizeStagedEntriesInput(draft.entries),
+          );
+          draft.entries = normalizedEntries;
+          const afterEntriesSnapshot = JSON.stringify(normalizedEntries);
+          if (beforeEntriesSnapshot !== afterEntriesSnapshot) {
+            try {
+              persistStagedEntries(normalizedEntries);
+            } catch (error) {
+              draft.validationIssues = [
+                {
+                  code: "STAGED_PERSIST_FAILED",
+                  message: String(
+                    error?.message || error || "persist staged entries failed",
+                  ),
+                },
+              ];
+              draft.actionNotice = "persist staged entries failed";
+            }
+          }
+        });
+      };
+
+      const panel = createHtmlElement(doc, "div");
+      panel.style.display = "flex";
+      panel.style.flexDirection = "column";
+      panel.style.gap = "8px";
+      panel.style.height = "100%";
+      panel.style.boxSizing = "border-box";
+      panel.style.position = "relative";
+      panel.addEventListener("click", (event) => {
+        const hasFacetMenuOpen = Number(state.facetMenuRowIndex) >= 0;
+        if (!hasFacetMenuOpen) {
+          return;
+        }
+        const target = event ? event.target : null;
+        const keepFacetOpen = isNodeWithinRoles(target, panel, [
+          "facet-select",
+          "facet-menu",
+          "facet-option",
+        ]);
+        if (!keepFacetOpen) {
+          patchStateKeepingScroll((draft) => {
+            draft.facetMenuRowIndex = -1;
+          });
+        }
+      });
+
+      const toolbar = createHtmlElement(doc, "div");
+      toolbar.style.display = "flex";
+      toolbar.style.gap = "12px";
+      toolbar.style.flexWrap = "wrap";
+      toolbar.style.alignItems = "center";
+
+      const mainActions = createHtmlElement(doc, "div");
+      mainActions.style.display = "flex";
+      mainActions.style.gap = "8px";
+      mainActions.style.flexWrap = "wrap";
+      mainActions.style.alignItems = "center";
+
+      const queryInput = createHtmlElement(doc, "input");
+      queryInput.type = "search";
+      queryInput.value = String(state.query || "");
+      queryInput.placeholder = "Search tag/facet/source/note";
+      queryInput.style.minWidth = "320px";
+      queryInput.addEventListener("input", () => {
+        const start =
+          typeof queryInput.selectionStart === "number"
+            ? queryInput.selectionStart
+            : String(queryInput.value || "").length;
+        const end =
+          typeof queryInput.selectionEnd === "number"
+            ? queryInput.selectionEnd
+            : start;
+        patchStateKeepingScroll((draft) => {
+          draft.query = String(queryInput.value || "");
+          draft.queryFocus = {
+            active: true,
+            start,
+            end,
+          };
+        });
+      });
+      mainActions.appendChild(queryInput);
+
+      const filterBtn = createHtmlElement(doc, "button");
+      filterBtn.type = "button";
+      filterBtn.textContent = "Filter";
+      filterBtn.addEventListener("click", () => {
+        patchStateKeepingScroll((draft) => {
+          draft.filterPanelOpen = !Boolean(draft.filterPanelOpen);
+        });
+      });
+      mainActions.appendChild(filterBtn);
+
+      const clearBtn = createHtmlElement(doc, "button");
+      clearBtn.type = "button";
+      clearBtn.textContent = "Clear";
+      if (typeof clearBtn.setAttribute === "function") {
+        clearBtn.setAttribute("data-zs-role", "staged-clear-btn");
+      }
+      clearBtn.addEventListener("click", () => {
+        if (!confirmAction(doc, "Clear all staged tags?")) {
+          return;
+        }
+        patchStateKeepingScroll((draft) => {
+          draft.entries = [];
+          draft.actionNotice = "staged cleared";
+          draft.validationIssues = [];
+        });
+      });
+      mainActions.appendChild(clearBtn);
+
+      toolbar.appendChild(mainActions);
+      panel.appendChild(toolbar);
+
+      const list = createHtmlElement(doc, "div");
+      list.style.flex = "1 1 auto";
+      list.style.overflowY = "auto";
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "0";
+      list.style.border = "1px solid #d5d5d5";
+      list.style.borderRadius = "4px";
+      list.style.background = "#fff";
+      if (typeof list.setAttribute === "function") {
+        list.setAttribute("data-zs-role", "staged-table-scroll");
+      }
+      scrollContainerNode = list;
+
+      const headerRow = createHtmlElement(doc, "div");
+      headerRow.style.display = "grid";
+      headerRow.style.gridTemplateColumns =
+        "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 90px 130px 90px";
+      headerRow.style.gap = "6px";
+      headerRow.style.padding = "6px";
+      headerRow.style.position = "sticky";
+      headerRow.style.top = "0";
+      headerRow.style.zIndex = "2";
+      headerRow.style.background = "#f6f6f6";
+      headerRow.style.borderBottom = "1px solid #e1e1e1";
+      const headerLabels = [
+        "Facet",
+        "Tag",
+        "Source",
+        "Note",
+        "Deprecated",
+        "Join",
+        "Discard",
+      ];
+      for (const labelText of headerLabels) {
+        const headerCell = createHtmlElement(doc, "div");
+        headerCell.textContent = labelText;
+        headerCell.style.fontWeight = "600";
+        headerCell.style.fontSize = "12px";
+        headerCell.style.color = "#333";
+        headerRow.appendChild(headerCell);
+      }
+      list.appendChild(headerRow);
+
+      const rowsContainer = createHtmlElement(doc, "div");
+      rowsContainer.style.display = "flex";
+      rowsContainer.style.flexDirection = "column";
+      rowsContainer.style.gap = "6px";
+      rowsContainer.style.padding = "6px";
+
+      for (const row of filtered) {
+        const rowNode = createHtmlElement(doc, "div");
+        rowNode.style.display = "grid";
+        rowNode.style.gridTemplateColumns =
+          "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 90px 130px 90px";
+        rowNode.style.gap = "6px";
+        if (typeof rowNode.setAttribute === "function") {
+          rowNode.setAttribute("data-zs-role", "staged-row");
+          rowNode.setAttribute("data-zs-row-index", String(row.index));
+        }
+
+        const facetCell = createHtmlElement(doc, "div");
+        facetCell.style.display = "flex";
+        facetCell.style.alignItems = "center";
+        facetCell.style.gap = "1px";
+        facetCell.style.position = "relative";
+
+        const facetTrigger = createHtmlElement(doc, "button");
+        facetTrigger.type = "button";
+        facetTrigger.textContent = "";
+        facetTrigger.style.width = "76px";
+        facetTrigger.style.display = "inline-flex";
+        facetTrigger.style.alignItems = "center";
+        facetTrigger.style.justifyContent = "space-between";
+        facetTrigger.style.padding = "0 6px";
+        facetTrigger.style.overflow = "hidden";
+        facetTrigger.style.textOverflow = "ellipsis";
+        facetTrigger.style.whiteSpace = "nowrap";
+        const facetLabel = createHtmlElement(doc, "span");
+        facetLabel.textContent = row.entry.facet;
+        facetLabel.style.overflow = "hidden";
+        facetLabel.style.textOverflow = "ellipsis";
+        facetLabel.style.whiteSpace = "nowrap";
+        facetTrigger.appendChild(facetLabel);
+
+        const facetArrow = createHtmlElement(doc, "span");
+        facetArrow.textContent = "▾";
+        facetArrow.style.flex = "0 0 auto";
+        facetArrow.style.marginLeft = "4px";
+        facetTrigger.appendChild(facetArrow);
+        if (typeof facetTrigger.setAttribute === "function") {
+          facetTrigger.setAttribute("data-zs-role", "facet-select");
+          facetTrigger.setAttribute("data-zs-row-index", String(row.index));
+        }
+        facetTrigger.addEventListener("click", () => {
+          patchStateKeepingScroll((draft) => {
+            draft.facetMenuRowIndex =
+              Number(draft.facetMenuRowIndex) === row.index ? -1 : row.index;
+          });
+        });
+        facetCell.appendChild(facetTrigger);
+
+        const facetHint = createHtmlElement(doc, "span");
+        facetHint.textContent = ":";
+        facetCell.appendChild(facetHint);
+
+        if (Number(state.facetMenuRowIndex) === row.index) {
+          const facetMenu = createHtmlElement(doc, "div");
+          facetMenu.style.position = "absolute";
+          facetMenu.style.top = "calc(100% + 4px)";
+          facetMenu.style.left = "0";
+          facetMenu.style.minWidth = "120px";
+          facetMenu.style.display = "flex";
+          facetMenu.style.flexDirection = "column";
+          facetMenu.style.gap = "2px";
+          facetMenu.style.padding = "4px";
+          facetMenu.style.background = "#fff";
+          facetMenu.style.border = "1px solid #cfcfcf";
+          facetMenu.style.borderRadius = "4px";
+          facetMenu.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)";
+          facetMenu.style.zIndex = "40";
+          if (typeof facetMenu.setAttribute === "function") {
+            facetMenu.setAttribute("data-zs-role", "facet-menu");
+            facetMenu.setAttribute("data-zs-row-index", String(row.index));
+          }
+          facetMenu.addEventListener("click", (event) => {
+            if (event && typeof event.stopPropagation === "function") {
+              event.stopPropagation();
+            }
+          });
+          for (const facetValue of FACETS) {
+            const optionBtn = createHtmlElement(doc, "button");
+            optionBtn.type = "button";
+            optionBtn.textContent = facetValue;
+            if (typeof optionBtn.setAttribute === "function") {
+              optionBtn.setAttribute("data-zs-role", "facet-option");
+              optionBtn.setAttribute("data-zs-row-index", String(row.index));
+              optionBtn.setAttribute("data-zs-facet", facetValue);
+            }
+            optionBtn.addEventListener("click", () => {
+              patchStateKeepingScroll((draft) => {
+                const next = normalizeStagedEntriesInput(draft.entries);
+                const previous = next[row.index] || {
+                  facet: "topic",
+                  tag: "topic:",
+                };
+                const suffix = getTagSuffix(previous.tag, previous.facet);
+                next[row.index] = normalizeStagedEntry({
+                  ...previous,
+                  facet: facetValue,
+                  tag: composeTagFromFacetAndSuffix(facetValue, suffix),
+                  updatedAt: nowIsoTimestamp(),
+                });
+                draft.entries = next;
+                draft.facetMenuRowIndex = -1;
+              });
+            });
+            facetMenu.appendChild(optionBtn);
+          }
+          facetCell.appendChild(facetMenu);
+        }
+        rowNode.appendChild(facetCell);
+
+        const tagInput = createHtmlElement(doc, "input");
+        tagInput.type = "text";
+        tagInput.value = getTagSuffix(row.entry.tag, row.entry.facet);
+        if (typeof tagInput.setAttribute === "function") {
+          tagInput.setAttribute("data-zs-role", "staged-tag-suffix-input");
+          tagInput.setAttribute("data-zs-row-index", String(row.index));
+        }
+        tagInput.addEventListener("input", () => {
+          const start =
+            typeof tagInput.selectionStart === "number"
+              ? tagInput.selectionStart
+              : String(tagInput.value || "").length;
+          const end =
+            typeof tagInput.selectionEnd === "number" ? tagInput.selectionEnd : start;
+          patchStateKeepingScroll((draft) => {
+            const next = normalizeStagedEntriesInput(draft.entries);
+            const current = next[row.index] || {
+              facet: "topic",
+              source: "manual",
+              note: "",
+              deprecated: false,
+              sourceFlow: STAGED_SOURCE_FLOW_DEFAULT,
+            };
+            next[row.index] = normalizeStagedEntry({
+              ...current,
+              tag: composeTagFromFacetAndSuffix(current.facet, tagInput.value),
+              updatedAt: nowIsoTimestamp(),
+            });
+            draft.entries = next;
+            draft.editorFocus = {
+              active: true,
+              rowIndex: row.index,
+              role: "staged-tag-suffix-input",
+              start,
+              end,
+            };
+          });
+        });
+        rowNode.appendChild(tagInput);
+
+        const sourceReadonly = createHtmlElement(doc, "div");
+        sourceReadonly.textContent = String(row.entry.source || "manual");
+        sourceReadonly.style.display = "flex";
+        sourceReadonly.style.alignItems = "center";
+        sourceReadonly.style.padding = "0 8px";
+        sourceReadonly.style.border = "1px solid #ddd";
+        sourceReadonly.style.background = "#f7f7f7";
+        sourceReadonly.style.fontSize = "12px";
+        rowNode.appendChild(sourceReadonly);
+
+        const noteInput = createHtmlElement(doc, "input");
+        noteInput.type = "text";
+        noteInput.value = row.entry.note;
+        if (typeof noteInput.setAttribute === "function") {
+          noteInput.setAttribute("data-zs-role", "staged-note-input");
+          noteInput.setAttribute("data-zs-row-index", String(row.index));
+        }
+        noteInput.addEventListener("input", () => {
+          const start =
+            typeof noteInput.selectionStart === "number"
+              ? noteInput.selectionStart
+              : String(noteInput.value || "").length;
+          const end =
+            typeof noteInput.selectionEnd === "number"
+              ? noteInput.selectionEnd
+              : start;
+          patchStateKeepingScroll((draft) => {
+            const next = normalizeStagedEntriesInput(draft.entries);
+            next[row.index] = normalizeStagedEntry({
+              ...next[row.index],
+              note: noteInput.value,
+              updatedAt: nowIsoTimestamp(),
+            });
+            draft.entries = next;
+            draft.editorFocus = {
+              active: true,
+              rowIndex: row.index,
+              role: "staged-note-input",
+              start,
+              end,
+            };
+          });
+        });
+        rowNode.appendChild(noteInput);
+
+        const deprecatedBtn = createHtmlElement(doc, "button");
+        deprecatedBtn.type = "button";
+        deprecatedBtn.textContent = row.entry.deprecated ? "Restore" : "Deprecate";
+        deprecatedBtn.addEventListener("click", () => {
+          patchStateKeepingScroll((draft) => {
+            const next = normalizeStagedEntriesInput(draft.entries);
+            next[row.index] = normalizeStagedEntry({
+              ...next[row.index],
+              deprecated: !next[row.index].deprecated,
+              updatedAt: nowIsoTimestamp(),
+            });
+            draft.entries = next;
+          });
+        });
+        rowNode.appendChild(deprecatedBtn);
+
+        const joinBtn = createHtmlElement(doc, "button");
+        joinBtn.type = "button";
+        joinBtn.textContent = "加入受控词表";
+        if (typeof joinBtn.setAttribute === "function") {
+          joinBtn.setAttribute("data-zs-role", "staged-accept-btn");
+          joinBtn.setAttribute("data-zs-row-index", String(row.index));
+        }
+        joinBtn.addEventListener("click", () => {
+          patchStateKeepingScroll((draft) => {
+            const next = normalizeStagedEntriesInput(draft.entries);
+            const current = next[row.index];
+            if (!current) {
+              return;
+            }
+            const promoted = promoteStagedEntryToControlledVocabulary(current);
+            if (!promoted.ok) {
+              draft.validationIssues = [
+                {
+                  code: "PROMOTE_FAILED",
+                  message: String(promoted.reason || "validation failed"),
+                },
+              ];
+              draft.actionNotice = `join failed: ${String(
+                promoted.reason || "validation failed",
+              )}`;
+              draft.entries = next;
+              return;
+            }
+            next.splice(row.index, 1);
+            draft.entries = next;
+            draft.validationIssues = [];
+            draft.actionNotice = `joined: ${current.tag}`;
+          });
+        });
+        rowNode.appendChild(joinBtn);
+
+        const discardBtn = createHtmlElement(doc, "button");
+        discardBtn.type = "button";
+        discardBtn.textContent = "Discard";
+        if (typeof discardBtn.setAttribute === "function") {
+          discardBtn.setAttribute("data-zs-role", "staged-discard-btn");
+          discardBtn.setAttribute("data-zs-row-index", String(row.index));
+        }
+        discardBtn.addEventListener("click", () => {
+          patchStateKeepingScroll((draft) => {
+            const next = normalizeStagedEntriesInput(draft.entries);
+            const removed = next[row.index];
+            if (!removed) {
+              return;
+            }
+            next.splice(row.index, 1);
+            draft.entries = next;
+            draft.validationIssues = [];
+            draft.actionNotice = `discarded: ${removed.tag}`;
+          });
+        });
+        rowNode.appendChild(discardBtn);
+
+        rowsContainer.appendChild(rowNode);
+      }
+      list.appendChild(rowsContainer);
+      panel.appendChild(list);
+
+      const issues = Array.isArray(state.validationIssues)
+        ? state.validationIssues
+        : [];
+      if (issues.length > 0 || state.corrupted) {
+        const warning = createHtmlElement(doc, "div");
+        warning.style.fontSize = "12px";
+        warning.style.color = "#8f2a2a";
+        const topLine = state.corrupted
+          ? "Persisted staged payload is corrupted; editing starts from empty fallback."
+          : "";
+        const issueLine = issues
+          .slice(0, 3)
+          .map((issue) => `${issue.code}: ${issue.message}`)
+          .join(" | ");
+        warning.textContent = [topLine, issueLine].filter(Boolean).join(" ");
+        panel.appendChild(warning);
+      }
+
+      if (String(state.actionNotice || "").trim()) {
+        const actionNotice = createHtmlElement(doc, "div");
+        actionNotice.textContent = String(state.actionNotice || "");
+        actionNotice.style.fontSize = "12px";
+        actionNotice.style.color = "#2f2f2f";
+        panel.appendChild(actionNotice);
+      }
+
+      if (state.filterPanelOpen) {
+        const overlay = createHtmlElement(doc, "div");
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.right = "0";
+        overlay.style.bottom = "0";
+        overlay.style.background = "rgba(0,0,0,0.05)";
+        overlay.style.zIndex = "19";
+        if (typeof overlay.setAttribute === "function") {
+          overlay.setAttribute("data-zs-role", "facet-filter-overlay");
+        }
+        overlay.addEventListener("click", () => {
+          patchStateKeepingScroll((draft) => {
+            draft.filterPanelOpen = false;
+          });
+        });
+
+        const popup = createHtmlElement(doc, "div");
+        popup.style.position = "absolute";
+        popup.style.top = "42px";
+        popup.style.right = "12px";
+        popup.style.maxWidth = "420px";
+        popup.style.maxHeight = "76%";
+        popup.style.overflowY = "auto";
+        popup.style.background = "#ffffff";
+        popup.style.border = "1px solid #cfcfcf";
+        popup.style.borderRadius = "6px";
+        popup.style.padding = "10px";
+        popup.style.boxShadow = "0 6px 18px rgba(0,0,0,0.18)";
+        popup.style.zIndex = "20";
+        if (typeof popup.setAttribute === "function") {
+          popup.setAttribute("data-zs-role", "facet-filter-popup");
+        }
+        popup.addEventListener("click", (event) => {
+          if (event && typeof event.stopPropagation === "function") {
+            event.stopPropagation();
+          }
+        });
+
+        const popupTitle = createHtmlElement(doc, "div");
+        popupTitle.textContent = "Filter Facets";
+        popupTitle.style.fontWeight = "600";
+        popupTitle.style.marginBottom = "8px";
+        popup.appendChild(popupTitle);
+
+        for (const facet of FACETS) {
+          const optionLabel = createHtmlElement(doc, "label");
+          optionLabel.style.display = "flex";
+          optionLabel.style.alignItems = "center";
+          optionLabel.style.gap = "6px";
+          optionLabel.style.fontSize = "12px";
+          optionLabel.style.padding = "2px 0";
+
+          const optionInput = createHtmlElement(doc, "input");
+          optionInput.type = "checkbox";
+          optionInput.checked = state.facetVisibility[facet] !== false;
+          if (typeof optionInput.setAttribute === "function") {
+            optionInput.setAttribute("data-zs-role", "facet-visibility-toggle");
+            optionInput.setAttribute("data-zs-facet", facet);
+          }
+          optionInput.addEventListener("change", () => {
+            patchStateKeepingScroll((draft) => {
+              const nextVisibility = normalizeFacetVisibilityState(draft.facetVisibility);
+              nextVisibility[facet] = Boolean(optionInput.checked);
+              draft.facetVisibility = nextVisibility;
+            });
+          });
+          optionLabel.appendChild(optionInput);
+
+          const optionText = createHtmlElement(doc, "span");
+          optionText.textContent = facet;
+          optionLabel.appendChild(optionText);
+          popup.appendChild(optionLabel);
+        }
+
+        overlay.appendChild(popup);
+        panel.appendChild(overlay);
+      }
+
+      root.appendChild(panel);
+      if (state.listScrollMode === "bottom") {
+        if (typeof list.scrollHeight === "number" && Number.isFinite(list.scrollHeight)) {
+          list.scrollTop = Number(list.scrollHeight || 0);
+        } else {
+          list.scrollTop = Number.MAX_SAFE_INTEGER;
+        }
+      } else {
+        list.scrollTop = Number(state.listScrollTop || 0);
+      }
+      state.listScrollTop = Number(list.scrollTop || 0);
+      state.listScrollMode = "keep";
+
+      const editorFocus = state.editorFocus;
+      if (editorFocus && editorFocus.active) {
+        const target = findNodeByRoleAndRowIndex(
+          root,
+          editorFocus.role,
+          editorFocus.rowIndex,
+        );
+        if (target && typeof target.focus === "function") {
+          target.focus();
+          if (typeof target.setSelectionRange === "function") {
+            const start = Math.max(0, Number(editorFocus.start || 0));
+            const end = Math.max(start, Number(editorFocus.end || start));
+            target.setSelectionRange(start, end);
+          }
+        }
+        state.editorFocus = {
+          active: false,
+          rowIndex: -1,
+          role: "",
+          start: 0,
+          end: 0,
+        };
+      }
+
+      const queryFocus = state.queryFocus;
+      if (queryFocus && queryFocus.active && typeof queryInput.focus === "function") {
+        queryInput.focus();
+        if (typeof queryInput.setSelectionRange === "function") {
+          const start = Math.max(0, Number(queryFocus.start || 0));
+          const end = Math.max(start, Number(queryFocus.end || start));
+          queryInput.setSelectionRange(start, end);
+        }
+        state.queryFocus = {
+          active: false,
+          start: 0,
+          end: 0,
+        };
+      }
+    },
+    serialize({ state }) {
+      return {
+        entries: sortStagedEntries(normalizeStagedEntriesInput(state.entries)),
+      };
+    },
+  };
+}
+
 async function openTagManagerEditor(args) {
   const host = resolveEditorHostBridge();
   if (typeof host.registerRenderer === "function") {
@@ -1644,6 +2635,8 @@ async function openTagManagerEditor(args) {
       listScrollTop: 0,
       listScrollMode: "keep",
       corrupted: Boolean(args.corrupted),
+      activePanel: "controlled",
+      stagedPanelState: null,
     },
     layout: {
       width: 1180,
@@ -1703,6 +2696,10 @@ function registerTagVocabularyBridge() {
     loadPersistedState,
     persistEntries,
     collectValidationIssues,
+    loadPersistedStagedState,
+    persistStagedEntries,
+    removeStagedEntriesByTags,
+    clearPersistedStagedEntries,
   };
 }
 
@@ -1710,10 +2707,12 @@ registerTagVocabularyBridge();
 
 export const __tagManagerTestOnly = {
   buildExportText,
+  clearPersistedStagedEntries,
   composeTagFromFacetAndSuffix,
   collectValidationIssues,
   countVisibleFacets,
   createInitialFacetVisibilityState,
+  createStagedTagInboxRenderer,
   createTagManagerRenderer,
   entryMatchesFacetVisibility,
   exportTagStrings,
@@ -1721,8 +2720,14 @@ export const __tagManagerTestOnly = {
   getTagSuffix,
   importFromYamlText,
   loadPersistedState,
+  loadPersistedStagedState,
   normalizeFacetVisibilityState,
+  normalizeStagedEntriesInput,
   parseYamlTagEntries,
   persistEntries,
+  persistStagedEntries,
+  promoteStagedEntryToControlledVocabulary,
+  removeStagedEntriesByTags,
   resolvePrefsKey,
+  resolveStagedPrefsKey,
 };

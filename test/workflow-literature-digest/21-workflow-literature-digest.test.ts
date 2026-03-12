@@ -85,6 +85,8 @@ describe("workflow: literature-digest", function () {
       targetParentID: number;
       skill_id: string;
       parameter?: { language?: string };
+      runtime_options?: { execution_mode?: string };
+      input?: { source_path?: string };
       upload_files: Array<{ key: string; path: string }>;
     }>;
     assert.lengthOf(requests, 1);
@@ -93,8 +95,10 @@ describe("workflow: literature-digest", function () {
     assert.equal(request.targetParentID, parent.id);
     assert.equal(request.skill_id, "literature-digest");
     assert.equal(request.parameter?.language, "zh-CN");
+    assert.equal(request.runtime_options?.execution_mode, "auto");
     assert.equal(request.upload_files?.[0].key, "source_path");
     assert.equal(request.upload_files?.[0].path, mdFile);
+    assert.match(String(request.input?.source_path || ""), /^inputs\/source_path\//);
   });
 
   it("builds request from selected pdf attachment when markdown is unavailable", async function () {
@@ -123,13 +127,17 @@ describe("workflow: literature-digest", function () {
       selectionContext: context,
     })) as Array<{
       kind: string;
+      runtime_options?: { execution_mode?: string };
+      input?: { source_path?: string };
       upload_files: Array<{ key: string; path: string }>;
     }>;
 
     assert.lengthOf(requests, 1);
     assert.equal(requests[0].kind, "skillrunner.job.v1");
+    assert.equal(requests[0].runtime_options?.execution_mode, "auto");
     assert.equal(requests[0].upload_files?.[0].key, "source_path");
     assert.equal(requests[0].upload_files?.[0].path, pdfFile);
+    assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
   it("skips build when parent already has digest/references/citation-analysis notes", async function () {
@@ -407,6 +415,7 @@ describe("workflow: literature-digest", function () {
       kind: string;
       targetParentID: number;
       sourceAttachmentPaths?: string[];
+      input?: { source_path?: string };
       upload_files?: Array<{ key: string; path: string }>;
     }>;
     assert.lengthOf(requests, 1);
@@ -461,6 +470,9 @@ describe("workflow: literature-digest", function () {
       request: {
         targetParentID: parent.id,
         sourceAttachmentPaths: ["D:/not-found/example.md"],
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
         upload_files: [{ key: "source_path", path: "D:/not-found/example.md" }],
       },
     })) as { notes: Zotero.Item[] };

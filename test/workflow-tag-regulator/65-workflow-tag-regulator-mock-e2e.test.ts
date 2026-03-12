@@ -26,16 +26,28 @@ type SuggestTagsDialogOpenArgs = {
   title?: string;
   initialState?: {
     suggestTagEntries?: SuggestTagEntry[];
-    selectedTags?: string[];
+    rowErrors?: Record<string, string>;
+    addedDirect?: string[];
+    staged?: string[];
+    rejected?: string[];
+    invalid?: Array<{ tag: string; reason?: string }>;
+    skippedDirect?: string[];
+    stagedSkipped?: string[];
+    countdownSeconds?: number;
+    timedOut?: boolean;
+    closePolicyApplied?: boolean;
   };
-  labels?: {
-    save?: string;
-    cancel?: string;
+  actions?: Array<{ id?: string; label?: string }>;
+  closeActionId?: string;
+  autoClose?: {
+    afterMs?: number;
+    actionId?: string;
   };
 };
 
 type SuggestTagsDialogOpenResult = {
   saved: boolean;
+  actionId?: string;
   result?: unknown;
   reason?: string;
 };
@@ -56,6 +68,7 @@ type RuntimeWithEditorBridge = typeof globalThis & {
 };
 
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
+const TAG_VOCAB_STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
 const MOCK_SKILLRUNNER_BASE_URL =
   (typeof process !== "undefined" &&
     process.env?.ZOTERO_TEST_SKILLRUNNER_ENDPOINT) ||
@@ -63,6 +76,7 @@ const MOCK_SKILLRUNNER_BASE_URL =
 
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_STAGED_PREF_KEY, true);
 }
 
 function saveTagVocabularyState(entries: PersistedTagEntry[]) {

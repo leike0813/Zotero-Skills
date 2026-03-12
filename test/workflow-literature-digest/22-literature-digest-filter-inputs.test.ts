@@ -35,6 +35,62 @@ function makeSyntheticContext(entries: Array<Record<string, unknown>>) {
   };
 }
 
+function withSyntheticParentIds<T>(value: T): T {
+  const cloned = JSON.parse(JSON.stringify(value || {})) as {
+    items?: {
+      parents?: Array<{
+        item?: { id?: number };
+        attachments?: Array<{ item?: { parentItemID?: number | null } }>;
+      }>;
+      attachments?: Array<{
+        parent?: { id?: number };
+        item?: { parentItemID?: number | null };
+      }>;
+    };
+  };
+  const parentIdMap = new Map<number, number>();
+  const parents = cloned.items?.parents || [];
+  for (let index = 0; index < parents.length; index += 1) {
+    const entry = parents[index];
+    const rawId = Number(entry?.item?.id || 0);
+    if (!rawId || parentIdMap.has(rawId)) {
+      continue;
+    }
+    parentIdMap.set(rawId, 900000 + index + 1);
+  }
+  for (const parent of parents) {
+    const rawId = Number(parent?.item?.id || 0);
+    const mapped = parentIdMap.get(rawId);
+    if (!mapped) {
+      continue;
+    }
+    if (parent.item) {
+      parent.item.id = mapped;
+    }
+    for (const attachment of parent.attachments || []) {
+      if (attachment?.item) {
+        attachment.item.parentItemID = mapped;
+      }
+    }
+  }
+  for (const attachment of cloned.items?.attachments || []) {
+    const rawParentId = Number(
+      attachment?.parent?.id || attachment?.item?.parentItemID || 0,
+    );
+    const mapped = parentIdMap.get(rawParentId);
+    if (!mapped) {
+      continue;
+    }
+    if (attachment.parent) {
+      attachment.parent.id = mapped;
+    }
+    if (attachment.item) {
+      attachment.item.parentItemID = mapped;
+    }
+  }
+  return cloned as unknown as T;
+}
+
 const hookRuntime = {
   handlers,
   zotero: Zotero,
@@ -111,8 +167,9 @@ describe("literature-digest filterInputs", function () {
 
   it("resolves parent with multiple md and pdf using earliest-pdf filename match", async function () {
     const filterInputs = await getFilterHook();
+    const context = withSyntheticParentIds(multiPdfAndMd);
     const filtered = filterInputs({
-      selectionContext: multiPdfAndMd as unknown,
+      selectionContext: context as unknown,
       manifest: {} as any,
       runtime: hookRuntime,
     }) as {

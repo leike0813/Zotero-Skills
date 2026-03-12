@@ -62,6 +62,7 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
   },
   "execution": {
     "mode": "auto",
+    "skillrunner_mode": "auto",
     "poll_interval_ms": 2000,
     "timeout_ms": 1200000,
     "feedback": {
@@ -104,6 +105,11 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
 - `execution.feedback.showNotifications`（可选，默认 `true`）语义：
   - `false`：禁用 workflow 执行提醒（开始/单任务 Toast + 结束汇总 alert）；
   - `true` 或缺省：保持默认提醒行为。
+- `execution.skillrunner_mode`（`auto|interactive`）语义：
+  - 仅对 SkillRunner workflow 生效（`provider=skillrunner` 或 `request.kind=skillrunner.job.v1`）；
+  - SkillRunner workflow 必填；
+  - 当前会在执行链注入到请求的 `runtime_options.execution_mode`；
+  - 不替代旧字段 `execution.mode`，两者语义并存。
 - `parameters.<key>.allowCustom`（仅 `type=string` 生效）语义：
   - `true`：`enum` 作为推荐选项，settings UI 提供“推荐下拉 + 可编辑输入”，运行时允许非枚举字符串值；
   - `false` 或缺省：`enum` 作为硬约束，非枚举值会在归一化时回退默认值或被丢弃。
@@ -143,12 +149,14 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
 ### skillrunner.job.v1 关键约束
 
 - `request.create.skill_id` 必填
-- `request.input.upload.files` 必填
+- `request.input.upload.files` 可选（仅 file-input workflow 需要）
 - `files[].from` 当前支持：
   - `selected.markdown`
   - `selected.pdf`
   - `selected.source`（由当前输入单元筛选后的唯一源附件，支持 markdown/pdf）
 - 每个 selector 在当前输入单元必须唯一命中，否则该输入单元报错/跳过
+- 声明式编译会自动把 `files[].key` 写入 create body 的 `input.<key>`，值为 `uploads/` 根下相对路径（例如 `inputs/source_path/example.md`）
+- `upload_files` 仅用于“本地文件路径 -> zip entry”映射；zip entry 与 `input.<key>` 路径必须一致
 
 ## 输入筛选策略
 

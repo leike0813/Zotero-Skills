@@ -20,6 +20,7 @@ export type WorkflowMessageFormatter = {
   overflow: (count: number) => string;
   unknownError: string;
   startToast: (args: { workflowLabel: string; totalJobs: number }) => string;
+  waitingToast: (args: { workflowLabel: string; pendingJobs: number }) => string;
   jobToastSuccess: (args: {
     workflowLabel: string;
     taskLabel: string;
@@ -45,6 +46,8 @@ const defaultFormatter: WorkflowMessageFormatter = {
   unknownError: "unknown error",
   startToast: ({ workflowLabel, totalJobs }) =>
     `Workflow ${workflowLabel} started. jobs=${totalJobs}`,
+  waitingToast: ({ workflowLabel, pendingJobs }) =>
+    `Workflow ${workflowLabel} is waiting for backend input. pending=${pendingJobs}`,
   jobToastSuccess: ({ workflowLabel, taskLabel, index, total }) =>
     `Workflow ${workflowLabel} job ${index}/${total} succeeded: ${taskLabel}`,
   jobToastFailed: ({ workflowLabel, taskLabel, index, total, reason }) =>
@@ -118,6 +121,14 @@ export function buildWorkflowStartToastMessage(args: {
 }, formatter?: Partial<WorkflowMessageFormatter>) {
   const resolved = resolveFormatter(formatter);
   return resolved.startToast(args);
+}
+
+export function buildWorkflowWaitingToastMessage(args: {
+  workflowLabel: string;
+  pendingJobs: number;
+}, formatter?: Partial<WorkflowMessageFormatter>) {
+  const resolved = resolveFormatter(formatter);
+  return resolved.waitingToast(args);
 }
 
 export function buildWorkflowJobToastMessage(args: {

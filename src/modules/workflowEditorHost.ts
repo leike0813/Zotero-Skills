@@ -21,6 +21,19 @@ type WorkflowEditorLabels = {
   cancel?: string;
 };
 
+export type WorkflowEditorAction = {
+  id: string;
+  label: string;
+  noClose?: boolean;
+  onClick?: (args: {
+    state: unknown;
+    context?: unknown;
+    closeWithAction: (actionId?: string) => void;
+    rerender: () => void;
+    serialize: () => unknown;
+  }) => void;
+};
+
 type WorkflowEditorRenderArgs<TState = unknown, TContext = unknown> = {
   doc: Document;
   root: HTMLElement;
@@ -29,6 +42,8 @@ type WorkflowEditorRenderArgs<TState = unknown, TContext = unknown> = {
   host: {
     rerender: () => void;
     patchState: (updater: (state: TState) => void) => void;
+    closeWithAction: (actionId?: string) => void;
+    setFooterVisible: (visible: boolean) => void;
   };
 };
 
@@ -45,12 +60,20 @@ export type WorkflowEditorOpenArgs<TState = unknown, TContext = unknown> = {
   renderer?: WorkflowEditorRenderer<TState, TContext>;
   layout?: WorkflowEditorLayout;
   labels?: WorkflowEditorLabels;
+  actions?: WorkflowEditorAction[];
+  closeActionId?: string;
+  detached?: boolean;
+  autoClose?: {
+    afterMs: number;
+    actionId: string;
+  };
 };
 
 export type WorkflowEditorOpenResult = {
   saved: boolean;
   result?: unknown;
   reason?: string;
+  actionId?: string;
 };
 
 type WorkflowEditorBridge = {
@@ -250,6 +273,75 @@ function applyWindowSizing(doc: Document, layout: ReturnType<typeof normalizeLay
   }
 }
 
+function applyFooterVisibility(args: {
+  win: _ZoteroTypes.MainWindow | null;
+  visible: boolean;
+  labels: { save: string; cancel: string };
+}) {
+  const doc = args.win?.document as Document | undefined;
+  if (!doc || typeof doc.querySelectorAll !== "function") {
+    return;
+  }
+  const visible = args.visible === true;
+  const footerSelectors = [
+    ".dialog-button-box",
+    ".dialog-buttons",
+    ".ztoolkit-dialog-buttons",
+    "#zotero-dialog-buttons",
+    "button[dlgtype='accept']",
+    "button[dlgtype='cancel']",
+    "button[dialog='accept']",
+    "button[dialog='cancel']",
+    "button[command='cmd-accept']",
+    "button[command='cmd-cancel']",
+  ];
+  for (const selector of footerSelectors) {
+    let nodes: Element[] = [];
+    try {
+      nodes = Array.from(doc.querySelectorAll(selector));
+    } catch {
+      nodes = [];
+    }
+    for (const node of nodes) {
+      const target = node as Element & {
+        style?: CSSStyleDeclaration | { display?: string };
+        hidden?: boolean;
+      };
+      if (target.style && typeof target.style === "object") {
+        (target.style as { display?: string }).display = visible ? "" : "none";
+      }
+      target.hidden = !visible;
+    }
+  }
+  let buttons: Element[] = [];
+  try {
+    buttons = Array.from(doc.querySelectorAll("button"));
+  } catch {
+    buttons = [];
+  }
+  const acceptedLabels = new Set(
+    [args.labels.save, args.labels.cancel].map((entry) =>
+      String(entry || "").trim().toLowerCase(),
+    ),
+  );
+  for (const button of buttons) {
+    const text = String(button.textContent || "")
+      .trim()
+      .toLowerCase();
+    if (!acceptedLabels.has(text)) {
+      continue;
+    }
+    const target = button as Element & {
+      style?: CSSStyleDeclaration | { display?: string };
+      hidden?: boolean;
+    };
+    if (target.style && typeof target.style === "object") {
+      (target.style as { display?: string }).display = visible ? "" : "none";
+    }
+    target.hidden = !visible;
+  }
+}
+
 function resolveRenderer(args: WorkflowEditorOpenArgs) {
   const rendererId = String(args.rendererId || "").trim();
   if (!rendererId) {
@@ -279,6 +371,16 @@ async function openDialogSession(
     save: String(args.labels?.save || "Save"),
     cancel: String(args.labels?.cancel || "Cancel"),
   };
+  const autoCloseAfterMs = normalizeNumber(args.autoClose?.afterMs, 0);
+  const autoCloseActionId = String(args.autoClose?.actionId || "").trim();
+  const customActions = Array.isArray(args.actions)
+    ? args.actions.filter((entry) => {
+        const id = String(entry?.id || "").trim();
+        const label = String(entry?.label || "").trim();
+        return !!id && !!label;
+      })
+    : [];
+  const hasCustomActions = customActions.length > 0;
 
   const state = cloneSerializable(args.initialState);
   const context = cloneSerializable(args.context);
@@ -323,7 +425,19 @@ async function openDialogSession(
           updater(state);
           host.rerender();
         },
+        closeWithAction: (actionId?: string) => {
+          closeDialogWithAny(actionId);
+        },
+        setFooterVisible: (visible: boolean) => {
+          footerVisible = visible === true;
+          applyFooterVisibility({
+            win: dialogWindow,
+            visible: footerVisible,
+            labels,
+          });
+        },
       };
+      rerenderCurrent = host.rerender;
 
       (root as HTMLElement).style.width = `${layout.width - 80}px`;
       (root as HTMLElement).style.maxWidth = `${layout.maxWidth - 80}px`;
@@ -336,13 +450,33 @@ async function openDialogSession(
       (root as HTMLElement).style.overflow = "visible";
 
       host.rerender();
+      applyFooterVisibility({
+        win: dialogWindow,
+        visible: footerVisible,
+        labels,
+      });
+      if (autoCloseAfterMs > 0 && autoCloseActionId) {
+        autoCloseHandle = setTimeout(() => {
+          closeDialogWithAny(autoCloseActionId);
+        }, autoCloseAfterMs);
+      }
     },
     unloadCallback: () => {},
   };
 
   let dialogWindow: _ZoteroTypes.MainWindow | null = null;
+  let rerenderCurrent: (() => void) | null = null;
+  let footerVisible = true;
+  let autoCloseHandle: ReturnType<typeof setTimeout> | null = null;
   const closeDialogWith = (buttonId: "save" | "cancel" | "discard") => {
     (dialogData as { _lastButtonId?: string })._lastButtonId = buttonId;
+    dialogWindow?.close?.();
+  };
+  const closeDialogWithAny = (actionId?: string) => {
+    const normalized = String(actionId || "").trim();
+    if (normalized) {
+      (dialogData as { _lastButtonId?: string })._lastButtonId = normalized;
+    }
     dialogWindow?.close?.();
   };
   const handleAttemptClose = () => {
@@ -374,22 +508,55 @@ async function openDialogSession(
     }
   };
 
-  const dialog = new Dialog(1, 1)
-    .addCell(0, 0, {
-      tag: "div",
-      namespace: "html",
-      id: ROOT_ID,
-      styles: {
-        padding: "0px",
-      },
-    })
-    .addButton(labels.save, "save")
-    .addButton(labels.cancel, "cancel", {
-      noClose: true,
-      callback: () => {
-        handleAttemptClose();
-      },
-    })
+  let dialogBuilder = new Dialog(1, 1).addCell(0, 0, {
+    tag: "div",
+    namespace: "html",
+    id: ROOT_ID,
+    styles: {
+      padding: "0px",
+    },
+  });
+  if (!hasCustomActions) {
+    dialogBuilder = dialogBuilder
+      .addButton(labels.save, "save")
+      .addButton(labels.cancel, "cancel", {
+        noClose: true,
+        callback: () => {
+          handleAttemptClose();
+        },
+      });
+  } else {
+    for (const action of customActions) {
+      const actionId = String(action.id || "").trim();
+      const actionLabel = String(action.label || "").trim();
+      dialogBuilder = dialogBuilder.addButton(actionLabel, actionId, {
+        noClose: action.noClose === true || typeof action.onClick === "function",
+        callback: () => {
+          if (typeof action.onClick === "function") {
+            action.onClick({
+              state,
+              context,
+              closeWithAction: (id?: string) =>
+                closeDialogWithAny(String(id || actionId).trim()),
+              rerender: () => {
+                rerenderCurrent?.();
+              },
+              serialize: () =>
+                serializeEditorResult({
+                  renderer,
+                  state,
+                  context,
+                }),
+            });
+            rerenderCurrent?.();
+            return;
+          }
+          closeDialogWithAny(actionId);
+        },
+      });
+    }
+  }
+  const dialog = dialogBuilder
     .setDialogData(dialogData)
     .open(String(args.title || "Workflow Editor"));
   dialogWindow = (dialog as { window?: _ZoteroTypes.MainWindow }).window || null;
@@ -397,21 +564,52 @@ async function openDialogSession(
   addon.data.dialog = dialog as typeof addon.data.dialog;
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
     ?.promise;
+  if (autoCloseHandle) {
+    clearTimeout(autoCloseHandle);
+    autoCloseHandle = null;
+  }
   addon.data.dialog = undefined;
 
-  const clicked = String(
+  let clicked = String(
     (dialogData as { _lastButtonId?: string })._lastButtonId || "",
   ).trim();
+  if (!clicked) {
+    const closeActionId = String(args.closeActionId || "").trim();
+    if (closeActionId) {
+      clicked = closeActionId;
+    }
+  }
   if (clicked === "discard") {
     return {
       saved: false,
       reason: "discarded",
+      actionId: "discard",
     };
   }
-  if (clicked !== "save") {
+  if (clicked === "save") {
+    const result = serializeEditorResult({
+      renderer,
+      state,
+      context,
+    });
+    return {
+      saved: true,
+      result,
+      actionId: "save",
+    };
+  }
+  if (!hasCustomActions && clicked === "cancel") {
     return {
       saved: false,
       reason: "canceled",
+      actionId: "cancel",
+    };
+  }
+  if (!clicked) {
+    return {
+      saved: false,
+      reason: "canceled",
+      actionId: "cancel",
     };
   }
   const result = serializeEditorResult({
@@ -420,8 +618,10 @@ async function openDialogSession(
     context,
   });
   return {
-    saved: true,
+    saved: false,
     result,
+    reason: "action",
+    actionId: clicked,
   };
 }
 
@@ -435,6 +635,9 @@ function enqueueSession<T>(task: () => Promise<T>) {
 }
 
 export async function openWorkflowEditorSession(args: WorkflowEditorOpenArgs) {
+  if (args.detached === true) {
+    return openDialogSession(args);
+  }
   return enqueueSession(() => openDialogSession(args));
 }
 

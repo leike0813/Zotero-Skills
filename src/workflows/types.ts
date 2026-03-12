@@ -31,6 +31,7 @@ export type WorkflowInputsSpec = {
 
 export type WorkflowExecutionSpec = {
   mode?: "auto" | "sync" | "async";
+  skillrunner_mode?: "auto" | "interactive";
   poll_interval_ms?: number;
   timeout_ms?: number;
   feedback?: {

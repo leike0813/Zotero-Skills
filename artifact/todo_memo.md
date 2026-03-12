@@ -1,0 +1,18 @@
+- [x] Dashboard默认窗口大小扩大，显示区域随窗口resize
+- [x] Tag Manager 的暂存窗口只有在主窗口关闭后才能打开。若现有框架无法满足，就整体重构为网页方式
+- [x] Tag Manager 的暂存窗口仍然是“变动后需要save”的逻辑，但这个窗口其实不需要，随时可以关闭，也不需要save（因为是实时变动的）
+- [x] Tag Regulator 的 suggest tags 窗口在倒计时结束后不会自动关闭
+- [ ] Dashboard 增加 Tag Manager 快捷方式
+- [x] passthrough provider 且自身无设置项的 workflow 不显示设置菜单项
+- [x] 添加 `literature-explainer` workflow
+- [x] 对话窗口效果进一步优化（现在对话窗口和提示卡片的上下关系反了，而且大小也反了）
+- [x] **修复 opencode 无法传模型的问题，本质上是目前的插件前端没有分离 provider**
+- [x] **匹配最新 Skill-Runner 文件协议**
+- [ ] 添加 Tag 受控词表订阅和发布功能
+- [ ] **日志功能进一步完善，携带更多排障信息**，转为 web 实现并入 Dashboard
+- [ ] 移除“采样选区上下文”及“校验选区上下文”按钮，或者将这两个按钮移入插件二级菜单，通过插件构建时的硬编码开关决定是否显示
+- [ ] 添加 Workflow Execute 快捷按钮
+- [ ] 后端自动下载、部署和配置脚本
+- [ ] 重构 workflow 设置逻辑（触发时弹窗，一个批次用同样的设置）
+- [ ] 重构窗口逻辑（围绕Dashboard），简化右键菜单
+- [ ] 修复修改 skill runner 后端后，旧的后端仍然会残留在 Dashboard 中的问题 

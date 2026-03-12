@@ -203,6 +203,10 @@ async function materializeValidTagsYaml(tags, parentId) {
   return toNativePath(filePath);
 }
 
+function buildValidTagsUploadRelativePath() {
+  return "inputs/valid_tags/valid_tags.yaml";
+}
+
 function resolveParentItemFromSelection(selectionContext, runtime) {
   const parentFromSelection = Number(
     selectionContext?.items?.parents?.[0]?.item?.id || 0,
@@ -328,6 +332,7 @@ export async function buildRequest({
       controlledTags,
       parentItem.id,
     );
+    const validTagsRelativePath = buildValidTagsUploadRelativePath();
     return {
       kind: "skillrunner.job.v1",
       skill_id: "tag-regulator",
@@ -335,6 +340,7 @@ export async function buildRequest({
       input: {
         metadata,
         input_tags: inputTags,
+        valid_tags: validTagsRelativePath,
       },
       parameter: resolveRequestParameters(executionOptions),
       upload_files: [

@@ -6,6 +6,9 @@ type PluginPrefsMap = BasePluginPrefsMap & {
   workflowSettingsJson: string;
   taskDashboardHistoryJson: string;
   runtimeLogsJson: string;
+  skillRunnerModelCacheJson: string;
+  skillRunnerDeferredTasksJson: string;
+  tagVocabularyStagedJson: string;
 };
 
 const PREFS_PREFIX = config.prefsPrefix;

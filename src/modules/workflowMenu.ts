@@ -56,20 +56,28 @@ function appendWorkflowSettingsItem(
   popup: XULElement,
   workflows: LoadedWorkflow[],
 ) {
+  const settingsWorkflows = workflows.filter((workflow) => {
+    const providerId = String(workflow.manifest.provider || "").trim();
+    if (providerId !== "pass-through") {
+      return true;
+    }
+    return Object.keys(workflow.manifest.parameters || {}).length > 0;
+  });
+
   const menu = win.document.createXULElement("menu");
   menu.setAttribute(
     "label",
     getMenuLabel("menu-workflows-settings", "Workflow Settings..."),
   );
   const subPopup = win.document.createXULElement("menupopup") as XULElement;
-  if (workflows.length === 0) {
+  if (settingsWorkflows.length === 0) {
     appendDisabledItem(
       win,
       subPopup,
       getMenuLabel("menu-workflows-empty", "No workflows loaded"),
     );
   } else {
-    for (const workflow of workflows) {
+    for (const workflow of settingsWorkflows) {
       const item = win.document.createXULElement("menuitem");
       item.setAttribute("label", workflow.manifest.label);
       item.addEventListener("command", () => {
@@ -120,6 +128,24 @@ function compactError(error: unknown) {
     return "invalid selection";
   }
   return text.length > 72 ? `${text.slice(0, 72)}...` : text;
+}
+
+function isNoValidInputUnitsError(error: unknown) {
+  if (
+    error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "NO_VALID_INPUT_UNITS"
+  ) {
+    return true;
+  }
+  return /has no valid input units after filtering/i.test(String(error || ""));
+}
+
+function resolveDisabledReason(error: unknown) {
+  if (isNoValidInputUnitsError(error)) {
+    return getMenuLabel("menu-workflow-no-valid-input", "no valid input");
+  }
+  return compactError(error);
 }
 
 async function rebuildWorkflowPopup(
@@ -176,7 +202,7 @@ async function rebuildWorkflowPopup(
         },
       });
     } catch (error) {
-      disabledReason = compactError(error);
+      disabledReason = resolveDisabledReason(error);
     }
 
     const label = disabledReason

@@ -176,6 +176,26 @@ function getFileStem(filePath: string) {
   return name.replace(/\.[^.]+$/, "");
 }
 
+function normalizeUploadRelativePath(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+/, "");
+}
+
+function sanitizeUploadPathSegment(value: string) {
+  const normalized = String(value || "").trim().replace(/[^A-Za-z0-9._-]+/g, "-");
+  return normalized || "file";
+}
+
+function buildUploadRelativePath(fileKey: string, localPath: string) {
+  const fileName = getBaseName(localPath) || "upload.bin";
+  const keySegment = sanitizeUploadPathSegment(fileKey);
+  return normalizeUploadRelativePath(`inputs/${keySegment}/${fileName}`);
+}
+
 function resolveSingleSourceAttachment(
   attachments: AttachmentLike[],
   sourceAttachmentPaths: string[],
@@ -235,11 +255,12 @@ function buildSkillRunnerJobRequest(args: {
   }
   const attachments = resolveSelectionAttachments(args.selectionContext);
   const declaredFiles = request.input?.upload?.files || [];
-  if (declaredFiles.length === 0) {
-    throw new Error(
-      "request.input.upload.files is required for skillrunner.job.v1 declarative request",
-    );
-  }
+  const declaredInput = isObject(request.input) ? request.input : null;
+  const inlineInput = declaredInput
+    ? Object.fromEntries(
+        Object.entries(declaredInput).filter(([key]) => key !== "upload"),
+      )
+    : {};
   const keys = new Set<string>();
   const uploadFiles = declaredFiles.map((entry) => {
     if (!entry?.key || typeof entry.key !== "string") {
@@ -249,12 +270,19 @@ function buildSkillRunnerJobRequest(args: {
       throw new Error(`Duplicated upload file key: ${entry.key}`);
     }
     keys.add(entry.key);
+    if (Object.prototype.hasOwnProperty.call(inlineInput, entry.key)) {
+      throw new Error(
+        `request.input field conflict: ${entry.key} is declared by both inline input and upload selector`,
+      );
+    }
+    const localPath = resolveAttachmentBySelector(
+      attachments,
+      entry.from as "selected.markdown" | "selected.pdf" | "selected.source",
+    );
+    inlineInput[entry.key] = buildUploadRelativePath(entry.key, localPath);
     return {
       key: entry.key,
-      path: resolveAttachmentBySelector(
-        attachments,
-        entry.from as "selected.markdown" | "selected.pdf" | "selected.source",
-      ),
+      path: localPath,
     };
   });
 
@@ -270,20 +298,13 @@ function buildSkillRunnerJobRequest(args: {
     executionOptions: args.executionOptions,
   });
   const fetchType = args.manifest.result?.fetch?.type || "bundle";
-  const declaredInput = isObject(request.input) ? request.input : null;
-  const inlineInput = declaredInput
-    ? Object.fromEntries(
-        Object.entries(declaredInput).filter(([key]) => key !== "upload"),
-      )
-    : {};
-
   const requestPayload: SkillRunnerJobRequestV1 = {
     kind: "skillrunner.job.v1",
     targetParentID,
     taskName,
     sourceAttachmentPaths,
     skill_id: skillId,
-    upload_files: uploadFiles,
+    ...(uploadFiles.length > 0 ? { upload_files: uploadFiles } : {}),
     parameter: workflowParams,
     ...(Object.keys(inlineInput).length > 0 ? { input: inlineInput } : {}),
     poll: {

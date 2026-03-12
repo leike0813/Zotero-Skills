@@ -149,6 +149,47 @@ function resolveTaskNameFromSelection(args: {
   return "task";
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function resolveSkillRunnerExecutionMode(manifest: LoadedWorkflow["manifest"]) {
+  const provider = String(manifest.provider || "").trim();
+  const requestKind = String(manifest.request?.kind || "").trim();
+  if (provider !== "skillrunner" && requestKind !== "skillrunner.job.v1") {
+    return "";
+  }
+  return String(manifest.execution?.skillrunner_mode || "").trim();
+}
+
+function withInjectedSkillRunnerExecutionMode(args: {
+  workflow: LoadedWorkflow;
+  requestKind: string;
+  request: unknown;
+}) {
+  if (args.requestKind !== "skillrunner.job.v1") {
+    return args.request;
+  }
+  const executionMode = resolveSkillRunnerExecutionMode(args.workflow.manifest);
+  if (!executionMode) {
+    return args.request;
+  }
+  if (!isObjectRecord(args.request)) {
+    return args.request;
+  }
+  const next = {
+    ...args.request,
+  };
+  const runtimeOptions = isObjectRecord(next.runtime_options)
+    ? {
+        ...next.runtime_options,
+      }
+    : {};
+  runtimeOptions.execution_mode = executionMode;
+  next.runtime_options = runtimeOptions;
+  return next;
+}
+
 function enrichRequestWithSelectionMeta(
   request: unknown,
   selectionContext: SelectionLike,
@@ -607,13 +648,18 @@ export async function executeBuildRequests(args: {
         }),
         selectionContext,
       );
+      const finalBuiltRequest = withInjectedSkillRunnerExecutionMode({
+        workflow: args.workflow,
+        requestKind,
+        request: builtRequest,
+      });
       if (requestKind) {
         assertRequestPayloadContract({
           requestKind,
-          request: builtRequest,
+          request: finalBuiltRequest,
         });
       }
-      requests.push(builtRequest);
+      requests.push(finalBuiltRequest);
       continue;
     }
 
@@ -636,11 +682,16 @@ export async function executeBuildRequests(args: {
       }),
       selectionContext,
     );
-    assertRequestPayloadContract({
+    const finalCompiledRequest = withInjectedSkillRunnerExecutionMode({
+      workflow: args.workflow,
       requestKind: requestKindFromManifest,
       request: compiledRequest,
     });
-    requests.push(compiledRequest);
+    assertRequestPayloadContract({
+      requestKind: requestKindFromManifest,
+      request: finalCompiledRequest,
+    });
+    requests.push(finalCompiledRequest);
   }
   const skippedUnits = Math.max(0, resolved.totalUnits - requests.length);
   Object.defineProperty(requests, "__stats", {

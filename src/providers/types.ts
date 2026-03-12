@@ -50,8 +50,10 @@ export type Provider = {
   getRuntimeOptionEnumValues?: (args: {
     key: string;
     options: Record<string, unknown>;
+    backend?: BackendInstance;
   }) => string[];
   normalizeRuntimeOptions?: (
     options: unknown,
+    backend?: BackendInstance,
   ) => Record<string, unknown>;
 };

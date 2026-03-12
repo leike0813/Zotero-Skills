@@ -38,6 +38,10 @@
       "default": "zh-CN"
     }
   },
+  "execution": {
+    "mode": "auto",
+    "skillrunner_mode": "auto"
+  },
   "result": {
     "fetch": {
       "type": "result"

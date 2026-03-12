@@ -4,6 +4,7 @@ import {
   collectBackendsFromDialog,
   getBackendRowActionKindsForType,
   launchSkillRunnerManagementFromRow,
+  refreshSkillRunnerModelCacheFromRow,
   persistBackendsConfig,
   resolveSkillRunnerManagementLaunchPayloadFromRow,
 } from "../../src/modules/backendManager";
@@ -129,6 +130,7 @@ describe("backend manager risk regression", function () {
   it("Risk: HR-01 exposes management action only for skillrunner rows", function () {
     assert.deepEqual(getBackendRowActionKindsForType("skillrunner"), [
       "manage-ui",
+      "refresh-model-cache",
       "remove",
     ]);
     assert.deepEqual(getBackendRowActionKindsForType("generic-http"), [
@@ -229,6 +231,60 @@ describe("backend manager risk regression", function () {
       backendId: "skillrunner-unsaved",
       baseUrl: "http://127.0.0.1:18030",
       uiUrl: "http://127.0.0.1:18030/ui",
+    });
+  });
+
+  it("Risk: HR-01 refreshes model cache by current skillrunner row values only", async function () {
+    const row = makeRow({
+      type: "skillrunner",
+      id: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "bearer",
+      authToken: "token-123",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
+      "skillrunner-edited";
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:19030/";
+
+    const calls: Array<{
+      id: string;
+      type: string;
+      baseUrl: string;
+      authKind: string;
+      authToken?: string;
+    }> = [];
+    const result = await refreshSkillRunnerModelCacheFromRow({
+      row: row as unknown as Element,
+      refresh: async ({ backend }) => {
+        calls.push({
+          id: backend.id,
+          type: backend.type,
+          baseUrl: backend.baseUrl,
+          authKind: String(backend.auth?.kind || "none"),
+          authToken: backend.auth?.token,
+        });
+        return {
+          ok: true,
+          refreshedAt: "2026-03-11T00:00:00.000Z",
+          backendId: backend.id,
+        };
+      },
+    });
+
+    assert.lengthOf(calls, 1);
+    assert.deepEqual(calls[0], {
+      id: "skillrunner-edited",
+      type: "skillrunner",
+      baseUrl: "http://127.0.0.1:19030/",
+      authKind: "bearer",
+      authToken: "token-123",
+    });
+    assert.deepEqual(result, {
+      ok: true,
+      refreshedAt: "2026-03-11T00:00:00.000Z",
+      backendId: "skillrunner-edited",
     });
   });
 

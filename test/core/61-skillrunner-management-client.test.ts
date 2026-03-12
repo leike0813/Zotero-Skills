@@ -179,4 +179,64 @@ describe("skillrunner management client", function () {
     assert.equal(requests[1].method, "POST");
     assert.equal(requests[1].body, "{}");
   });
+
+  it("posts auth import files to jobs interaction auth import endpoint", async function () {
+    const requests: Array<{
+      url: string;
+      method: string;
+      body?: BodyInit | null;
+      contentType?: string | null;
+    }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      requests.push({
+        url,
+        method: String(init?.method || "GET"),
+        body: init?.body,
+        contentType: headers.get("content-type"),
+      });
+      return new Response(
+        JSON.stringify({
+          request_id: "req-1",
+          status: "waiting_auth",
+          accepted: true,
+          mode: "auth",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      );
+    };
+
+    const client = new SkillRunnerManagementClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl,
+    });
+    const response = await client.submitAuthImport({
+      requestId: "req-1",
+      providerId: "google",
+      files: [
+        {
+          name: "creds.json",
+          content_base64: "eyJvayI6dHJ1ZX0=",
+        },
+      ],
+    });
+
+    assert.equal(response.accepted, true);
+    assert.lengthOf(requests, 1);
+    assert.equal(
+      requests[0].url,
+      "http://127.0.0.1:8030/v1/jobs/req-1/interaction/auth/import",
+    );
+    assert.equal(requests[0].method, "POST");
+    assert.isNull(requests[0].contentType);
+    const body = requests[0].body as FormData;
+    assert.equal(body.get("provider_id"), "google");
+    const files = body.getAll("files");
+    assert.lengthOf(files, 1);
+  });
 });

@@ -86,12 +86,14 @@ export async function executeWorkflowFromCurrentSelection(args: {
   });
 
   if (showWorkflowNotifications) {
-    emitWorkflowJobToasts({
-      workflowLabel: args.workflow.manifest.label,
-      totalJobs: runState.totalJobs,
-      outcomes: applySummary.jobOutcomes,
-      messageFormatter,
-    });
+    if (applySummary.jobOutcomes.length > 0) {
+      emitWorkflowJobToasts({
+        workflowLabel: args.workflow.manifest.label,
+        totalJobs: runState.totalJobs,
+        outcomes: applySummary.jobOutcomes,
+        messageFormatter,
+      });
+    }
   }
 
   appendRuntimeLog({
@@ -103,20 +105,23 @@ export async function executeWorkflowFromCurrentSelection(args: {
     details: {
       succeeded: applySummary.succeeded,
       failed: applySummary.failed,
+      pending: applySummary.pending,
       skipped: totalSkipped,
       failureCount: applySummary.failureReasons.length,
     },
   });
 
   if (showWorkflowNotifications) {
-    emitWorkflowFinishSummary({
-      win: args.win,
-      workflowLabel: args.workflow.manifest.label,
-      succeeded: applySummary.succeeded,
-      failed: applySummary.failed,
-      skipped: totalSkipped,
-      failureReasons: applySummary.failureReasons,
-      messageFormatter,
-    });
+    if (applySummary.pending === 0) {
+      emitWorkflowFinishSummary({
+        win: args.win,
+        workflowLabel: args.workflow.manifest.label,
+        succeeded: applySummary.succeeded,
+        failed: applySummary.failed,
+        skipped: totalSkipped,
+        failureReasons: applySummary.failureReasons,
+        messageFormatter,
+      });
+    }
   }
 }

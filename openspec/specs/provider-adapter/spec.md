@@ -25,9 +25,45 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 ### Requirement: Provider 执行结果必须统一为标准模型
 系统 MUST 将不同 Provider 的执行输出归一为统一结果结构，供 runtime 与 `applyResult` 消费。
 
-#### Scenario: skillrunner Auto polling fails fast on terminal canceled
-- **WHEN** skillrunner poll endpoint returns terminal `status=canceled`
-- **THEN** provider SHALL stop polling immediately
-- **AND** provider SHALL raise a deterministic error message containing `request_id` and terminal `status`
-- **AND** provider SHALL NOT continue to `/result` or `/bundle` fetch
+#### Scenario: skillrunner file-input mapping follows input-relative-path protocol
+- **WHEN** request kind is `skillrunner.job.v1` and payload contains non-empty `upload_files`
+- **THEN** provider contract SHALL require `input` to be object
+- **AND** each `upload_files[].key` SHALL resolve to `input.<key>` relative path under uploads root
+- **AND** upload zip entries SHALL use that resolved relative path instead of legacy key name
+
+#### Scenario: inline-only skillrunner payload skips upload step
+- **WHEN** request kind is `skillrunner.job.v1` and `upload_files` is missing or empty
+- **THEN** execution chain SHALL skip `/upload`
+- **AND** provider SHALL continue with `create -> poll -> result|bundle`
+
+### Requirement: SkillRunner interactive execution SHALL defer terminal ownership to backend state machine
+SkillRunner interactive 执行 SHALL 将终态裁决权交给后端状态机，插件侧仅负责同步与收敛。
+
+#### Scenario: interactive request returns deferred after submit
+- **WHEN** `skillrunner.job.v1` carries `runtime_options.execution_mode=interactive`
+- **THEN** provider SHALL return `status=deferred` with `requestId` and non-terminal backend status
+- **AND** plugin SHALL NOT mark job failed by local polling timeout during waiting states
+
+#### Scenario: backend terminal status drives final outcome
+- **WHEN** deferred task is reconciled to backend terminal `succeeded|failed|canceled`
+- **THEN** plugin task state SHALL match backend terminal state
+- **AND** only `succeeded` MAY trigger `applyResult`
+
+### Requirement: SkillRunner provider chain SHALL consume a single plugin-side state machine SSOT
+SkillRunner provider/client/reconciler 全链路 SHALL 复用同一个插件侧状态机语义，避免分散判定导致漂移。
+
+#### Scenario: unknown backend status degrades to safe non-terminal state with diagnostics
+- **WHEN** provider/client or reconciler receives an unknown status value from backend or runtime payload
+- **THEN** plugin MUST normalize it to canonical safe non-terminal status (`running`)
+- **AND** plugin MUST emit structured state-machine diagnostics (`ruleId`, `requestId`, `action=degraded`)
+
+#### Scenario: illegal status transition is guarded without hard failure
+- **WHEN** chain observes a transition outside the legal transition matrix
+- **THEN** plugin MUST record a state-machine warning with transition context
+- **AND** plugin MUST apply degradation path instead of throwing hard runtime error
+
+#### Scenario: key event order invariants are enforced
+- **WHEN** runtime event sequence violates invariant rules (`request-created`, `deferred`, `waiting-resumed`, `apply-succeeded once`)
+- **THEN** plugin MUST emit state-machine diagnostics with violated `ruleId`
+- **AND** plugin MUST continue execution with degraded behavior
 

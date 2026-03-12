@@ -11,20 +11,71 @@ import {
   type SkillRunnerManagementSseFrame,
 } from "../providers/skillrunner/managementClient";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
+import { appendRuntimeLog } from "./runtimeLogManager";
+import {
+  isTerminal,
+  isWaiting,
+  normalizeStatus,
+  normalizeStatusWithGuard,
+  type SkillRunnerStateMachineViolation,
+} from "./skillRunnerProviderStateMachine";
 
-type SkillRunnerConversationEntry = {
+export type RunDialogMessageRole = "assistant" | "user" | "system";
+export type RunDialogMessageKind =
+  | "assistant_process"
+  | "assistant_final"
+  | "interaction_reply"
+  | "auth_submission"
+  | "orchestration_notice"
+  | "unknown";
+
+export type SkillRunnerConversationEntry = {
   seq: number;
   ts?: string;
+  role: RunDialogMessageRole;
+  kind: RunDialogMessageKind;
   text: string;
   raw: unknown;
+};
+
+type RunDialogPendingInteraction = {
+  interactionId?: number;
+  kind?: string;
+  prompt?: string;
+  options: RunDialogChoiceOption[];
+  requiredFields: string[];
+  uiHints: Record<string, unknown>;
+  askUser?: Record<string, unknown>;
+};
+
+type RunDialogPendingAuth = {
+  phase?: string;
+  authSessionId?: string;
+  providerId?: string;
+  engine?: string;
+  prompt?: string;
+  challengeKind?: string;
+  availableMethods: string[];
+  askUser?: Record<string, unknown>;
+  acceptsChatInput?: boolean;
+  inputKind?: string;
+  authUrl?: string;
+  userCode?: string;
+  lastError?: string;
+  uiHints: Record<string, unknown>;
 };
 
 type RunSessionState = {
   requestId: string;
   status: string;
   updatedAt?: string;
-  pending?: SkillRunnerManagementPending;
+  engine?: string;
+  model?: string;
+  pendingOwner?: string;
+  pendingInteraction?: RunDialogPendingInteraction;
+  pendingAuth?: RunDialogPendingAuth;
   messages: SkillRunnerConversationEntry[];
+  seenMessageKeys: Set<string>;
   lastSeq: number;
   error?: string;
   loading: boolean;
@@ -35,19 +86,55 @@ type RunDialogSnapshot = {
   backendTitle: string;
   requestId: string;
   status: string;
+  statusSemantics: {
+    normalized: string;
+    terminal: boolean;
+    waiting: boolean;
+  };
   updatedAt?: string;
+  engine?: string;
+  model?: string;
   pendingOwner?: string;
   pendingInteractionId?: number;
+  pendingKind?: string;
   pendingPrompt?: string;
+  pendingOptions: RunDialogChoiceOption[];
+  pendingRequiredFields: string[];
+  pendingUiHints?: Record<string, unknown>;
+  pendingAskUser?: Record<string, unknown>;
+  authPhase?: string;
+  authSessionId?: string;
+  authProviderId?: string;
+  authEngine?: string;
+  authPrompt?: string;
+  authChallengeKind?: string;
+  authAvailableMethods: string[];
+  authAskUser?: Record<string, unknown>;
+  authAcceptsChatInput?: boolean;
+  authInputKind?: string;
+  authUrl?: string;
+  authUserCode?: string;
+  authLastError?: string;
+  authUiHints?: Record<string, unknown>;
   loading: boolean;
   error?: string;
-  messages: Array<{ seq: number; ts?: string; text: string }>;
+  messages: Array<{
+    seq: number;
+    ts?: string;
+    role: RunDialogMessageRole;
+    kind: RunDialogMessageKind;
+    text: string;
+  }>;
   labels: {
     requestId: string;
     status: string;
+    engine: string;
+    model: string;
     updatedAt: string;
     pendingOwner: string;
     pendingInteractionId: string;
+    pendingKind: string;
+    pendingPrompt: string;
     loading: string;
     error: string;
     replyPlaceholder: string;
@@ -55,7 +142,55 @@ type RunDialogSnapshot = {
     cancel: string;
     close: string;
     chatEmpty: string;
+    roleAgent: string;
+    roleUser: string;
+    roleSystem: string;
+    runningHintTitle: string;
+    runningHintDesc: string;
+    waitingUserTitle: string;
+    waitingAuthTitle: string;
+    pendingInputTitle: string;
+    interactionIdLabel: string;
+    kindLabel: string;
+    requiredFieldsPrefix: string;
+    authRequiredPrompt: string;
+    authSessionIdLabel: string;
+    authEngineLabel: string;
+    authProviderLabel: string;
+    authUrlPrefix: string;
+    userCodePrefix: string;
+    lastErrorPrefix: string;
+    pendingMethodSelection: string;
+    replySend: string;
+    replyShortcut: string;
+    confirmYes: string;
+    confirmNo: string;
+    authPasteApiKey: string;
+    authPasteCode: string;
+    authSubmitApiKey: string;
+    authSubmitCode: string;
+    authAwaiting: string;
+    authInProgress: string;
+    authImportSubmit: string;
+    authImportHintDefault: string;
+    authImportRiskNotice: string;
+    authImportRequired: string;
+    authImportOptional: string;
+    authImportUnsupported: string;
+    thinkingTitle: string;
+    thinkingDesc: string;
+    roleThinking: string;
+    processReasoning: string;
+    processToolCall: string;
+    processCommandExecution: string;
+    finalSummaryTitle: string;
+    authImportFailed: string;
   };
+};
+
+export type RunDialogChoiceOption = {
+  label: string;
+  value: unknown;
 };
 
 type RunDialogActionEnvelope = {
@@ -71,6 +206,7 @@ type RunDialogEntry = {
   dialog: DialogHelper;
   frameWindow: Window | null;
   stopObserver?: () => void;
+  refreshState?: () => Promise<void>;
   removeMessageListener?: () => void;
   session: RunSessionState;
 };
@@ -100,8 +236,161 @@ function compactError(error: unknown) {
   return text.length > 220 ? `${text.slice(0, 220)}...` : text;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as string[];
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    const normalized = String(entry || "").trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+export function normalizeRunDialogChoiceOptions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as RunDialogChoiceOption[];
+  }
+  const out: RunDialogChoiceOption[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      const text = entry.trim();
+      if (!text) {
+        continue;
+      }
+      out.push({
+        label: text,
+        value: text,
+      });
+      continue;
+    }
+    if (!isObject(entry)) {
+      continue;
+    }
+    const label = String(entry.label || "").trim();
+    if (!label) {
+      continue;
+    }
+    const value = Object.prototype.hasOwnProperty.call(entry, "value")
+      ? entry.value
+      : label;
+    out.push({
+      label,
+      value,
+    });
+  }
+  return out;
+}
+
+export function resolveRunDialogInteractionResponse(args: {
+  replyText?: unknown;
+  responseValue?: unknown;
+  option?: unknown;
+  responseObject?: unknown;
+}): {
+  hasResponse: boolean;
+  response: unknown;
+} {
+  const hasResponseValue = Object.prototype.hasOwnProperty.call(
+    args,
+    "responseValue",
+  );
+  if (hasResponseValue) {
+    return {
+      hasResponse: true,
+      response: args.responseValue,
+    };
+  }
+  const hasLegacyOption = Object.prototype.hasOwnProperty.call(args, "option");
+  if (hasLegacyOption) {
+    return {
+      hasResponse: true,
+      response: args.option,
+    };
+  }
+  if (isObject(args.responseObject)) {
+    return {
+      hasResponse: true,
+      response: args.responseObject,
+    };
+  }
+  return {
+    hasResponse: false,
+    response: {
+      text: String(args.replyText || "").trim(),
+    },
+  };
+}
+
+export function shouldRefreshRunDialogStateFromChatEvent(
+  event: Record<string, unknown>,
+) {
+  const type = String(event.type || event.kind || event.event || "")
+    .trim()
+    .toLowerCase();
+  if (!type) {
+    return false;
+  }
+  return (
+    type.startsWith("interaction.reply.") ||
+    type.startsWith("interaction.pending.") ||
+    type.startsWith("auth.")
+  );
+}
+
+export function shouldClearRunDialogPendingForStatus(status: unknown) {
+  const normalized = normalizeStatus(status, "running");
+  return !isWaiting(normalized);
+}
+
 function isTerminalStatus(status: string) {
-  return status === "succeeded" || status === "failed" || status === "canceled";
+  return isTerminal(status);
+}
+
+function appendStateMachineViolation(args: {
+  entry: RunDialogEntry;
+  violation?: SkillRunnerStateMachineViolation;
+}) {
+  if (!args.violation) {
+    return;
+  }
+  appendRuntimeLog({
+    level: "warn",
+    scope: "state-machine",
+    workflowId: undefined,
+    jobId: undefined,
+    requestId: args.entry.requestId,
+    stage: "state-machine-guard",
+    message: "run dialog status normalized by state machine guard",
+    details: args.violation,
+  });
+}
+
+function applyRunDialogSessionStatus(args: {
+  entry: RunDialogEntry;
+  rawStatus: unknown;
+}) {
+  const fallback = normalizeStatus(args.entry.session.status || "", "running");
+  const normalized = normalizeStatusWithGuard({
+    value: args.rawStatus,
+    fallback,
+    requestId: args.entry.requestId,
+  });
+  appendStateMachineViolation({
+    entry: args.entry,
+    violation: normalized.violation,
+  });
+  args.entry.session.status = normalized.status;
 }
 
 async function sleep(ms: number) {
@@ -120,16 +409,251 @@ async function sleep(ms: number) {
 
 function formatSkillRunnerEventText(event: Record<string, unknown>) {
   const kind = String(event.kind || event.type || event.event || "").trim();
-  const role = String(event.role || "").trim();
   const summary = String(
     event.summary || event.text || event.content || event.message || "",
   ).trim();
   if (summary) {
-    const prefixParts = [kind, role].filter(Boolean);
-    const prefix = prefixParts.length ? `[${prefixParts.join("/")}] ` : "";
-    return `${prefix}${summary}`;
+    return summary;
+  }
+  if (kind) {
+    return kind;
   }
   return JSON.stringify(event);
+}
+
+export function normalizeRunDialogMessageKind(value: unknown): RunDialogMessageKind {
+  const kind = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    kind === "assistant_process" ||
+    kind === "assistant_final" ||
+    kind === "interaction_reply" ||
+    kind === "auth_submission" ||
+    kind === "orchestration_notice"
+  ) {
+    return kind;
+  }
+  return "unknown";
+}
+
+export function normalizeRunDialogMessageRole(value: unknown): RunDialogMessageRole {
+  const role = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (role === "assistant" || role === "user" || role === "system") {
+    return role;
+  }
+  return "system";
+}
+
+export function toRunDialogConversationEntry(args: {
+  event: Record<string, unknown>;
+  lastSeq: number;
+  seenKeys?: Set<string>;
+}): SkillRunnerConversationEntry | null {
+  const rawSeq = Number(args.event.seq || 0);
+  const seq = Number.isFinite(rawSeq) && rawSeq > 0 ? Math.floor(rawSeq) : 0;
+  if (seq > 0 && seq < args.lastSeq) {
+    return null;
+  }
+  const role = normalizeRunDialogMessageRole(args.event.role);
+  const kind = normalizeRunDialogMessageKind(args.event.kind);
+  const text = formatSkillRunnerEventText(args.event);
+  if (!String(text || "").trim()) {
+    return null;
+  }
+  const type = String(
+    args.event.type || args.event.kind || args.event.event || "",
+  ).trim();
+  const dedupeKey = `${seq}:${type}:${kind}:${role}:${text}`;
+  if (args.seenKeys?.has(dedupeKey)) {
+    return null;
+  }
+  args.seenKeys?.add(dedupeKey);
+  return {
+    seq,
+    ts: String(args.event.ts || "").trim() || undefined,
+    role,
+    kind,
+    text,
+    raw: args.event,
+  };
+}
+
+function normalizeDisplayText(value: unknown) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAttempt(value: unknown, fallback = 1) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return fallback;
+  }
+  return Math.floor(raw);
+}
+
+function entryCorrelation(entry: SkillRunnerConversationEntry) {
+  if (!isObject(entry.raw)) {
+    return {} as Record<string, unknown>;
+  }
+  const correlation = entry.raw.correlation;
+  return isObject(correlation) ? correlation : ({} as Record<string, unknown>);
+}
+
+function entryMessageId(entry: SkillRunnerConversationEntry) {
+  return normalizeDisplayText(entryCorrelation(entry).message_id);
+}
+
+function entryAttempt(entry: SkillRunnerConversationEntry) {
+  if (!isObject(entry.raw)) {
+    return 1;
+  }
+  return normalizeAttempt(entry.raw.attempt, 1);
+}
+
+function isAssistantProcessEntry(entry: SkillRunnerConversationEntry) {
+  return entry.role === "assistant" && entry.kind === "assistant_process";
+}
+
+function isAssistantFinalEntry(entry: SkillRunnerConversationEntry) {
+  return entry.role === "assistant" && entry.kind === "assistant_final";
+}
+
+function removePromotedProcessEntry(
+  output: SkillRunnerConversationEntry[],
+  finalEntry: SkillRunnerConversationEntry,
+) {
+  const finalAttempt = entryAttempt(finalEntry);
+  const finalMessageId = entryMessageId(finalEntry);
+  const finalText = normalizeDisplayText(finalEntry.text);
+  for (let index = output.length - 1; index >= 0; index -= 1) {
+    const candidate = output[index];
+    if (!isAssistantProcessEntry(candidate)) {
+      continue;
+    }
+    if (entryAttempt(candidate) !== finalAttempt) {
+      continue;
+    }
+    if (finalMessageId) {
+      if (entryMessageId(candidate) !== finalMessageId) {
+        continue;
+      }
+    } else {
+      if (!finalText) {
+        continue;
+      }
+      if (normalizeDisplayText(candidate.text) !== finalText) {
+        continue;
+      }
+    }
+    output.splice(index, 1);
+    return;
+  }
+}
+
+export function buildRunDialogDisplayMessages(
+  messages: SkillRunnerConversationEntry[],
+) {
+  const output: SkillRunnerConversationEntry[] = [];
+  for (const entry of messages) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    if (isAssistantFinalEntry(entry)) {
+      removePromotedProcessEntry(output, entry);
+    }
+    output.push(entry);
+  }
+  return output;
+}
+
+export function normalizeRunDialogPendingState(
+  payload: SkillRunnerManagementPending | undefined,
+): {
+  pendingOwner?: string;
+  pendingInteraction?: RunDialogPendingInteraction;
+  pendingAuth?: RunDialogPendingAuth;
+} {
+  if (!payload || !isObject(payload)) {
+    return {};
+  }
+  const pendingOwner = String(payload.pending_owner || "").trim() || undefined;
+  let pendingInteraction: RunDialogPendingInteraction | undefined;
+  let pendingAuth: RunDialogPendingAuth | undefined;
+
+  if (isObject(payload.pending)) {
+    const interactionId = Number(payload.pending.interaction_id || 0);
+    const askUser = isObject(payload.pending.ask_user)
+      ? payload.pending.ask_user
+      : undefined;
+    const uiHints = isObject(payload.pending.ui_hints)
+      ? payload.pending.ui_hints
+      : {};
+    const askUserPrompt = askUser
+      ? String(askUser.prompt || "").trim() || undefined
+      : undefined;
+    const askUserKind = askUser
+      ? String(askUser.kind || "").trim() || undefined
+      : undefined;
+    const askUserOptions =
+      askUser && Array.isArray(askUser.options) ? askUser.options : undefined;
+    pendingInteraction = {
+      interactionId:
+        Number.isFinite(interactionId) && interactionId > 0
+          ? Math.floor(interactionId)
+          : undefined,
+      kind: askUserKind || String(payload.pending.kind || "").trim() || undefined,
+      prompt:
+        askUserPrompt || String(payload.pending.prompt || "").trim() || undefined,
+      options: normalizeRunDialogChoiceOptions(
+        askUserOptions || payload.pending.options,
+      ),
+      requiredFields: normalizeStringArray(payload.pending.required_fields),
+      uiHints,
+      askUser,
+    };
+  }
+
+  const pendingAuthMethodSelection = isObject(payload.pending_auth_method_selection)
+    ? payload.pending_auth_method_selection
+    : null;
+  const pendingAuthPayload = isObject(payload.pending_auth)
+    ? payload.pending_auth
+    : null;
+  const authPayload = pendingAuthMethodSelection || pendingAuthPayload;
+  if (authPayload) {
+    const uiHints = isObject(authPayload.ui_hints) ? authPayload.ui_hints : {};
+    const askUser = isObject(authPayload.ask_user)
+      ? authPayload.ask_user
+      : undefined;
+    pendingAuth = {
+      phase: String(authPayload.phase || "").trim() || undefined,
+      authSessionId:
+        String(authPayload.auth_session_id || "").trim() || undefined,
+      providerId: String(authPayload.provider_id || "").trim() || undefined,
+      engine: String(authPayload.engine || "").trim() || undefined,
+      prompt: String(authPayload.prompt || "").trim() || undefined,
+      challengeKind:
+        String(authPayload.challenge_kind || "").trim() || undefined,
+      availableMethods: normalizeStringArray(authPayload.available_methods),
+      askUser,
+      acceptsChatInput: authPayload.accepts_chat_input === true ? true : undefined,
+      inputKind: String(authPayload.input_kind || "").trim() || undefined,
+      authUrl: String(authPayload.auth_url || "").trim() || undefined,
+      userCode: String(authPayload.user_code || "").trim() || undefined,
+      lastError: String(authPayload.last_error || "").trim() || undefined,
+      uiHints,
+    };
+  }
+
+  return {
+    pendingOwner,
+    pendingInteraction,
+    pendingAuth,
+  };
 }
 
 function mergeHistoryEventsIntoSession(args: {
@@ -142,17 +666,18 @@ function mergeHistoryEventsIntoSession(args: {
     if (!event || typeof event !== "object") {
       continue;
     }
-    const seq = Number((event as { seq?: unknown }).seq || 0);
-    if (!Number.isFinite(seq) || seq <= args.session.lastSeq) {
+    const entry = toRunDialogConversationEntry({
+      event: event as Record<string, unknown>,
+      lastSeq: args.session.lastSeq,
+      seenKeys: args.session.seenMessageKeys,
+    });
+    if (!entry) {
       continue;
     }
-    args.session.messages.push({
-      seq,
-      ts: String((event as { ts?: unknown }).ts || "").trim() || undefined,
-      text: formatSkillRunnerEventText(event),
-      raw: event,
-    });
-    args.session.lastSeq = seq;
+    args.session.messages.push(entry);
+    if (entry.seq > args.session.lastSeq) {
+      args.session.lastSeq = entry.seq;
+    }
     changed = true;
   }
   if (changed && args.session.messages.length > 500) {
@@ -225,9 +750,10 @@ function resolveFrameWindow(frame: Element | null) {
 }
 
 function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
-  const pending = entry.session.pending?.pending as
-    | { interaction_id?: number; prompt?: string }
-    | undefined;
+  const pending = entry.session.pendingInteraction;
+  const pendingAuth = entry.session.pendingAuth;
+  const displayMessages = buildRunDialogDisplayMessages(entry.session.messages);
+  const normalizedStatus = normalizeStatus(entry.session.status, "running");
   return {
     title: localize(
       "task-dashboard-run-dialog-title",
@@ -240,30 +766,59 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
       args: { id: entry.backend.id },
     }),
     requestId: entry.requestId,
-    status: entry.session.status,
+    status: normalizedStatus,
+    statusSemantics: {
+      normalized: normalizedStatus,
+      terminal: isTerminal(normalizedStatus),
+      waiting: isWaiting(normalizedStatus),
+    },
     updatedAt: entry.session.updatedAt,
-    pendingOwner: entry.session.pending?.pending_owner,
-    pendingInteractionId:
-      typeof pending?.interaction_id === "number"
-        ? pending.interaction_id
-        : undefined,
-    pendingPrompt: String(pending?.prompt || "").trim() || undefined,
+    engine: entry.session.engine,
+    model: entry.session.model,
+    pendingOwner: entry.session.pendingOwner,
+    pendingInteractionId: pending?.interactionId,
+    pendingKind: pending?.kind,
+    pendingPrompt: pending?.prompt,
+    pendingOptions: pending?.options || [],
+    pendingRequiredFields: pending?.requiredFields || [],
+    pendingUiHints: pending?.uiHints,
+    pendingAskUser: pending?.askUser,
+    authPhase: pendingAuth?.phase,
+    authSessionId: pendingAuth?.authSessionId,
+    authProviderId: pendingAuth?.providerId,
+    authEngine: pendingAuth?.engine,
+    authPrompt: pendingAuth?.prompt,
+    authChallengeKind: pendingAuth?.challengeKind,
+    authAvailableMethods: pendingAuth?.availableMethods || [],
+    authAskUser: pendingAuth?.askUser,
+    authAcceptsChatInput: pendingAuth?.acceptsChatInput,
+    authInputKind: pendingAuth?.inputKind,
+    authUrl: pendingAuth?.authUrl,
+    authUserCode: pendingAuth?.userCode,
+    authLastError: pendingAuth?.lastError,
+    authUiHints: pendingAuth?.uiHints,
     loading: entry.session.loading,
     error: entry.session.error,
-    messages: entry.session.messages.map((entryItem) => ({
+    messages: displayMessages.map((entryItem) => ({
       seq: entryItem.seq,
       ts: entryItem.ts,
+      role: entryItem.role,
+      kind: entryItem.kind,
       text: entryItem.text,
     })),
     labels: {
       requestId: localize("task-dashboard-run-request-id", "Request ID"),
       status: localize("task-manager-column-status", "Status"),
+      engine: localize("task-dashboard-run-engine", "Engine"),
+      model: localize("task-dashboard-run-model", "Model"),
       updatedAt: localize("task-dashboard-run-updated-at", "Updated At"),
       pendingOwner: localize("task-dashboard-run-pending-owner", "Pending Owner"),
       pendingInteractionId: localize(
         "task-dashboard-run-pending-interaction-id",
         "Pending Interaction ID",
       ),
+      pendingKind: localize("task-dashboard-run-pending-kind", "Pending Kind"),
+      pendingPrompt: localize("task-dashboard-run-pending-prompt", "Prompt"),
       loading: localize("task-dashboard-run-loading", "Loading"),
       error: localize("task-dashboard-run-error", "Error"),
       replyPlaceholder: localize(
@@ -276,6 +831,166 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
       chatEmpty: localize(
         "task-dashboard-skillrunner-chat-empty",
         "No chat events yet.",
+      ),
+      roleAgent: localize("task-dashboard-run-role-agent", "Agent"),
+      roleUser: localize("task-dashboard-run-role-user", "User"),
+      roleSystem: localize("task-dashboard-run-role-system", "System"),
+      runningHintTitle: localize(
+        "task-dashboard-run-running-hint-title",
+        "Agent is running",
+      ),
+      runningHintDesc: localize(
+        "task-dashboard-run-running-hint-desc",
+        "The backend is generating events and preparing the next response.",
+      ),
+      waitingUserTitle: localize(
+        "task-dashboard-run-waiting-user-title",
+        "User Input Required",
+      ),
+      waitingAuthTitle: localize(
+        "task-dashboard-run-waiting-auth-title",
+        "Authentication Required",
+      ),
+      pendingInputTitle: localize(
+        "task-dashboard-run-pending-input-title",
+        "Pending Input Request",
+      ),
+      interactionIdLabel: localize(
+        "task-dashboard-run-interaction-id-label",
+        "interaction_id:",
+      ),
+      kindLabel: localize("task-dashboard-run-kind-label", "kind:"),
+      requiredFieldsPrefix: localize(
+        "task-dashboard-run-required-fields-prefix",
+        "Required:",
+      ),
+      authRequiredPrompt: localize(
+        "task-dashboard-run-auth-required-prompt",
+        "Authentication required.",
+      ),
+      authSessionIdLabel: localize(
+        "task-dashboard-run-auth-session-id-label",
+        "auth_session_id:",
+      ),
+      authEngineLabel: localize(
+        "task-dashboard-run-auth-engine-label",
+        "engine:",
+      ),
+      authProviderLabel: localize(
+        "task-dashboard-run-auth-provider-label",
+        "provider:",
+      ),
+      authUrlPrefix: localize(
+        "task-dashboard-run-auth-url-prefix",
+        "auth_url:",
+      ),
+      userCodePrefix: localize(
+        "task-dashboard-run-user-code-prefix",
+        "user_code:",
+      ),
+      lastErrorPrefix: localize(
+        "task-dashboard-run-last-error-prefix",
+        "last_error:",
+      ),
+      pendingMethodSelection: localize(
+        "task-dashboard-run-pending-method-selection",
+        "method-selection",
+      ),
+      replySend: localize(
+        "task-dashboard-run-reply-send",
+        "Send Reply",
+      ),
+      replyShortcut: localize(
+        "task-dashboard-run-reply-shortcut",
+        "Ctrl+Enter / Cmd+Enter to send",
+      ),
+      confirmYes: localize(
+        "task-dashboard-run-confirm-yes",
+        "Yes",
+      ),
+      confirmNo: localize(
+        "task-dashboard-run-confirm-no",
+        "No",
+      ),
+      authPasteApiKey: localize(
+        "task-dashboard-run-auth-paste-api-key",
+        "Paste API key",
+      ),
+      authPasteCode: localize(
+        "task-dashboard-run-auth-paste-code",
+        "Paste authorization code",
+      ),
+      authSubmitApiKey: localize(
+        "task-dashboard-run-auth-submit-api-key",
+        "Submit API Key",
+      ),
+      authSubmitCode: localize(
+        "task-dashboard-run-auth-submit-code",
+        "Submit Code",
+      ),
+      authAwaiting: localize(
+        "task-dashboard-run-auth-awaiting",
+        "Awaiting",
+      ),
+      authInProgress: localize(
+        "task-dashboard-run-auth-in-progress",
+        "Awaiting auth state update...",
+      ),
+      authImportSubmit: localize(
+        "task-dashboard-run-auth-import-submit",
+        "Import and Continue",
+      ),
+      authImportHintDefault: localize(
+        "task-dashboard-run-auth-import-hint-default",
+        "Upload required auth files and continue.",
+      ),
+      authImportRiskNotice: localize(
+        "task-dashboard-run-auth-import-risk-notice",
+        "Review files before importing.",
+      ),
+      authImportRequired: localize(
+        "task-dashboard-run-auth-import-required",
+        "Required",
+      ),
+      authImportOptional: localize(
+        "task-dashboard-run-auth-import-optional",
+        "Optional",
+      ),
+      authImportUnsupported: localize(
+        "task-dashboard-run-auth-import-unsupported",
+        "unsupported import target",
+      ),
+      thinkingTitle: localize(
+        "task-dashboard-run-thinking-title",
+        "Agent is thinking",
+      ),
+      thinkingDesc: localize(
+        "task-dashboard-run-thinking-desc",
+        "Running inference and preparing the next response...",
+      ),
+      roleThinking: localize(
+        "task-dashboard-run-role-thinking",
+        "Thinking",
+      ),
+      processReasoning: localize(
+        "task-dashboard-run-process-reasoning",
+        "Reasoning",
+      ),
+      processToolCall: localize(
+        "task-dashboard-run-process-tool-call",
+        "Tool Call",
+      ),
+      processCommandExecution: localize(
+        "task-dashboard-run-process-command-execution",
+        "Command Execution",
+      ),
+      finalSummaryTitle: localize(
+        "task-dashboard-run-final-summary-title",
+        "Final Summary",
+      ),
+      authImportFailed: localize(
+        "task-dashboard-run-auth-import-failed",
+        "Failed to import auth files: {error}",
       ),
     },
   };
@@ -299,6 +1014,8 @@ function pushSnapshot(
 
 async function startRunObserver(entry: RunDialogEntry) {
   let stopped = false;
+  let scheduledRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let refreshChain: Promise<void> = Promise.resolve();
   const client = buildSkillRunnerManagementClient({
     backend: entry.backend,
     alertWindow: entry.dialog.window,
@@ -319,19 +1036,79 @@ async function startRunObserver(entry: RunDialogEntry) {
     });
   };
 
+  const clearPendingState = () => {
+    entry.session.pendingOwner = undefined;
+    entry.session.pendingInteraction = undefined;
+    entry.session.pendingAuth = undefined;
+  };
+
   const syncStatus = async () => {
     const run = (await client.getRun({
       requestId: entry.requestId,
     })) as SkillRunnerManagementRunState;
-    entry.session.status = String(run.status || entry.session.status || "unknown");
+    applyRunDialogSessionStatus({
+      entry,
+      rawStatus: run.status,
+    });
     entry.session.updatedAt =
       String(run.updated_at || "").trim() || entry.session.updatedAt;
+    entry.session.engine = String(run.engine || "").trim() || entry.session.engine;
+    entry.session.model = String(run.model || "").trim() || entry.session.model;
+    if (shouldClearRunDialogPendingForStatus(entry.session.status)) {
+      clearPendingState();
+      return;
+    }
     try {
-      entry.session.pending = (await client.getPending({
+      const pending = (await client.getPending({
         requestId: entry.requestId,
       })) as SkillRunnerManagementPending;
+      const normalizedPending = normalizeRunDialogPendingState(pending);
+      entry.session.pendingOwner = normalizedPending.pendingOwner;
+      entry.session.pendingInteraction = normalizedPending.pendingInteraction;
+      entry.session.pendingAuth = normalizedPending.pendingAuth;
     } catch {
-      entry.session.pending = undefined;
+      clearPendingState();
+    }
+  };
+
+  const refreshRunState = async () => {
+    if (stopped) {
+      return;
+    }
+    try {
+      await syncStatus();
+      await syncHistory();
+      entry.session.error = undefined;
+    } catch (error) {
+      entry.session.error = compactError(error);
+    } finally {
+      if (!stopped) {
+        pushSnapshot(entry, "run-dialog:snapshot");
+      }
+    }
+  };
+
+  entry.refreshState = () => {
+    refreshChain = refreshChain.then(async () => {
+      await refreshRunState();
+    });
+    return refreshChain;
+  };
+
+  const scheduleRefreshRunState = (delayMs = 200) => {
+    if (stopped) {
+      return;
+    }
+    if (scheduledRefreshTimer) {
+      clearTimeout(scheduledRefreshTimer);
+    }
+    scheduledRefreshTimer = setTimeout(() => {
+      scheduledRefreshTimer = undefined;
+      void entry.refreshState?.();
+    }, Math.max(0, Math.floor(delayMs)));
+    const timerLike = scheduledRefreshTimer as unknown as { unref?: () => void };
+    if (typeof timerLike.unref === "function") {
+      timerLike.unref();
     }
   };
 
@@ -340,10 +1117,20 @@ async function startRunObserver(entry: RunDialogEntry) {
       return;
     }
     if (frame.event === "snapshot") {
-      const payload = frame.data as { status?: unknown };
-      entry.session.status = String(
-        payload?.status || entry.session.status || "unknown",
-      );
+      const payload = isObject(frame.data)
+        ? frame.data
+        : ({ status: undefined } as Record<string, unknown>);
+      applyRunDialogSessionStatus({
+        entry,
+        rawStatus: payload.status,
+      });
+      entry.session.engine =
+        String(payload.engine || "").trim() || entry.session.engine;
+      entry.session.model =
+        String(payload.model || "").trim() || entry.session.model;
+      if (shouldClearRunDialogPendingForStatus(entry.session.status)) {
+        clearPendingState();
+      }
       pushSnapshot(entry, "run-dialog:snapshot");
       return;
     }
@@ -355,28 +1142,38 @@ async function startRunObserver(entry: RunDialogEntry) {
       return;
     }
     const event = frame.data as Record<string, unknown>;
-    const seq = Number(event.seq || 0);
-    if (!Number.isFinite(seq) || seq <= entry.session.lastSeq) {
+    const shouldRefresh = shouldRefreshRunDialogStateFromChatEvent(event);
+    const conversationEntry = toRunDialogConversationEntry({
+      event,
+      lastSeq: entry.session.lastSeq,
+      seenKeys: entry.session.seenMessageKeys,
+    });
+    if (!conversationEntry) {
+      if (shouldRefresh) {
+        scheduleRefreshRunState();
+      }
       return;
     }
-    entry.session.messages.push({
-      seq,
-      ts: String(event.ts || "").trim() || undefined,
-      text: formatSkillRunnerEventText(event),
-      raw: event,
-    });
-    entry.session.lastSeq = seq;
+    entry.session.messages.push(conversationEntry);
+    if (conversationEntry.seq > entry.session.lastSeq) {
+      entry.session.lastSeq = conversationEntry.seq;
+    }
     if (entry.session.messages.length > 500) {
       entry.session.messages = entry.session.messages.slice(-500);
     }
     pushSnapshot(entry, "run-dialog:snapshot");
+    if (shouldRefresh) {
+      scheduleRefreshRunState();
+    }
   };
 
   const runLoop = async () => {
     try {
-      await syncStatus();
-      await syncHistory();
-      pushSnapshot(entry, "run-dialog:snapshot");
+      if (entry.refreshState) {
+        await entry.refreshState();
+      } else {
+        await refreshRunState();
+      }
       while (!stopped) {
         await client.streamRunChat({
           requestId: entry.requestId,
@@ -386,9 +1183,11 @@ async function startRunObserver(entry: RunDialogEntry) {
         if (stopped) {
           break;
         }
-        await syncHistory();
-        await syncStatus();
-        pushSnapshot(entry, "run-dialog:snapshot");
+        if (entry.refreshState) {
+          await entry.refreshState();
+        } else {
+          await refreshRunState();
+        }
         if (isTerminalStatus(entry.session.status)) {
           break;
         }
@@ -405,6 +1204,11 @@ async function startRunObserver(entry: RunDialogEntry) {
   void runLoop();
   return () => {
     stopped = true;
+    if (scheduledRefreshTimer) {
+      clearTimeout(scheduledRefreshTimer);
+      scheduledRefreshTimer = undefined;
+    }
+    entry.refreshState = undefined;
   };
 }
 
@@ -456,9 +1260,93 @@ async function handleRunDialogAction(
     return;
   }
   if (action === "reply-run") {
-    const replyText = String(payload.replyText || "").trim();
-    const interactionId = Number(payload.interactionId || 0);
-    if (!replyText) {
+    const mode = String(payload.mode || "interaction").trim().toLowerCase();
+    if (mode === "auth") {
+      const authSessionId = String(
+        payload.authSessionId || entry.session.pendingAuth?.authSessionId || "",
+      ).trim();
+      if (!authSessionId) {
+        return;
+      }
+      const replyKind = String(payload.replyKind || "").trim() || "text";
+      const replyText = String(payload.replyText || "").trim();
+      const selection = isObject(payload.selection)
+        ? payload.selection
+        : undefined;
+      const submission = isObject(payload.submission)
+        ? payload.submission
+        : undefined;
+      let submitted = false;
+      try {
+        const client = buildSkillRunnerManagementClient({
+          backend: entry.backend,
+          alertWindow: entry.dialog.window,
+          localize,
+        });
+        await client.submitReply({
+          requestId: entry.requestId,
+          payload: {
+            mode: "auth",
+            auth_session_id: authSessionId,
+            ...(selection ? { selection } : {}),
+            ...(submission
+              ? { submission }
+              : replyText
+                ? {
+                    submission: {
+                      kind: replyKind,
+                      value: replyText,
+                    },
+                  }
+                : {}),
+          },
+        });
+        submitted = true;
+      } catch (error) {
+        entry.dialog.window?.alert?.(
+          localize(
+            "task-dashboard-skillrunner-reply-failed",
+            "Failed to submit reply: {error}",
+            {
+              args: {
+                error: compactError(error),
+              },
+            },
+          ),
+        );
+      }
+      if (submitted && entry.refreshState) {
+        await entry.refreshState();
+      } else {
+        pushSnapshot(entry, "run-dialog:snapshot");
+      }
+      return;
+    }
+    const interactionId = Number(
+      payload.interactionId || entry.session.pendingInteraction?.interactionId || 0,
+    );
+    if (!Number.isFinite(interactionId) || interactionId <= 0) {
+      return;
+    }
+    const resolvedResponse = resolveRunDialogInteractionResponse({
+      replyText: payload.replyText,
+      ...(Object.prototype.hasOwnProperty.call(payload, "responseValue")
+        ? {
+            responseValue: payload.responseValue,
+          }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(payload, "option")
+        ? {
+            option: payload.option,
+          }
+        : {}),
+      responseObject: payload.responseObject,
+    });
+    const responseText =
+      !resolvedResponse.hasResponse && isObject(resolvedResponse.response)
+        ? String(resolvedResponse.response.text || "").trim()
+        : "";
+    if (!resolvedResponse.hasResponse && !responseText) {
       entry.dialog.window?.alert?.(
         localize(
           "task-dashboard-skillrunner-reply-required",
@@ -467,9 +1355,7 @@ async function handleRunDialogAction(
       );
       return;
     }
-    if (!Number.isFinite(interactionId) || interactionId <= 0) {
-      return;
-    }
+    let submitted = false;
     try {
       const client = buildSkillRunnerManagementClient({
         backend: entry.backend,
@@ -481,9 +1367,10 @@ async function handleRunDialogAction(
         payload: {
           mode: "interaction",
           interaction_id: interactionId,
-          response: replyText,
+          response: resolvedResponse.response,
         },
       });
+      submitted = true;
     } catch (error) {
       entry.dialog.window?.alert?.(
         localize(
@@ -497,7 +1384,66 @@ async function handleRunDialogAction(
         ),
       );
     }
-    pushSnapshot(entry, "run-dialog:snapshot");
+    if (submitted && entry.refreshState) {
+      await entry.refreshState();
+    } else {
+      pushSnapshot(entry, "run-dialog:snapshot");
+    }
+    return;
+  }
+  if (action === "auth-import-run") {
+    const filesRaw = Array.isArray(payload.files) ? payload.files : [];
+    const files = filesRaw
+      .map((entryItem) =>
+        isObject(entryItem)
+          ? {
+              name: String(entryItem.name || "").trim(),
+              content_base64: String(entryItem.contentBase64 || "").trim(),
+            }
+          : null,
+      )
+      .filter(
+        (
+          entryItem,
+        ): entryItem is { name: string; content_base64: string } =>
+          !!entryItem && !!entryItem.name && !!entryItem.content_base64,
+      );
+    if (files.length === 0) {
+      return;
+    }
+    let imported = false;
+    try {
+      const client = buildSkillRunnerManagementClient({
+        backend: entry.backend,
+        alertWindow: entry.dialog.window,
+        localize,
+      });
+      await client.submitAuthImport({
+        requestId: entry.requestId,
+        providerId:
+          String(payload.providerId || "").trim() ||
+          entry.session.pendingAuth?.providerId,
+        files,
+      });
+      imported = true;
+    } catch (error) {
+      entry.dialog.window?.alert?.(
+        localize(
+          "task-dashboard-run-auth-import-failed",
+          "Failed to import auth files: {error}",
+          {
+            args: {
+              error: compactError(error),
+            },
+          },
+        ),
+      );
+    }
+    if (imported && entry.refreshState) {
+      await entry.refreshState();
+    } else {
+      pushSnapshot(entry, "run-dialog:snapshot");
+    }
   }
 }
 
@@ -535,8 +1481,9 @@ export async function openSkillRunnerRunDialog(args: {
     frameWindow: null,
     session: {
       requestId,
-      status: "unknown",
+      status: "running",
       messages: [],
+      seenMessageKeys: new Set<string>(),
       lastSeq: 0,
       loading: true,
     },
@@ -598,6 +1545,7 @@ export async function openSkillRunnerRunDialog(args: {
         entry.stopObserver();
         entry.stopObserver = undefined;
       }
+      entry.refreshState = undefined;
       if (entry.removeMessageListener) {
         entry.removeMessageListener();
         entry.removeMessageListener = undefined;

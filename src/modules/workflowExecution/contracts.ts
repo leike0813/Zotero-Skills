@@ -45,6 +45,7 @@ export type WorkflowJobOutcome = {
 export type WorkflowApplySummary = {
   succeeded: number;
   failed: number;
+  pending: number;
   failureReasons: string[];
   jobOutcomes: WorkflowJobOutcome[];
 };

@@ -26,6 +26,11 @@ import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
+import {
+  isTerminal,
+  isWaiting,
+  normalizeStatus,
+} from "./skillRunnerProviderStateMachine";
 
 type DashboardState = {
   backends: BackendInstance[];
@@ -41,8 +46,14 @@ type DashboardRow = {
   workflowLabel: string;
   taskName: string;
   state: string;
+  stateSemantics: {
+    normalized: string;
+    terminal: boolean;
+    waiting: boolean;
+  };
   stateLabel: string;
   requestId?: string;
+  engine?: string;
   jobId: string;
   runId: string;
   createdAt: string;
@@ -153,37 +164,51 @@ function isSkillRunnerBackend(backend: BackendInstance) {
 }
 
 function resolveStatusLabel(state: string) {
-  if (state === "queued") {
+  const normalized = normalizeStatus(state, "running");
+  if (normalized === "queued") {
     return localize("task-manager-status-queued", "Queued");
   }
-  if (state === "running") {
+  if (normalized === "running") {
     return localize("task-manager-status-running", "Running");
   }
-  if (state === "succeeded") {
+  if (normalized === "waiting_user") {
+    return localize("task-dashboard-status-waiting-user", "Waiting User");
+  }
+  if (normalized === "waiting_auth") {
+    return localize("task-dashboard-status-waiting-auth", "Waiting Auth");
+  }
+  if (normalized === "succeeded") {
     return localize("task-dashboard-status-succeeded", "Succeeded");
   }
-  if (state === "failed") {
+  if (normalized === "failed") {
     return localize("task-dashboard-status-failed", "Failed");
   }
-  if (state === "canceled") {
+  if (normalized === "canceled") {
     return localize("task-dashboard-status-canceled", "Canceled");
   }
-  return state || localize("task-dashboard-status-unknown", "Unknown");
+  return normalized || localize("task-dashboard-status-unknown", "Unknown");
 }
 
 function isTerminalWorkflowTaskState(state: string) {
-  return state === "succeeded" || state === "failed" || state === "canceled";
+  return isTerminal(state);
 }
 
 function mapTaskRow(task: WorkflowTaskRecord): DashboardRow {
+  const normalizedState = normalizeStatus(task.state, "running");
   return {
     id: task.id,
     workflowId: task.workflowId,
     workflowLabel: task.workflowLabel,
     taskName: task.taskName,
-    state: task.state,
-    stateLabel: resolveStatusLabel(task.state),
+    state: normalizedState,
+    stateSemantics: {
+      normalized: normalizedState,
+      terminal: isTerminal(normalizedState),
+      waiting: isWaiting(normalizedState),
+    },
+    stateLabel: resolveStatusLabel(normalizedState),
     requestId: task.requestId,
+    engine: task.engine,
     jobId: task.jobId,
     runId: task.runId,
     createdAt: task.createdAt,
@@ -232,7 +257,8 @@ function createDashboardFrame(doc: Document, pageUrl: string) {
     frame.src = pageUrl;
     frame.style.width = "100%";
     frame.style.height = "100%";
-    frame.style.minHeight = "780px";
+    frame.style.minHeight = "0";
+    frame.style.flex = "1";
     frame.style.border = "none";
     return frame;
   }
@@ -255,7 +281,10 @@ function createDashboardFrame(doc: Document, pageUrl: string) {
     ).style?.setProperty("height", "100%");
     (
       browser as Element & { style?: CSSStyleDeclaration }
-    ).style?.setProperty("min-height", "780px");
+    ).style?.setProperty("min-height", "0");
+    (
+      browser as Element & { style?: CSSStyleDeclaration }
+    ).style?.setProperty("flex", "1");
     return browser;
   }
   const frame = doc.createElement("iframe");
@@ -263,7 +292,8 @@ function createDashboardFrame(doc: Document, pageUrl: string) {
   frame.src = pageUrl;
   frame.style.width = "100%";
   frame.style.height = "100%";
-  frame.style.minHeight = "780px";
+  frame.style.minHeight = "0";
+  frame.style.flex = "1";
   frame.style.border = "none";
   return frame;
 }
@@ -308,6 +338,7 @@ function buildDashboardSnapshot(args: {
     colStatus: localize("task-manager-column-status", "Status"),
     colRequestId: localize("task-dashboard-col-request-id", "Request ID"),
     colJobId: localize("task-dashboard-col-job-id", "Job ID"),
+    colEngine: localize("task-dashboard-col-engine", "Engine"),
     colTime: localize("task-dashboard-col-time", "Time"),
     colLevel: localize("task-dashboard-col-level", "Level"),
     colStage: localize("task-dashboard-col-stage", "Stage"),
@@ -622,6 +653,11 @@ export async function openTaskManagerDialog() {
       if (!doc || !dialogWindow) {
         return;
       }
+      try {
+        dialogWindow.resizeTo(1480, 920);
+      } catch {
+        // ignore
+      }
       const root = doc.getElementById("zs-task-manager-root") as
         | HTMLElement
         | null;
@@ -713,11 +749,15 @@ export async function openTaskManagerDialog() {
       namespace: "html",
       id: "zs-task-manager-root",
       styles: {
-        width: "1280px",
-        height: "820px",
+        width: "100%",
+        height: "100%",
+        minWidth: "1100px",
+        minHeight: "700px",
         padding: "0",
         margin: "0",
         display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
       },
     })
     .addButton(localize("task-manager-close", "Close"), "close")

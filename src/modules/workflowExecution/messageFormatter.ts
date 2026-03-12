@@ -61,6 +61,12 @@ export function createLocalizedMessageFormatter(): WorkflowMessageFormatter {
         `Workflow ${workflowLabel} started. jobs=${totalJobs}`,
         { workflowLabel, totalJobs },
       ),
+    waitingToast: ({ workflowLabel, pendingJobs }) =>
+      localizeWorkflowText(
+        "workflow-execute-toast-waiting",
+        `Workflow ${workflowLabel} is waiting for backend input. pending=${pendingJobs}`,
+        { workflowLabel, pendingJobs },
+      ),
     jobToastSuccess: ({ workflowLabel, taskLabel, index, total }) =>
       localizeWorkflowText(
         "workflow-execute-toast-job-success",

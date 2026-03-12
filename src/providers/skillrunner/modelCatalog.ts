@@ -1,3 +1,5 @@
+import { getSkillRunnerModelCacheEntry } from "./modelCache";
+
 type SkillRunnerManifestSnapshot = {
   version: string;
   file: string;
@@ -12,6 +14,8 @@ type SkillRunnerModelEntry = {
   id: string;
   display_name: string;
   deprecated?: boolean;
+  provider?: string;
+  model?: string;
 };
 
 type SkillRunnerModelsSnapshot = {
@@ -23,6 +27,17 @@ type SkillRunnerModelsSnapshot = {
 type SkillRunnerModelOption = {
   value: string;
   label: string;
+};
+
+type SkillRunnerModelCatalogScope = {
+  backendId?: string;
+  baseUrl?: string;
+};
+
+const ENGINE_DEFAULT_PROVIDER: Record<string, string> = {
+  codex: "openai",
+  gemini: "google",
+  iflow: "iflowcn",
 };
 
 const MODEL_MANIFESTS: SkillRunnerManifest[] = [
@@ -144,36 +159,211 @@ function getLatestSnapshot(engine: string) {
   );
 }
 
-export function listSkillRunnerEngines() {
+function listStaticSkillRunnerEngines() {
   return MODEL_MANIFESTS.map((entry) => entry.engine);
 }
 
-export function getDefaultSkillRunnerEngine() {
-  const engines = listSkillRunnerEngines();
+function resolveCachedCatalog(scope?: SkillRunnerModelCatalogScope) {
+  if (!scope) {
+    return null;
+  }
+  const backendId = String(scope.backendId || "").trim();
+  const baseUrl = String(scope.baseUrl || "").trim();
+  if (!backendId && !baseUrl) {
+    return null;
+  }
+  return getSkillRunnerModelCacheEntry({
+    backendId,
+    baseUrl,
+  });
+}
+
+function dedupeStrings(values: string[]) {
+  return Array.from(
+    new Set(
+      values
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function resolveEngineModels(
+  engine: string,
+  scope?: SkillRunnerModelCatalogScope,
+): SkillRunnerModelEntry[] {
+  const normalizedEngine = String(engine || "").trim();
+  if (!normalizedEngine) {
+    return [];
+  }
+  const cached = resolveCachedCatalog(scope);
+  if (cached) {
+    const cachedModels = Array.isArray(cached.modelsByEngine[normalizedEngine])
+      ? cached.modelsByEngine[normalizedEngine]
+      : [];
+    if (cachedModels.length > 0) {
+      return cachedModels
+        .map((entry) => ({
+          id: String(entry.id || "").trim(),
+          display_name: String(entry.display_name || "").trim(),
+          deprecated: entry.deprecated === true,
+          provider: String(entry.provider || "").trim() || undefined,
+          model: String(entry.model || "").trim() || undefined,
+        }))
+        .filter((entry) => !!entry.id);
+    }
+  }
+  const snapshot = getLatestSnapshot(normalizedEngine);
+  if (!snapshot) {
+    return [];
+  }
+  return snapshot.models
+    .map((entry) => ({
+      id: String(entry.id || "").trim(),
+      display_name: String(entry.display_name || "").trim(),
+      deprecated: entry.deprecated === true,
+      provider: String(entry.provider || "").trim() || undefined,
+      model: String(entry.model || "").trim() || undefined,
+    }))
+    .filter((entry) => !!entry.id);
+}
+
+export function splitSkillRunnerModelId(value: string): {
+  provider: string;
+  model: string;
+} | null {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  const index = normalized.indexOf("/");
+  if (index <= 0 || index >= normalized.length - 1) {
+    return null;
+  }
+  const provider = normalized.slice(0, index).trim();
+  const model = normalized.slice(index + 1).trim();
+  if (!provider || !model) {
+    return null;
+  }
+  return {
+    provider,
+    model,
+  };
+}
+
+function resolveModelProvider(entry: SkillRunnerModelEntry) {
+  const direct = String(entry.provider || "").trim();
+  if (direct) {
+    return direct;
+  }
+  return splitSkillRunnerModelId(entry.id)?.provider || "";
+}
+
+function resolveModelName(entry: SkillRunnerModelEntry) {
+  const direct = String(entry.model || "").trim();
+  if (direct) {
+    return direct;
+  }
+  return splitSkillRunnerModelId(entry.id)?.model || "";
+}
+
+export function listSkillRunnerEngines(scope?: SkillRunnerModelCatalogScope) {
+  const cached = resolveCachedCatalog(scope);
+  if (cached && cached.engines.length > 0) {
+    return [...cached.engines];
+  }
+  return listStaticSkillRunnerEngines();
+}
+
+export function getDefaultSkillRunnerEngine(scope?: SkillRunnerModelCatalogScope) {
+  const engines = listSkillRunnerEngines(scope);
   if (engines.includes("gemini")) {
     return "gemini";
   }
   return engines[0] || "";
 }
 
-export function listSkillRunnerModelOptions(engine: string): SkillRunnerModelOption[] {
+export function listSkillRunnerModelProviders(
+  engine: string,
+  scope?: SkillRunnerModelCatalogScope,
+) {
   const normalizedEngine = String(engine || "").trim();
   if (!normalizedEngine) {
     return [];
   }
-  const snapshot = getLatestSnapshot(normalizedEngine);
-  if (!snapshot) {
-    return [];
+  if (normalizedEngine !== "opencode") {
+    const fixedProvider = ENGINE_DEFAULT_PROVIDER[normalizedEngine];
+    return fixedProvider ? [fixedProvider] : [];
   }
-  return toModelOptions(snapshot.models).filter((entry) => String(entry.value || "").trim());
+  const models = resolveEngineModels(normalizedEngine, scope);
+  return dedupeStrings(
+    models.map((entry) => resolveModelProvider(entry)).filter(Boolean),
+  ).sort((left, right) => left.localeCompare(right));
 }
 
-export function normalizeSkillRunnerModel(engine: string, model: unknown) {
+export function getDefaultSkillRunnerModelProvider(
+  engine: string,
+  scope?: SkillRunnerModelCatalogScope,
+) {
+  const providers = listSkillRunnerModelProviders(engine, scope);
+  return providers[0] || "";
+}
+
+export function listSkillRunnerModelOptions(
+  engine: string,
+  scope?: SkillRunnerModelCatalogScope,
+): SkillRunnerModelOption[] {
+  const models = resolveEngineModels(engine, scope);
+  return toModelOptions(models).filter((entry) => String(entry.value || "").trim());
+}
+
+export function listSkillRunnerModelOptionsForProvider(
+  engine: string,
+  provider: string,
+  scope?: SkillRunnerModelCatalogScope,
+): SkillRunnerModelOption[] {
+  const normalizedEngine = String(engine || "").trim();
+  if (!normalizedEngine) {
+    return [];
+  }
+  if (normalizedEngine !== "opencode") {
+    return listSkillRunnerModelOptions(normalizedEngine, scope);
+  }
+  const normalizedProvider = String(provider || "").trim();
+  if (!normalizedProvider) {
+    return [];
+  }
+  const models = resolveEngineModels(normalizedEngine, scope);
+  const seen = new Set<string>();
+  const options: SkillRunnerModelOption[] = [];
+  for (const entry of models) {
+    const modelProvider = resolveModelProvider(entry);
+    if (modelProvider !== normalizedProvider) {
+      continue;
+    }
+    const modelName = resolveModelName(entry);
+    if (!modelName || seen.has(modelName)) {
+      continue;
+    }
+    seen.add(modelName);
+    options.push({
+      value: modelName,
+      label: entry.display_name || modelName,
+    });
+  }
+  return options;
+}
+
+export function normalizeSkillRunnerModel(
+  engine: string,
+  model: unknown,
+  scope?: SkillRunnerModelCatalogScope,
+) {
   const value = typeof model === "string" ? model.trim() : "";
   if (!value) {
     return "";
   }
-  const options = listSkillRunnerModelOptions(engine);
+  const options = listSkillRunnerModelOptions(engine, scope);
   if (!options.some((entry) => entry.value === value)) {
     return "";
   }

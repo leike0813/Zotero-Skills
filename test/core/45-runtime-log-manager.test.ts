@@ -133,13 +133,17 @@ describe("runtime log manager", function () {
       message: "persist message",
     });
     const prefKey = `${config.prefsPrefix}.runtimeLogsJson`;
-    const rawPersisted = String((globalThis as any).Zotero.Prefs.get(prefKey) || "");
+    const rawPersisted = String(
+      (globalThis as any).Zotero.Prefs.get(prefKey, true) || "",
+    );
     assert.isTrue(rawPersisted.length > 0);
     const parsedPersisted = JSON.parse(rawPersisted) as { entries?: unknown[] };
     assert.equal(parsedPersisted.entries?.length || 0, 1);
 
     clearRuntimeLogs();
-    const rawCleared = String((globalThis as any).Zotero.Prefs.get(prefKey) || "");
+    const rawCleared = String(
+      (globalThis as any).Zotero.Prefs.get(prefKey, true) || "",
+    );
     assert.isTrue(rawCleared.length > 0);
     const parsedCleared = JSON.parse(rawCleared) as { entries?: unknown[] };
     assert.equal(parsedCleared.entries?.length || 0, 0);

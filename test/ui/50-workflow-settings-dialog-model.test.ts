@@ -231,4 +231,43 @@ describe("workflow settings dialog model", function () {
       language: "fr-FR",
     });
   });
+
+  it("collects opencode model provider and model from choice controls", function () {
+    const controls: FakeControl[] = [
+      makeControl(
+        {
+          "data-zs-option-key": "engine",
+          "data-zs-option-type": "string",
+          "data-zs-choice-control": "1",
+          "data-zs-choice-value": "opencode",
+        },
+        {},
+      ),
+      makeControl(
+        {
+          "data-zs-option-key": "model_provider",
+          "data-zs-option-type": "string",
+          "data-zs-choice-control": "1",
+          "data-zs-choice-value": "openai",
+        },
+        {},
+      ),
+      makeControl(
+        {
+          "data-zs-option-key": "model",
+          "data-zs-option-type": "string",
+          "data-zs-choice-control": "1",
+          "data-zs-choice-value": "gpt-5",
+        },
+        {},
+      ),
+    ];
+
+    const result = collectSchemaValues(makeContainer(controls));
+    assert.deepEqual(result, {
+      engine: "opencode",
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+  });
 });

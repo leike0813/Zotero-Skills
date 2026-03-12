@@ -5,6 +5,7 @@ export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
 export type RuntimeLogScope =
   | "workflow-trigger"
   | "job"
+  | "state-machine"
   | "provider"
   | "hook"
   | "system";
@@ -182,6 +183,7 @@ function normalizeScope(input: unknown): RuntimeLogScope {
   if (
     value === "workflow-trigger" ||
     value === "job" ||
+    value === "state-machine" ||
     value === "provider" ||
     value === "hook" ||
     value === "system"

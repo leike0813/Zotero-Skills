@@ -292,6 +292,7 @@ describe("provider/backend registry", function () {
           input: {
             metadata: { itemKey: "AAA111" },
             tags: ["A", "B"],
+            md_path: "inputs/md_path/example.md",
           },
         },
       });
@@ -306,6 +307,7 @@ describe("provider/backend registry", function () {
       {
         metadata: { itemKey: "AAA111" },
         tags: ["A", "B"],
+        md_path: "inputs/md_path/example.md",
       },
       `capturedRequest=${JSON.stringify(capturedRequest)}`,
     );
@@ -343,7 +345,6 @@ describe("provider/backend registry", function () {
       const baseRequest = {
         kind: "skillrunner.job.v1" as const,
         skill_id: "tag-regulator",
-        upload_files: [{ key: "md_path", path: "D:/fixtures/example.md" }],
       };
       const stringResult = await executeWithProvider({
         requestKind: "skillrunner.job.v1",
@@ -369,6 +370,37 @@ describe("provider/backend registry", function () {
 
     assert.equal(executeCalled, 2, "provider.execute should be called twice");
     assert.deepEqual(capturedInputs, ["inline-text", ["A", "B"]]);
+  });
+
+  it("rejects skillrunner.job.v1 payload when upload file key has no input path mapping", async function () {
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: "skillrunner.job.v1",
+        backend: {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          input: {
+            metadata: { itemKey: "AAA111" },
+          },
+          upload_files: [{ key: "valid_tags", path: "D:/fixtures/valid_tags.yaml" }],
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.match(String(typed.detail || ""), /input\.valid_tags/i);
   });
 
   it("validates single-request payload contract for generic-http.request.v1", async function () {

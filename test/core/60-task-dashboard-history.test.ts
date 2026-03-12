@@ -14,6 +14,7 @@ function makeJob(args: {
   state: JobRecord["state"];
   backendType?: string;
   backendId?: string;
+  engine?: string;
   requestId?: string;
   updatedAt: string;
 }) {
@@ -29,6 +30,7 @@ function makeJob(args: {
       backendId: args.backendId || "skillrunner-local",
       backendType: args.backendType || "skillrunner",
       backendBaseUrl: "http://127.0.0.1:8030",
+      engine: args.engine || "",
     },
     state: args.state,
     createdAt: "2026-03-08T00:00:00.000Z",
@@ -60,6 +62,7 @@ describe("task dashboard history", function () {
       makeJob({
         id: "job-1",
         state: "queued",
+        engine: "gemini",
         updatedAt: "2026-03-08T00:00:00.000Z",
       }),
     );
@@ -67,6 +70,7 @@ describe("task dashboard history", function () {
       makeJob({
         id: "job-1",
         state: "succeeded",
+        engine: "gemini",
         requestId: "req-1",
         updatedAt: "2026-03-08T00:00:02.000Z",
       }),
@@ -78,6 +82,24 @@ describe("task dashboard history", function () {
     assert.equal(history[0].state, "succeeded");
     assert.equal(history[0].requestId, "req-1");
     assert.equal(history[0].backendId, "skillrunner-local");
+    assert.equal(history[0].engine, "gemini");
+  });
+
+  it("accepts waiting_user state in persisted history records", function () {
+    recordTaskDashboardHistoryFromJob(
+      makeJob({
+        id: "job-waiting",
+        state: "waiting_user",
+        engine: "gemini",
+        requestId: "req-waiting",
+        updatedAt: "2026-03-08T00:00:05.000Z",
+      }),
+    );
+
+    const history = listTaskDashboardHistory();
+    assert.lengthOf(history, 1);
+    assert.equal(history[0].state, "waiting_user");
+    assert.equal(history[0].requestId, "req-waiting");
   });
 
   it("skips pass-through provider records", function () {

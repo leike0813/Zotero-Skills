@@ -138,6 +138,7 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
         targetParentID: number;
         skill_id?: string;
         parameter?: { language?: string };
+        input?: { source_path?: string };
         upload_files?: Array<{ key: string; path: string }>;
         sourceAttachmentPaths?: string[];
       }>;
@@ -148,6 +149,7 @@ describeLiteratureDigestE2ESuite("integration: literature-digest with mock skill
       assert.equal(requests[0].parameter?.language, "zh-CN");
       assert.equal(requests[0].upload_files?.[0].key, "source_path");
       assert.equal(requests[0].upload_files?.[0].path, attachmentAbsPath);
+      assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
 
       const provider = new SkillRunnerProvider({
         baseUrl: MOCK_SKILLRUNNER_BASE_URL,

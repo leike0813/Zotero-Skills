@@ -1,0 +1,493 @@
+import { assert } from "chai";
+import {
+  buildRunDialogDisplayMessages,
+  normalizeRunDialogPendingState,
+  normalizeRunDialogMessageKind,
+  normalizeRunDialogMessageRole,
+  normalizeRunDialogChoiceOptions,
+  resolveRunDialogInteractionResponse,
+  shouldClearRunDialogPendingForStatus,
+  shouldRefreshRunDialogStateFromChatEvent,
+  type SkillRunnerConversationEntry,
+  toRunDialogConversationEntry,
+} from "../../src/modules/skillRunnerRunDialog";
+
+describe("skillrunner run dialog bubble message model", function () {
+  it("normalizes unknown or empty role to system", function () {
+    assert.equal(normalizeRunDialogMessageRole("assistant"), "assistant");
+    assert.equal(normalizeRunDialogMessageRole("user"), "user");
+    assert.equal(normalizeRunDialogMessageRole("system"), "system");
+    assert.equal(normalizeRunDialogMessageRole("Agent"), "system");
+    assert.equal(normalizeRunDialogMessageRole(""), "system");
+    assert.equal(normalizeRunDialogMessageRole(undefined), "system");
+  });
+
+  it("builds structured conversation entry with role and text", function () {
+    const entry = toRunDialogConversationEntry({
+      event: {
+        seq: 9,
+        ts: "2026-03-10T10:20:00Z",
+        role: "assistant",
+        text: "final answer",
+      },
+      lastSeq: 0,
+    });
+    assert.isOk(entry);
+    assert.equal(entry?.seq, 9);
+    assert.equal(entry?.role, "assistant");
+    assert.equal(entry?.kind, "unknown");
+    assert.equal(entry?.text, "final answer");
+    assert.equal(entry?.ts, "2026-03-10T10:20:00Z");
+  });
+
+  it("drops duplicated seq and falls back unknown role to system", function () {
+    const seen = new Set<string>();
+    const duplicated = toRunDialogConversationEntry({
+      event: {
+        seq: 3,
+        role: "user",
+        text: "duplicate",
+      },
+      lastSeq: 3,
+      seenKeys: seen,
+    });
+    assert.isOk(duplicated);
+    const duplicatedAgain = toRunDialogConversationEntry({
+      event: {
+        seq: 3,
+        role: "user",
+        text: "duplicate",
+      },
+      lastSeq: 3,
+      seenKeys: seen,
+    });
+    assert.isNull(duplicatedAgain);
+
+    const normalized = toRunDialogConversationEntry({
+      event: {
+        seq: 4,
+        role: "agent",
+        summary: "hello",
+      },
+      lastSeq: 3,
+      seenKeys: seen,
+    });
+    assert.isOk(normalized);
+    assert.equal(normalized?.role, "system");
+    assert.equal(normalized?.text, "hello");
+  });
+
+  it("normalizes known message kind and defaults unknown to unknown", function () {
+    assert.equal(normalizeRunDialogMessageKind("assistant_process"), "assistant_process");
+    assert.equal(normalizeRunDialogMessageKind("assistant_final"), "assistant_final");
+    assert.equal(normalizeRunDialogMessageKind("weird_kind"), "unknown");
+  });
+
+  it("normalizes choice options from object and string forms", function () {
+    const options = normalizeRunDialogChoiceOptions([
+      { label: "Continue Q&A", value: "qa_analysis" },
+      { label: "Generate note", value: "generate_note" },
+      "End task",
+      { label: "", value: "invalid" },
+      12,
+      null,
+    ]);
+    assert.deepEqual(options, [
+      { label: "Continue Q&A", value: "qa_analysis" },
+      { label: "Generate note", value: "generate_note" },
+      { label: "End task", value: "End task" },
+    ]);
+  });
+
+  it("accepts same seq when text differs, then deduplicates exact same payload", function () {
+    const seen = new Set<string>();
+    const first = toRunDialogConversationEntry({
+      event: {
+        seq: 7,
+        role: "assistant",
+        text: "draft",
+      },
+      lastSeq: 7,
+      seenKeys: seen,
+    });
+    const second = toRunDialogConversationEntry({
+      event: {
+        seq: 7,
+        role: "assistant",
+        text: "final",
+      },
+      lastSeq: 7,
+      seenKeys: seen,
+    });
+    const secondDuplicate = toRunDialogConversationEntry({
+      event: {
+        seq: 7,
+        role: "assistant",
+        text: "final",
+      },
+      lastSeq: 7,
+      seenKeys: seen,
+    });
+    assert.isOk(first);
+    assert.isOk(second);
+    assert.equal(second?.text, "final");
+    assert.isNull(secondDuplicate);
+  });
+
+  function entry(args: {
+    seq: number;
+    role: "assistant" | "user" | "system";
+    kind: Parameters<typeof normalizeRunDialogMessageKind>[0];
+    text: string;
+    attempt?: number;
+    messageId?: string;
+  }): SkillRunnerConversationEntry {
+    return {
+      seq: args.seq,
+      role: args.role,
+      kind: normalizeRunDialogMessageKind(args.kind),
+      text: args.text,
+      raw: {
+        seq: args.seq,
+        role: args.role,
+        kind: args.kind,
+        text: args.text,
+        attempt: args.attempt ?? 1,
+        correlation: args.messageId
+          ? {
+              message_id: args.messageId,
+            }
+          : {},
+      },
+    };
+  }
+
+  it("removes the last matched assistant_process by message_id when assistant_final arrives", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "draft-1",
+        messageId: "m-1",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "draft-2",
+        messageId: "m-2",
+      }),
+      entry({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "final-2",
+        messageId: "m-2",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 2);
+    assert.equal(output[0].kind, "assistant_process");
+    assert.equal(output[0].text, "draft-1");
+    assert.equal(output[1].kind, "assistant_final");
+    assert.equal(output[1].text, "final-2");
+  });
+
+  it("falls back to normalized text matching when final has no message_id", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "  same   final text ",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "same final text",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 1);
+    assert.equal(output[0].kind, "assistant_final");
+    assert.equal(output[0].text, "same final text");
+  });
+
+  it("only deduplicates assistant_process in the same attempt", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "attempt-1-draft",
+        attempt: 1,
+        messageId: "same-id",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "attempt-2-draft",
+        attempt: 2,
+        messageId: "same-id",
+      }),
+      entry({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "attempt-2-final",
+        attempt: 2,
+        messageId: "same-id",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 2);
+    assert.equal(output[0].text, "attempt-1-draft");
+    assert.equal(output[0].kind, "assistant_process");
+    assert.equal(output[1].text, "attempt-2-final");
+    assert.equal(output[1].kind, "assistant_final");
+  });
+
+  it("keeps process entries when assistant_final has no valid match", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_process",
+        text: "draft",
+        attempt: 1,
+        messageId: "m-1",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "final",
+        attempt: 1,
+        messageId: "m-2",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 2);
+    assert.equal(output[0].kind, "assistant_process");
+    assert.equal(output[1].kind, "assistant_final");
+  });
+
+  it("prefers explicit responseValue for option-based interactions", function () {
+    const resolved = resolveRunDialogInteractionResponse({
+      responseValue: "qa_analysis",
+      responseObject: {
+        selected_option: "legacy",
+      },
+      option: "legacy-option",
+      replyText: "ignored",
+    });
+    assert.deepEqual(resolved, {
+      hasResponse: true,
+      response: "qa_analysis",
+    });
+  });
+
+  it("supports boolean and object option values without stringifying", function () {
+    const boolResolved = resolveRunDialogInteractionResponse({
+      responseValue: true,
+    });
+    assert.deepEqual(boolResolved, {
+      hasResponse: true,
+      response: true,
+    });
+
+    const objectResolved = resolveRunDialogInteractionResponse({
+      responseValue: {
+        decision: "proceed",
+      },
+    });
+    assert.deepEqual(objectResolved, {
+      hasResponse: true,
+      response: {
+        decision: "proceed",
+      },
+    });
+  });
+
+  it("keeps backward compatibility for legacy option and responseObject payloads", function () {
+    const legacyOption = resolveRunDialogInteractionResponse({
+      option: "generate_note",
+    });
+    assert.deepEqual(legacyOption, {
+      hasResponse: true,
+      response: "generate_note",
+    });
+
+    const legacyObject = resolveRunDialogInteractionResponse({
+      responseObject: {
+        confirm: true,
+      },
+    });
+    assert.deepEqual(legacyObject, {
+      hasResponse: true,
+      response: {
+        confirm: true,
+      },
+    });
+  });
+
+  it("falls back to text reply payload when no explicit option response exists", function () {
+    const resolved = resolveRunDialogInteractionResponse({
+      replyText: "继续执行",
+    });
+    assert.deepEqual(resolved, {
+      hasResponse: false,
+      response: {
+        text: "继续执行",
+      },
+    });
+  });
+
+  it("normalizes waiting_user and keeps ask_user payload", function () {
+    const normalized = normalizeRunDialogPendingState({
+      request_id: "req-1",
+      status: "waiting_user",
+      pending_owner: "waiting_user",
+      pending: {
+        interaction_id: 18,
+        kind: "open_text",
+        prompt: "reply please",
+        required_fields: ["intent"],
+        ui_hints: {
+          hint: "say in one sentence",
+        },
+        ask_user: {
+          kind: "open_text",
+          prompt: "reply please",
+          hint: "say in one sentence",
+        },
+      },
+    });
+    assert.equal(normalized.pendingOwner, "waiting_user");
+    assert.equal(normalized.pendingInteraction?.interactionId, 18);
+    assert.equal(normalized.pendingInteraction?.kind, "open_text");
+    assert.equal(normalized.pendingInteraction?.prompt, "reply please");
+    assert.deepEqual(normalized.pendingInteraction?.requiredFields, ["intent"]);
+    assert.deepEqual(normalized.pendingInteraction?.uiHints, {
+      hint: "say in one sentence",
+    });
+    assert.deepEqual(normalized.pendingInteraction?.askUser, {
+      kind: "open_text",
+      prompt: "reply please",
+      hint: "say in one sentence",
+    });
+  });
+
+  it("normalizes waiting_auth method selection fields for e2e parity", function () {
+    const normalized = normalizeRunDialogPendingState({
+      request_id: "req-1",
+      status: "waiting_auth",
+      pending_owner: "waiting_auth.method_selection",
+      pending_auth_method_selection: {
+        phase: "method_selection",
+        engine: "opencode",
+        provider_id: "openai",
+        prompt: "choose auth method",
+        available_methods: ["authorization_code", "api_key"],
+        ask_user: {
+          kind: "choose_one",
+          options: [
+            { label: "Code", value: "authorization_code" },
+            { label: "API Key", value: "api_key" },
+          ],
+        },
+      },
+    });
+    assert.equal(normalized.pendingOwner, "waiting_auth.method_selection");
+    assert.equal(normalized.pendingAuth?.phase, "method_selection");
+    assert.equal(normalized.pendingAuth?.engine, "opencode");
+    assert.equal(normalized.pendingAuth?.providerId, "openai");
+    assert.equal(normalized.pendingAuth?.prompt, "choose auth method");
+    assert.deepEqual(normalized.pendingAuth?.availableMethods, [
+      "authorization_code",
+      "api_key",
+    ]);
+    assert.deepEqual(normalized.pendingAuth?.askUser, {
+      kind: "choose_one",
+      options: [
+        { label: "Code", value: "authorization_code" },
+        { label: "API Key", value: "api_key" },
+      ],
+    });
+  });
+
+  it("normalizes waiting_auth challenge fields for import/chat input branches", function () {
+    const normalized = normalizeRunDialogPendingState({
+      request_id: "req-1",
+      status: "waiting_auth",
+      pending_owner: "waiting_auth.challenge_active",
+      pending_auth: {
+        phase: "challenge_active",
+        auth_session_id: "sess-1",
+        engine: "opencode",
+        provider_id: "openai",
+        prompt: "provide code",
+        challenge_kind: "authorization_code",
+        accepts_chat_input: true,
+        input_kind: "authorization_code",
+        auth_url: "https://auth.example",
+        user_code: "ABCDE",
+        last_error: "expired code",
+        ask_user: {
+          kind: "upload_files",
+          files: [{ name: "oauth.json", required: true }],
+        },
+      },
+    });
+    assert.equal(normalized.pendingOwner, "waiting_auth.challenge_active");
+    assert.equal(normalized.pendingAuth?.phase, "challenge_active");
+    assert.equal(normalized.pendingAuth?.authSessionId, "sess-1");
+    assert.equal(normalized.pendingAuth?.challengeKind, "authorization_code");
+    assert.equal(normalized.pendingAuth?.acceptsChatInput, true);
+    assert.equal(normalized.pendingAuth?.inputKind, "authorization_code");
+    assert.equal(normalized.pendingAuth?.authUrl, "https://auth.example");
+    assert.equal(normalized.pendingAuth?.userCode, "ABCDE");
+    assert.equal(normalized.pendingAuth?.lastError, "expired code");
+    assert.deepEqual(normalized.pendingAuth?.askUser, {
+      kind: "upload_files",
+      files: [{ name: "oauth.json", required: true }],
+    });
+  });
+
+  it("marks interaction/auth control events for state refresh", function () {
+    assert.equal(
+      shouldRefreshRunDialogStateFromChatEvent({
+        type: "interaction.reply.accepted",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRefreshRunDialogStateFromChatEvent({
+        type: "interaction.pending.created",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRefreshRunDialogStateFromChatEvent({
+        type: "auth.challenge.updated",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRefreshRunDialogStateFromChatEvent({
+        type: "assistant.message.promoted",
+      }),
+      false,
+    );
+  });
+
+  it("clears pending cards when status leaves waiting states", function () {
+    assert.equal(shouldClearRunDialogPendingForStatus("waiting_user"), false);
+    assert.equal(shouldClearRunDialogPendingForStatus("waiting_auth"), false);
+    assert.equal(shouldClearRunDialogPendingForStatus("running"), true);
+    assert.equal(shouldClearRunDialogPendingForStatus("succeeded"), true);
+  });
+});

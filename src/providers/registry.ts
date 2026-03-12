@@ -96,10 +96,11 @@ function normalizeWithSchema(
 export function normalizeProviderRuntimeOptions(args: {
   providerId: string;
   options: unknown;
+  backend?: BackendInstance;
 }) {
   const provider = resolveProviderById(args.providerId);
   if (typeof provider.normalizeRuntimeOptions === "function") {
-    return provider.normalizeRuntimeOptions(args.options);
+    return provider.normalizeRuntimeOptions(args.options, args.backend);
   }
   const schema = provider.getRuntimeOptionSchema?.() || {};
   return normalizeWithSchema(args.options, schema);

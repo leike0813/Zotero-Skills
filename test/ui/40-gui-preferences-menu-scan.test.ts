@@ -377,6 +377,9 @@ describe("gui: workflow runtime scan", function () {
           label: "GUI Scan Workflow",
           provider: "skillrunner",
           request: { kind: "skillrunner.job.v1" },
+          execution: {
+            skillrunner_mode: "auto",
+          },
           hooks: { applyResult: "hooks/applyResult.js" },
         },
         null,
@@ -610,6 +613,25 @@ describe("gui: workflow context menu", function () {
     });
   });
 
+  it("hides pass-through workflows without settings from workflow settings submenu", async function () {
+    setWorkflowState([
+      makeLoadedWorkflow("workflow-a", "Workflow A"),
+      makePassThroughWorkflow("pass-through-gui", "Pass Through GUI"),
+    ]);
+
+    const win = createMainWindow([]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    popup.dispatch("popupshowing");
+    await flushTasks();
+
+    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
+    assert.lengthOf(settingsPopup.children, 1);
+    assert.equal(settingsPopup.children[0].getAttribute("label"), "Workflow A");
+  });
+
   itFullOnly("does not rebuild root popup when submenu popupshowing bubbles", async function () {
     setWorkflowState([
       makeLoadedWorkflow("workflow-a", "Workflow A"),
@@ -720,5 +742,35 @@ describe("gui: workflow context menu", function () {
     assert.isOk(workflowItem);
     assert.equal(workflowItem.getAttribute("label"), "Pass Through GUI");
     assert.equal(workflowItem.getAttribute("disabled"), null);
+  });
+
+  it("shows no-valid-input hint instead of raw error name when workflow cannot run on current selection", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "No Valid Input Parent" },
+    });
+    setWorkflowState([makeLoadedWorkflow("workflow-a", "Workflow A")]);
+    const win = createMainWindow([parent]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    popup.dispatch("popupshowing");
+    for (let i = 0; i < 10; i++) {
+      await flushTasks();
+      if (popup.children.length > 5) {
+        break;
+      }
+    }
+
+    const workflowItem = popup.children.find(
+      (entry) => (entry.getAttribute("label") || "").startsWith("Workflow A"),
+    );
+    assert.isOk(workflowItem);
+    assert.match(
+      workflowItem.getAttribute("label") || "",
+      /^Workflow A \((no valid input|无合法输入)\)$/,
+    );
+    assert.equal(workflowItem.getAttribute("disabled"), "true");
   });
 });

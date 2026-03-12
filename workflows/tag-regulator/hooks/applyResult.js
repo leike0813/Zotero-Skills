@@ -3,6 +3,9 @@ const GLOBAL_HOST_REGISTER_KEY = "__zsWorkflowEditorHostRegisterRenderer";
 const GLOBAL_TAG_VOCAB_BRIDGE_KEY = "__zsTagVocabularyBridge";
 const SUGGEST_TAGS_RENDERER_ID = "tag-regulator.suggest-tags.v1";
 const SUGGEST_TAGS_SOURCE = "agent-suggest";
+const TAG_VOCAB_STAGED_PREF_SUFFIX = "tagVocabularyStagedJson";
+const STAGED_SOURCE_FLOW = "tag-regulator-suggest";
+const SUGGEST_DIALOG_TIMEOUT_SECONDS = 10;
 const DEFAULT_PREFS_PREFIX = "extensions.zotero.zotero-skills";
 const TAG_VOCAB_PREF_SUFFIX = "tagVocabularyJson";
 const TAG_PATTERN = /^[a-z_]+:[a-zA-Z0-9/_.-]+$/;
@@ -172,53 +175,6 @@ function resolveEditorHostBridge() {
   };
 }
 
-function normalizeDialogSelectedTags(selected, suggestTagEntries) {
-  const allow = new Set(
-    (Array.isArray(suggestTagEntries) ? suggestTagEntries : [])
-      .map((entry) => asString(entry?.tag))
-      .filter(Boolean),
-  );
-  const values = Array.isArray(selected) ? selected : [];
-  const seen = new Set();
-  const normalized = [];
-  for (const entry of values) {
-    const text = asString(entry);
-    if (!text || seen.has(text) || !allow.has(text)) {
-      continue;
-    }
-    seen.add(text);
-    normalized.push(text);
-  }
-  return normalized;
-}
-
-function normalizeDialogResult(openResult, suggestTagEntries) {
-  const response = isObject(openResult) ? openResult : {};
-  const saved = response.saved === true;
-  if (!saved) {
-    return {
-      opened: true,
-      canceled: true,
-      reason: asString(response.reason || "canceled"),
-      selectedTags: [],
-    };
-  }
-  const result = isObject(response.result) ? response.result : {};
-  const selectedRaw = Array.isArray(result.selectedTags)
-    ? result.selectedTags
-    : Array.isArray(response.selectedTags)
-      ? response.selectedTags
-      : Array.isArray(response.result)
-        ? response.result
-        : [];
-  return {
-    opened: true,
-    canceled: false,
-    reason: "",
-    selectedTags: normalizeDialogSelectedTags(selectedRaw, suggestTagEntries),
-  };
-}
-
 function resolvePrefsPrefix() {
   if (
     typeof addon !== "undefined" &&
@@ -245,6 +201,35 @@ function resolvePrefsPrefix() {
 
 function resolvePrefsKey() {
   return `${resolvePrefsPrefix()}.${TAG_VOCAB_PREF_SUFFIX}`;
+}
+
+function resolveStagedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_STAGED_PREF_SUFFIX}`;
+}
+
+function nowIsoTimestamp() {
+  return new Date().toISOString();
+}
+
+function toIsoTimestamp(value) {
+  const text = asString(value);
+  if (!text) {
+    return "";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toISOString();
+}
+
+function getTagPrefix(tag) {
+  const text = asString(tag);
+  const splitAt = text.indexOf(":");
+  if (splitAt <= 0) {
+    return "";
+  }
+  return text.slice(0, splitAt).toLowerCase();
 }
 
 function sortEntries(entries) {
@@ -392,6 +377,92 @@ function fallbackPersistEntries(entries) {
   };
 }
 
+function normalizePersistedStagedEntries(entries) {
+  return sortEntries(
+    (Array.isArray(entries) ? entries : []).map((entry) => {
+      const tag = asString(entry?.tag);
+      const facet = asString(entry?.facet).toLowerCase() || getTagPrefix(tag) || "topic";
+      const createdAt = toIsoTimestamp(entry?.createdAt) || nowIsoTimestamp();
+      const updatedAt = toIsoTimestamp(entry?.updatedAt) || createdAt;
+      return {
+        tag,
+        facet,
+        source: asString(entry?.source || SUGGEST_TAGS_SOURCE) || SUGGEST_TAGS_SOURCE,
+        note: asString(entry?.note),
+        deprecated: Boolean(entry?.deprecated),
+        createdAt,
+        updatedAt,
+        sourceFlow:
+          asString(entry?.sourceFlow || STAGED_SOURCE_FLOW) || STAGED_SOURCE_FLOW,
+      };
+    }),
+  );
+}
+
+function fallbackLoadPersistedStagedState() {
+  const raw = Zotero.Prefs.get(resolveStagedPrefsKey(), true);
+  if (typeof raw !== "string" || !raw.trim()) {
+    return {
+      corrupted: false,
+      entries: [],
+      issues: [],
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      corrupted: true,
+      entries: [],
+      issues: [
+        {
+          code: "INVALID_JSON",
+          message: "persisted staged payload is invalid JSON",
+        },
+      ],
+    };
+  }
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.entries)
+      ? parsed.entries
+      : null;
+  if (!entries) {
+    return {
+      corrupted: true,
+      entries: [],
+      issues: [
+        {
+          code: "INVALID_PAYLOAD",
+          message: "persisted staged payload shape is invalid",
+        },
+      ],
+    };
+  }
+  return {
+    corrupted: false,
+    entries: normalizePersistedStagedEntries(entries),
+    issues: [],
+  };
+}
+
+function fallbackPersistStagedEntries(entries) {
+  const normalized = normalizePersistedStagedEntries(entries);
+  Zotero.Prefs.set(
+    resolveStagedPrefsKey(),
+    JSON.stringify({
+      version: 1,
+      entries: normalized,
+    }),
+    true,
+  );
+  return {
+    version: 1,
+    entries: normalized,
+  };
+}
+
 function resolveTagVocabularyBridge() {
   const candidate = globalThis?.[GLOBAL_TAG_VOCAB_BRIDGE_KEY];
   if (
@@ -406,29 +477,355 @@ function resolveTagVocabularyBridge() {
         typeof candidate.collectValidationIssues === "function"
           ? candidate.collectValidationIssues.bind(candidate)
           : collectValidationIssuesFallback,
+      loadPersistedStagedState:
+        typeof candidate.loadPersistedStagedState === "function"
+          ? candidate.loadPersistedStagedState.bind(candidate)
+          : fallbackLoadPersistedStagedState,
+      persistStagedEntries:
+        typeof candidate.persistStagedEntries === "function"
+          ? candidate.persistStagedEntries.bind(candidate)
+          : fallbackPersistStagedEntries,
     };
   }
   return {
     loadPersistedState: fallbackLoadPersistedState,
     persistEntries: fallbackPersistEntries,
     collectValidationIssues: collectValidationIssuesFallback,
+    loadPersistedStagedState: fallbackLoadPersistedStagedState,
+    persistStagedEntries: fallbackPersistStagedEntries,
   };
 }
 
-function createSuggestTagsRenderer() {
+function normalizeDialogSelectedTags(selected, suggestTagEntries) {
+  const allow = new Set(
+    (Array.isArray(suggestTagEntries) ? suggestTagEntries : [])
+      .map((entry) => asString(entry?.tag).toLowerCase())
+      .filter(Boolean),
+  );
+  const values = Array.isArray(selected) ? selected : [];
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of values) {
+    const text = asString(entry);
+    const lowered = text.toLowerCase();
+    if (!text || seen.has(lowered) || !allow.has(lowered)) {
+      continue;
+    }
+    seen.add(lowered);
+    normalized.push(text);
+  }
+  return normalized;
+}
+
+function ensureArrayField(state, key) {
+  if (!Array.isArray(state[key])) {
+    state[key] = [];
+  }
+}
+
+function ensureObjectField(state, key) {
+  if (!isObject(state[key])) {
+    state[key] = {};
+  }
+}
+
+function addUniqueStrings(target, values) {
+  if (!Array.isArray(target) || !Array.isArray(values)) {
+    return;
+  }
+  const seen = new Set(target.map((entry) => asString(entry).toLowerCase()).filter(Boolean));
+  for (const entry of values) {
+    const text = asString(entry);
+    const lowered = text.toLowerCase();
+    if (!text || seen.has(lowered)) {
+      continue;
+    }
+    seen.add(lowered);
+    target.push(text);
+  }
+}
+
+function addUniqueInvalid(target, invalidItems) {
+  if (!Array.isArray(target) || !Array.isArray(invalidItems)) {
+    return;
+  }
+  const indexByTag = new Map();
+  for (let i = 0; i < target.length; i++) {
+    const lowered = asString(target[i]?.tag).toLowerCase();
+    if (lowered) {
+      indexByTag.set(lowered, i);
+    }
+  }
+  for (const item of invalidItems) {
+    const tag = asString(item?.tag);
+    if (!tag) {
+      continue;
+    }
+    const lowered = tag.toLowerCase();
+    const payload = {
+      tag,
+      reason: asString(item?.reason || "invalid"),
+    };
+    if (indexByTag.has(lowered)) {
+      target[indexByTag.get(lowered)] = payload;
+    } else {
+      indexByTag.set(lowered, target.length);
+      target.push(payload);
+    }
+  }
+}
+
+function removeSuggestEntriesByTags(entries, tags) {
+  const lowered = new Set(
+    (Array.isArray(tags) ? tags : [])
+      .map((entry) => asString(entry).toLowerCase())
+      .filter(Boolean),
+  );
+  return (Array.isArray(entries) ? entries : []).filter(
+    (entry) => !lowered.has(asString(entry?.tag).toLowerCase()),
+  );
+}
+
+function ensureSuggestDialogState(state) {
+  const suggestTags = normalizeSuggestTagEntries(state?.suggestTagEntries);
+  state.suggestTagEntries = suggestTags.ok ? suggestTags.entries : [];
+  ensureObjectField(state, "rowErrors");
+  ensureArrayField(state, "addedDirect");
+  ensureArrayField(state, "staged");
+  ensureArrayField(state, "rejected");
+  ensureArrayField(state, "invalid");
+  ensureArrayField(state, "skippedDirect");
+  ensureArrayField(state, "stagedSkipped");
+  if (!Number.isFinite(Number(state.countdownSeconds))) {
+    state.countdownSeconds = SUGGEST_DIALOG_TIMEOUT_SECONDS;
+  } else {
+    state.countdownSeconds = Math.max(0, Number(state.countdownSeconds));
+  }
+  state.timedOut = state.timedOut === true;
+  state.closePolicyApplied = state.closePolicyApplied === true;
+}
+
+function buildSuggestTagLookup(suggestTagEntries) {
+  const map = new Map();
+  for (const entry of Array.isArray(suggestTagEntries) ? suggestTagEntries : []) {
+    const tag = asString(entry?.tag);
+    if (!tag) {
+      continue;
+    }
+    const lowered = tag.toLowerCase();
+    if (map.has(lowered)) {
+      continue;
+    }
+    map.set(lowered, {
+      tag,
+      note: asString(entry?.note),
+    });
+  }
+  return map;
+}
+
+function buildStagedEntryFromSuggestTag(suggestEntry) {
+  const tag = asString(suggestEntry?.tag);
+  if (!tag) {
+    return {
+      ok: false,
+      entry: null,
+      reason: "missing tag",
+    };
+  }
+  const now = nowIsoTimestamp();
+  return {
+    ok: true,
+    entry: {
+      tag,
+      facet: getTagPrefix(tag) || "topic",
+      source: SUGGEST_TAGS_SOURCE,
+      note: asString(suggestEntry?.note),
+      deprecated: false,
+      createdAt: now,
+      updatedAt: now,
+      sourceFlow: STAGED_SOURCE_FLOW,
+    },
+    reason: "",
+  };
+}
+
+function intakeSuggestTagsToStaged(args) {
+  const tagVocabularyBridge = resolveTagVocabularyBridge();
+  const suggestTagEntries = Array.isArray(args?.suggestTagEntries)
+    ? args.suggestTagEntries
+    : [];
+  const suggestLookup = buildSuggestTagLookup(suggestTagEntries);
+  const summary = {
+    selected: normalizeAdvisoryStringArray(args?.selectedTags),
+    staged: [],
+    skipped: [],
+    invalid: [],
+  };
+  if (summary.selected.length === 0) {
+    return summary;
+  }
+
+  const controlledLoaded = tagVocabularyBridge.loadPersistedState();
+  const controlledLower = new Set(
+    (Array.isArray(controlledLoaded.entries) ? controlledLoaded.entries : [])
+      .map((entry) => asString(entry?.tag).toLowerCase())
+      .filter(Boolean),
+  );
+
+  const stagedLoaded = tagVocabularyBridge.loadPersistedStagedState();
+  const existingStaged = Array.isArray(stagedLoaded.entries)
+    ? [...stagedLoaded.entries]
+    : [];
+  const stagedLower = new Set(
+    existingStaged
+      .map((entry) => asString(entry?.tag).toLowerCase())
+      .filter(Boolean),
+  );
+  const nextStaged = [...existingStaged];
+
+  for (const tag of summary.selected) {
+    const lowered = tag.toLowerCase();
+    if (controlledLower.has(lowered) || stagedLower.has(lowered)) {
+      summary.skipped.push(tag);
+      continue;
+    }
+    const source = suggestLookup.get(lowered);
+    if (!source) {
+      summary.invalid.push({
+        tag,
+        reason: "missing suggest tag entry",
+      });
+      continue;
+    }
+    const built = buildStagedEntryFromSuggestTag(source);
+    if (!built.ok || !built.entry) {
+      summary.invalid.push({
+        tag,
+        reason: asString(built.reason || "invalid"),
+      });
+      continue;
+    }
+    nextStaged.push(built.entry);
+    stagedLower.add(lowered);
+    summary.staged.push(tag);
+  }
+
+  if (summary.staged.length > 0) {
+    try {
+      tagVocabularyBridge.persistStagedEntries(nextStaged);
+    } catch (error) {
+      const reason = `persist staged failed: ${asString(error?.message || error)}`;
+      for (const tag of summary.staged) {
+        summary.invalid.push({
+          tag,
+          reason,
+        });
+      }
+      summary.staged = [];
+    }
+  }
+
+  return summary;
+}
+
+function applyJoinTagAction(state, tag) {
+  ensureSuggestDialogState(state);
+  const lowered = asString(tag).toLowerCase();
+  if (!lowered) {
+    return;
+  }
+  const entry = (Array.isArray(state.suggestTagEntries) ? state.suggestTagEntries : []).find(
+    (item) => asString(item?.tag).toLowerCase() === lowered,
+  );
+  if (!entry) {
+    return;
+  }
+  const intake = intakeSuggestTagsToVocabulary({
+    selectedTags: [entry.tag],
+    suggestTagEntries: [entry],
+  });
+  addUniqueStrings(state.addedDirect, intake.added);
+  addUniqueStrings(state.skippedDirect, intake.skipped);
+  addUniqueInvalid(state.invalid, intake.invalid);
+  if (intake.invalid.length > 0) {
+    state.rowErrors[lowered] = asString(
+      intake.invalid[0]?.reason || "invalid suggest tag",
+    );
+    return;
+  }
+  delete state.rowErrors[lowered];
+  state.suggestTagEntries = removeSuggestEntriesByTags(state.suggestTagEntries, [entry.tag]);
+}
+
+function applyRejectTagAction(state, tag) {
+  ensureSuggestDialogState(state);
+  const text = asString(tag);
+  if (!text) {
+    return;
+  }
+  const lowered = text.toLowerCase();
+  addUniqueStrings(state.rejected, [text]);
+  delete state.rowErrors[lowered];
+  state.suggestTagEntries = removeSuggestEntriesByTags(state.suggestTagEntries, [text]);
+}
+
+function applyJoinAllAction(state) {
+  ensureSuggestDialogState(state);
+  const snapshot = [...state.suggestTagEntries];
+  for (const entry of snapshot) {
+    applyJoinTagAction(state, asString(entry?.tag));
+  }
+  return {
+    closeable: state.suggestTagEntries.length === 0,
+  };
+}
+
+function applyStageAllAction(state) {
+  ensureSuggestDialogState(state);
+  const remaining = (Array.isArray(state.suggestTagEntries) ? state.suggestTagEntries : []).map(
+    (entry) => asString(entry?.tag),
+  );
+  if (remaining.length === 0) {
+    return {
+      closeable: true,
+    };
+  }
+  const intake = intakeSuggestTagsToStaged({
+    selectedTags: remaining,
+    suggestTagEntries: state.suggestTagEntries,
+  });
+  addUniqueStrings(state.staged, intake.staged);
+  addUniqueStrings(state.stagedSkipped, intake.skipped);
+  addUniqueInvalid(state.invalid, intake.invalid);
+  const processed = [...intake.staged, ...intake.skipped];
+  state.suggestTagEntries = removeSuggestEntriesByTags(state.suggestTagEntries, processed);
+  return {
+    closeable: intake.invalid.length === 0,
+  };
+}
+
+function applyRejectAllAction(state) {
+  ensureSuggestDialogState(state);
+  const remaining = (Array.isArray(state.suggestTagEntries) ? state.suggestTagEntries : []).map(
+    (entry) => asString(entry?.tag),
+  );
+  addUniqueStrings(state.rejected, remaining);
+  state.suggestTagEntries = [];
+  state.rowErrors = {};
+  return {
+    closeable: true,
+  };
+}
+
+function createSuggestTagsRenderer(options) {
+  const runtime = options?.runtime || {};
   return {
     render({ doc, root, state, host }) {
+      runtime.state = state;
       clearChildren(root);
-      const suggestTags = normalizeSuggestTagEntries(state.suggestTagEntries);
-      const suggestTagEntries = suggestTags.ok ? suggestTags.entries : [];
-      const selectedTags = normalizeDialogSelectedTags(
-        Array.isArray(state.selectedTags)
-          ? state.selectedTags
-          : suggestTagEntries.map((entry) => entry.tag),
-        suggestTagEntries,
-      );
-      state.suggestTagEntries = suggestTagEntries;
-      state.selectedTags = selectedTags;
+      ensureSuggestDialogState(state);
+      const suggestTagEntries = state.suggestTagEntries;
 
       const panel = createHtmlElement(doc, "div");
       panel.style.display = "flex";
@@ -438,77 +835,37 @@ function createSuggestTagsRenderer() {
       panel.style.boxSizing = "border-box";
 
       const hint = createHtmlElement(doc, "div");
-      hint.textContent = "Select suggested tags to add into controlled vocabulary:";
+      hint.textContent =
+        "逐条处理建议标签：加入=直接入受控词表；拒绝=直接废弃。未处理项在倒计时结束后自动暂存。";
       hint.style.fontSize = "12px";
       panel.appendChild(hint);
 
-      const actionRow = createHtmlElement(doc, "div");
-      actionRow.style.display = "flex";
-      actionRow.style.gap = "8px";
-
-      const selectAllBtn = createHtmlElement(doc, "button");
-      selectAllBtn.type = "button";
-      selectAllBtn.textContent = "Select All";
-      selectAllBtn.addEventListener("click", () => {
-        host.patchState((draft) => {
-          draft.selectedTags = (Array.isArray(draft.suggestTagEntries)
-            ? draft.suggestTagEntries
-            : []
-          ).map((entry) => asString(entry?.tag));
-        });
-      });
-      actionRow.appendChild(selectAllBtn);
-
-      const clearBtn = createHtmlElement(doc, "button");
-      clearBtn.type = "button";
-      clearBtn.textContent = "Clear";
-      clearBtn.addEventListener("click", () => {
-        host.patchState((draft) => {
-          draft.selectedTags = [];
-        });
-      });
-      actionRow.appendChild(clearBtn);
-      panel.appendChild(actionRow);
+      const countdown = createHtmlElement(doc, "div");
+      countdown.style.fontSize = "12px";
+      countdown.style.color = state.countdownSeconds <= 3 ? "#b3261e" : "#444";
+      countdown.textContent = `自动暂存倒计时：${state.countdownSeconds}s`;
+      panel.appendChild(countdown);
 
       const list = createHtmlElement(doc, "div");
       list.style.display = "flex";
       list.style.flexDirection = "column";
-      list.style.gap = "4px";
+      list.style.gap = "6px";
       list.style.overflowY = "auto";
       list.style.border = "1px solid #ddd";
       list.style.borderRadius = "4px";
       list.style.padding = "8px";
-      list.style.maxHeight = "360px";
+      list.style.maxHeight = "380px";
 
-      const selectedSet = new Set(selectedTags);
+      const rowErrors = isObject(state.rowErrors) ? state.rowErrors : {};
       for (const suggestEntry of suggestTagEntries) {
         const tag = asString(suggestEntry.tag);
+        const lowered = tag.toLowerCase();
         const note = asString(suggestEntry.note);
-        const option = createHtmlElement(doc, "label");
+        const option = createHtmlElement(doc, "div");
         option.style.display = "grid";
-        option.style.gridTemplateColumns = "auto 1fr";
+        option.style.gridTemplateColumns = "1fr auto auto";
         option.style.alignItems = "start";
         option.style.gap = "8px";
-
-        const checkbox = createHtmlElement(doc, "input");
-        checkbox.type = "checkbox";
-        checkbox.checked = selectedSet.has(tag);
-        checkbox.addEventListener("change", () => {
-          host.patchState((draft) => {
-            const current = normalizeDialogSelectedTags(
-              draft.selectedTags,
-              draft.suggestTagEntries,
-            );
-            const next = new Set(current);
-            if (checkbox.checked) {
-              next.add(tag);
-            } else {
-              next.delete(tag);
-            }
-            draft.selectedTags = [...next];
-          });
-        });
-        option.appendChild(checkbox);
 
         const content = createHtmlElement(doc, "div");
         content.style.display = "flex";
@@ -527,22 +884,86 @@ function createSuggestTagsRenderer() {
           noteText.style.color = "#555";
           content.appendChild(noteText);
         }
-
+        const rowError = asString(rowErrors[lowered]);
+        if (rowError) {
+          const errorText = createHtmlElement(doc, "span");
+          errorText.textContent = rowError;
+          errorText.style.fontSize = "11px";
+          errorText.style.color = "#b3261e";
+          content.appendChild(errorText);
+        }
         option.appendChild(content);
+
+        const joinBtn = createHtmlElement(doc, "button");
+        joinBtn.type = "button";
+        joinBtn.textContent = "加入";
+        joinBtn.addEventListener("click", () => {
+          host.patchState((draft) => {
+            applyJoinTagAction(draft, tag);
+          });
+        });
+        option.appendChild(joinBtn);
+
+        const rejectBtn = createHtmlElement(doc, "button");
+        rejectBtn.type = "button";
+        rejectBtn.textContent = "拒绝";
+        rejectBtn.addEventListener("click", () => {
+          host.patchState((draft) => {
+            applyRejectTagAction(draft, tag);
+          });
+        });
+        option.appendChild(rejectBtn);
         list.appendChild(option);
+      }
+      if (suggestTagEntries.length === 0) {
+        const empty = createHtmlElement(doc, "div");
+        empty.textContent = "没有剩余待处理标签。";
+        empty.style.color = "#666";
+        empty.style.fontSize = "12px";
+        list.appendChild(empty);
       }
       panel.appendChild(list);
 
       root.appendChild(panel);
+
+      if (!runtime.timerStarted) {
+        runtime.timerStarted = true;
+        runtime.timerHandle = setInterval(() => {
+          const liveState = runtime.state;
+          if (!liveState) {
+            clearInterval(runtime.timerHandle);
+            runtime.timerHandle = null;
+            return;
+          }
+          const current = Number(liveState.countdownSeconds);
+          if (!Number.isFinite(current) || current <= 1) {
+            liveState.countdownSeconds = 0;
+            liveState.timedOut = true;
+            liveState.closePolicyApplied = true;
+            clearInterval(runtime.timerHandle);
+            runtime.timerHandle = null;
+            host.rerender();
+            return;
+          }
+          liveState.countdownSeconds = current - 1;
+          host.rerender();
+        }, 1000);
+      }
     },
     serialize({ state }) {
-      const suggestTags = normalizeSuggestTagEntries(state.suggestTagEntries);
-      const suggestTagEntries = suggestTags.ok ? suggestTags.entries : [];
+      ensureSuggestDialogState(state);
       return {
-        selectedTags: normalizeDialogSelectedTags(
-          state.selectedTags,
-          suggestTagEntries,
-        ),
+        suggestTagEntries: state.suggestTagEntries,
+        rowErrors: state.rowErrors,
+        addedDirect: state.addedDirect,
+        staged: state.staged,
+        rejected: state.rejected,
+        invalid: state.invalid,
+        skippedDirect: state.skippedDirect,
+        stagedSkipped: state.stagedSkipped,
+        countdownSeconds: state.countdownSeconds,
+        timedOut: state.timedOut,
+        closePolicyApplied: state.closePolicyApplied,
       };
     },
   };
@@ -581,16 +1002,38 @@ async function openSuggestTagsDialog(args) {
   }
 
   if (typeof bridge.registerRenderer === "function") {
-    bridge.registerRenderer(SUGGEST_TAGS_RENDERER_ID, createSuggestTagsRenderer());
+    bridge.registerRenderer(
+      SUGGEST_TAGS_RENDERER_ID,
+      createSuggestTagsRenderer(args.rendererOptions || {}),
+    );
   }
 
+  const initialState = {
+    suggestTagEntries,
+    rowErrors: {},
+    addedDirect: [],
+    staged: [],
+    rejected: [],
+    invalid: [],
+    skippedDirect: [],
+    stagedSkipped: [],
+    countdownSeconds: SUGGEST_DIALOG_TIMEOUT_SECONDS,
+    timedOut: false,
+    closePolicyApplied: false,
+  };
+  const closeActionId = asString(args.closeActionId || "stage-all");
+  const parsedAutoCloseAfterMs = Number(
+    args?.autoClose?.afterMs || SUGGEST_DIALOG_TIMEOUT_SECONDS * 1000,
+  );
+  const autoCloseAfterMs =
+    Number.isFinite(parsedAutoCloseAfterMs) && parsedAutoCloseAfterMs > 0
+      ? parsedAutoCloseAfterMs
+      : SUGGEST_DIALOG_TIMEOUT_SECONDS * 1000;
+  const autoCloseActionId = asString(args?.autoClose?.actionId || closeActionId);
   const openResult = await bridge.open({
     rendererId: SUGGEST_TAGS_RENDERER_ID,
     title: String(args.title || "Suggest Tags Intake"),
-    initialState: {
-      suggestTagEntries,
-      selectedTags: suggestTagEntries.map((entry) => entry.tag),
-    },
+    initialState,
     layout: {
       width: 560,
       height: 520,
@@ -600,13 +1043,29 @@ async function openSuggestTagsDialog(args) {
       maxHeight: 900,
       padding: 8,
     },
-    labels: {
-      save: "加入受控词表",
-      cancel: "取消",
+    actions: Array.isArray(args.actions) ? args.actions : [],
+    closeActionId,
+    autoClose: {
+      afterMs: autoCloseAfterMs,
+      actionId: autoCloseActionId,
     },
   });
 
-  return normalizeDialogResult(openResult, suggestTagEntries);
+  if (args.rendererOptions?.runtime?.timerHandle) {
+    clearInterval(args.rendererOptions.runtime.timerHandle);
+    args.rendererOptions.runtime.timerHandle = null;
+  }
+
+  const response = isObject(openResult) ? openResult : {};
+  const resultState = isObject(response.result) ? response.result : initialState;
+  ensureSuggestDialogState(resultState);
+  return {
+    opened: true,
+    actionId: asString(response.actionId || ""),
+    reason: asString(response.reason || ""),
+    state: resultState,
+    saved: response.saved === true,
+  };
 }
 
 function buildVocabularyEntryFromSuggestTag(suggestEntry) {
@@ -738,37 +1197,113 @@ async function collectSuggestTagsIntake(args) {
       added: [],
       skipped: [],
       invalid: [],
+      addedDirect: [],
+      staged: [],
+      rejected: [],
+      timedOut: false,
+      closePolicyApplied: false,
     };
   }
 
+  const dialogRuntime = {
+    timerStarted: false,
+    timerHandle: null,
+    state: null,
+  };
   const dialog = await openSuggestTagsDialog({
     suggestTagEntries: suggestTags.entries,
     title: args.title,
+    actions: [
+      {
+        id: "join-all",
+        label: "全部加入",
+        noClose: true,
+        onClick: ({ state, closeWithAction, rerender }) => {
+          const result = applyJoinAllAction(state);
+          rerender();
+          if (result.closeable) {
+            closeWithAction("join-all");
+          }
+        },
+      },
+      {
+        id: "stage-all",
+        label: "全部暂存",
+        noClose: true,
+        onClick: ({ state, closeWithAction, rerender }) => {
+          const result = applyStageAllAction(state);
+          if (result.closeable) {
+            closeWithAction("stage-all");
+            return;
+          }
+          rerender();
+        },
+      },
+      {
+        id: "reject-all",
+        label: "全部拒绝",
+        noClose: true,
+        onClick: ({ state, closeWithAction }) => {
+          applyRejectAllAction(state);
+          closeWithAction("reject-all");
+        },
+      },
+    ],
+    closeActionId: "stage-all",
+    rendererOptions: {
+      runtime: dialogRuntime,
+    },
   });
-  if (!dialog.opened || dialog.canceled) {
+  if (!dialog.opened) {
     return {
-      opened: dialog.opened,
+      opened: false,
       canceled: true,
-      reason: asString(dialog.reason || "canceled"),
+      reason: asString(dialog.reason || "dialog unavailable"),
       selected: [],
       added: [],
       skipped: [],
       invalid: [],
+      addedDirect: [],
+      staged: [],
+      rejected: [],
+      timedOut: false,
+      closePolicyApplied: false,
     };
   }
 
-  const intake = intakeSuggestTagsToVocabulary({
-    selectedTags: dialog.selectedTags,
-    suggestTagEntries: suggestTags.entries,
-  });
+  const state = isObject(dialog.state) ? dialog.state : {};
+  ensureSuggestDialogState(state);
+
+  if (dialog.actionId === "join-all" && state.suggestTagEntries.length > 0) {
+    applyJoinAllAction(state);
+  } else if (dialog.actionId === "stage-all" && state.suggestTagEntries.length > 0) {
+    state.closePolicyApplied = true;
+    applyStageAllAction(state);
+  } else if (dialog.actionId === "reject-all" && state.suggestTagEntries.length > 0) {
+    applyRejectAllAction(state);
+  }
+
+  const selected = [
+    ...(Array.isArray(state.addedDirect) ? state.addedDirect : []),
+    ...(Array.isArray(state.staged) ? state.staged : []),
+    ...(Array.isArray(state.rejected) ? state.rejected : []),
+  ];
   return {
     opened: true,
     canceled: false,
-    reason: "",
-    selected: intake.selected,
-    added: intake.added,
-    skipped: intake.skipped,
-    invalid: intake.invalid,
+    reason: asString(dialog.reason || ""),
+    selected,
+    added: Array.isArray(state.addedDirect) ? state.addedDirect : [],
+    skipped: [
+      ...(Array.isArray(state.skippedDirect) ? state.skippedDirect : []),
+      ...(Array.isArray(state.stagedSkipped) ? state.stagedSkipped : []),
+    ],
+    invalid: Array.isArray(state.invalid) ? state.invalid : [],
+    addedDirect: Array.isArray(state.addedDirect) ? state.addedDirect : [],
+    staged: Array.isArray(state.staged) ? state.staged : [],
+    rejected: Array.isArray(state.rejected) ? state.rejected : [],
+    timedOut: state.timedOut === true,
+    closePolicyApplied: state.closePolicyApplied === true,
   };
 }
 
@@ -966,7 +1501,9 @@ export async function applyResult({ parent, runResult, runtime }) {
 }
 
 export const __tagRegulatorApplyResultTestOnly = {
+  createSuggestTagsRenderer,
   buildVocabularyEntryFromSuggestTag,
+  intakeSuggestTagsToStaged,
   intakeSuggestTagsToVocabulary,
   normalizeDialogSelectedTags,
   normalizeSuggestTagEntries,

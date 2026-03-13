@@ -12,6 +12,8 @@ declare namespace _ZoteroTypes {
       "workflowSettingsJson": string;
       "skillRunnerModelCacheJson": string;
       "skillRunnerDeferredTasksJson": string;
+      "skillRunnerLocalRuntimeVersion": string;
+      "skillRunnerLocalRuntimeStateJson": string;
       "tagVocabularyStagedJson": string;
       "workflowDir": string;
       "sampleOutputDir": string;

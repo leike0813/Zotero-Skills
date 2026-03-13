@@ -26,6 +26,7 @@ import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
+import { openLogViewerDialogWithArgs } from "./logViewerDialog";
 import {
   isTerminal,
   isWaiting,
@@ -363,6 +364,10 @@ function buildDashboardSnapshot(args: {
     logsBoundJobId: localize("task-dashboard-generic-logs-bound-job-id", "Bound Job ID"),
     logsDetailTitle: localize("task-dashboard-generic-logs-detail-title", "Log Details"),
     logsViewTask: localize("task-dashboard-generic-logs-view-task", "Bind Logs"),
+    logsOpenDiagnostics: localize(
+      "task-dashboard-generic-logs-open-diagnostics",
+      "Diagnostic Export",
+    ),
   };
 
   const tabs = [
@@ -557,6 +562,44 @@ export async function openTaskManagerDialog() {
         state.selectedLogEntryByBackendId.delete(backendId);
       }
       refresh();
+      return;
+    }
+    if (action === "open-log-diagnostics") {
+      const backendId = String(payload.backendId || "").trim();
+      const taskId = String(payload.taskId || "").trim();
+      const backend = state.backends.find((entry) => entry.id === backendId);
+      if (!backend || !taskId) {
+        return;
+      }
+      const active = normalizeFilteredActive();
+      const history = normalizeFilteredHistory();
+      const rows = mergeDashboardTaskRows({
+        backendId: backend.id,
+        history,
+        active,
+      }).map((entry) => mapTaskRow(entry));
+      const selected = rows.find((row) => row.id === taskId);
+      if (!selected) {
+        await openLogViewerDialogWithArgs({
+          initialFilters: {
+            backendId: backend.id,
+            backendType: backend.type,
+          },
+          focusDiagnostic: true,
+        });
+        return;
+      }
+      await openLogViewerDialogWithArgs({
+        initialFilters: {
+          backendId: backend.id,
+          backendType: backend.type,
+          workflowId: selected.workflowId,
+          requestId: selected.requestId,
+          jobId: selected.jobId,
+          runId: selected.runId,
+        },
+        focusDiagnostic: true,
+      });
       return;
     }
     if (action === "select-log-entry") {

@@ -25,6 +25,22 @@ import {
   startSkillRunnerTaskReconciler,
   stopSkillRunnerTaskReconciler,
 } from "./modules/skillRunnerTaskReconciler";
+import {
+  deployAndConfigureLocalSkillRunner,
+  getManagedLocalRuntimeStateSnapshot,
+  getLocalRuntimeStatus,
+  getLocalRuntimeManualDeployCommands,
+  resetLocalRuntimeAutoStartSessionState,
+  releaseManagedLocalRuntimeLeaseOnShutdown,
+  runLocalDoctor,
+  startLocalRuntime,
+  startManagedLocalRuntimeAutoEnsureLoop,
+  stopManagedLocalRuntimeAutoEnsureLoop,
+  stopLocalRuntime,
+  toggleLocalRuntimeAutoPull,
+  uninstallLocalRuntime,
+} from "./modules/skillRunnerLocalRuntimeManager";
+import { openSkillRunnerLocalDeployDebugDialog } from "./modules/skillRunnerLocalDeployDebugDialog";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -118,6 +134,8 @@ async function onStartup() {
   await rescanWorkflowRegistry();
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
+  resetLocalRuntimeAutoStartSessionState();
+  startManagedLocalRuntimeAutoEnsureLoop();
 
   BasicExampleFactory.registerPrefs();
 
@@ -184,6 +202,8 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  stopManagedLocalRuntimeAutoEnsureLoop();
+  void releaseManagedLocalRuntimeLeaseOnShutdown();
   stopSkillRunnerModelCacheAutoRefresh();
   stopSkillRunnerTaskReconciler();
   for (const win of Zotero.getMainWindows?.() || []) {
@@ -270,6 +290,38 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "openLogViewer":
       await openLogViewerDialog();
       break;
+    case "openSkillRunnerLocalDeployDebugConsole":
+      await openSkillRunnerLocalDeployDebugDialog();
+      return {
+        ok: true,
+        stage: "open-debug-console",
+        message: "local deploy debug console opened",
+      };
+    case "deploySkillRunnerLocalRuntime":
+      return deployAndConfigureLocalSkillRunner({
+        version: typeof data.version === "string" ? data.version : undefined,
+      });
+    case "copySkillRunnerLocalDeployCommands":
+      return getLocalRuntimeManualDeployCommands({
+        version: typeof data.version === "string" ? data.version : undefined,
+      });
+    case "statusSkillRunnerLocalRuntime":
+      return getLocalRuntimeStatus();
+    case "stateSkillRunnerLocalRuntime":
+      return getManagedLocalRuntimeStateSnapshot();
+    case "toggleSkillRunnerLocalRuntimeAutoPull":
+      return toggleLocalRuntimeAutoPull();
+    case "startSkillRunnerLocalRuntime":
+      return startLocalRuntime();
+    case "stopSkillRunnerLocalRuntime":
+      return stopLocalRuntime();
+    case "doctorSkillRunnerLocalRuntime":
+      return runLocalDoctor();
+    case "uninstallSkillRunnerLocalRuntime":
+      return uninstallLocalRuntime({
+        clearData: data.clearData === true,
+        clearAgentHome: data.clearAgentHome === true,
+      });
     default:
       return;
   }

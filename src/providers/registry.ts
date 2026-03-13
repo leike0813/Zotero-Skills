@@ -2,6 +2,7 @@ import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
 import { GenericHttpProvider } from "./generic-http/provider";
 import { PassThroughProvider } from "./pass-through/provider";
+import { appendRuntimeLog } from "../modules/runtimeLogManager";
 import {
   ProviderRequestContractError,
   assertProviderRequestDispatchContract,
@@ -146,5 +147,55 @@ export async function executeWithProvider(args: {
     providerId: provider.id,
     request: args.request,
   });
-  return provider.execute(args);
+  appendRuntimeLog({
+    level: "info",
+    scope: "provider",
+    backendId: args.backend.id,
+    backendType: args.backend.type,
+    providerId: provider.id,
+    component: "provider-registry",
+    operation: "dispatch",
+    phase: "start",
+    stage: "provider-dispatch-start",
+    message: "provider dispatch started",
+    details: {
+      requestKind: args.requestKind,
+    },
+  });
+  try {
+    const result = await provider.execute(args);
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: provider.id,
+      requestId: String(result.requestId || "").trim() || undefined,
+      component: "provider-registry",
+      operation: "dispatch",
+      phase: result.status === "deferred" ? "deferred" : "terminal",
+      stage: "provider-dispatch-succeeded",
+      message: "provider dispatch succeeded",
+      details: {
+        status: result.status,
+        fetchType: result.fetchType,
+      },
+    });
+    return result;
+  } catch (error) {
+    appendRuntimeLog({
+      level: "error",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: provider.id,
+      component: "provider-registry",
+      operation: "dispatch",
+      phase: "terminal",
+      stage: "provider-dispatch-failed",
+      message: "provider dispatch failed",
+      error,
+    });
+    throw error;
+  }
 }

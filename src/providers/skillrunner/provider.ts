@@ -13,6 +13,7 @@ import type {
   ProviderProgressEvent,
   ProviderSupportsArgs,
 } from "../types";
+import { appendRuntimeLog } from "../../modules/runtimeLogManager";
 import {
   getDefaultSkillRunnerEngine,
   getDefaultSkillRunnerModelProvider,
@@ -24,6 +25,7 @@ import {
   splitSkillRunnerModelId,
 } from "./modelCatalog";
 import { SkillRunnerClient } from "./client";
+import { ensureManagedLocalRuntimeForBackend } from "../../modules/skillRunnerLocalRuntimeManager";
 
 function isOpencodeEngine(engine: string) {
   return String(engine || "").trim() === "opencode";
@@ -280,25 +282,97 @@ export class SkillRunnerProvider implements Provider {
       args.providerOptions || {},
       backend || undefined,
     );
+    const backendId = backend?.id;
+    const backendType = backend?.type || "skillrunner";
+    if (backend && backend.type === "skillrunner") {
+      const ensureResult = await ensureManagedLocalRuntimeForBackend(backend.id);
+      if (!ensureResult.ok) {
+        throw new Error(
+          `managed local runtime ensure failed: ${ensureResult.message}`,
+        );
+      }
+    }
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId,
+      backendType,
+      providerId: this.id,
+      component: "skillrunner-provider",
+      operation: "execute",
+      phase: "start",
+      stage: "provider-execute-start",
+      message: "skillrunner provider execute started",
+      details: {
+        requestKind: args.requestKind,
+        engine: normalizedProviderOptions.engine,
+        model: normalizedProviderOptions.model,
+      },
+    });
     const client =
       this.staticClient || new SkillRunnerClient({ baseUrl: backend!.baseUrl });
-    if (
-      args.request &&
-      typeof args.request === "object" &&
-      (args.request as { kind?: unknown }).kind === "http.steps"
-    ) {
-      return client.executeHttpSteps(args.request as SkillRunnerHttpStepsRequest, {
-        onProgress: args.onProgress,
+    try {
+      let result: ProviderExecutionResult;
+      if (
+        args.request &&
+        typeof args.request === "object" &&
+        (args.request as { kind?: unknown }).kind === "http.steps"
+      ) {
+        result = await client.executeHttpSteps(
+          args.request as SkillRunnerHttpStepsRequest,
+          {
+            onProgress: args.onProgress,
+          },
+        );
+      } else {
+        const request = args.request as SkillRunnerJobRequestV1;
+        if (request.kind !== "skillrunner.job.v1") {
+          throw new Error(
+            `Unsupported skillrunner request payload kind: ${String(request.kind || "")}`,
+          );
+        }
+        result = await client.executeSkillRunnerJob(
+          request,
+          normalizedProviderOptions,
+          {
+            onProgress: args.onProgress,
+          },
+        );
+      }
+      appendRuntimeLog({
+        level: "info",
+        scope: "provider",
+        backendId,
+        backendType,
+        providerId: this.id,
+        requestId: String(result.requestId || "").trim() || undefined,
+        component: "skillrunner-provider",
+        operation: "execute",
+        phase: result.status === "deferred" ? "deferred" : "terminal",
+        stage: "provider-execute-succeeded",
+        message: "skillrunner provider execute succeeded",
+        details: {
+          status: result.status,
+          fetchType: result.fetchType,
+          backendStatus: (result as { backendStatus?: unknown }).backendStatus,
+        },
       });
+      return result;
+    } catch (error) {
+      appendRuntimeLog({
+        level: "error",
+        scope: "provider",
+        backendId,
+        backendType,
+        providerId: this.id,
+        component: "skillrunner-provider",
+        operation: "execute",
+        phase: "terminal",
+        stage: "provider-execute-failed",
+        message: "skillrunner provider execute failed",
+        error,
+      });
+      throw error;
     }
-    const request = args.request as SkillRunnerJobRequestV1;
-    if (request.kind !== "skillrunner.job.v1") {
-      throw new Error(
-        `Unsupported skillrunner request payload kind: ${String(request.kind || "")}`,
-      );
-    }
-    return client.executeSkillRunnerJob(request, normalizedProviderOptions, {
-      onProgress: args.onProgress,
-    });
   }
 }

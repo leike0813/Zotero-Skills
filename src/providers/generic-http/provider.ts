@@ -5,6 +5,7 @@ import type {
   ProviderExecutionResult,
 } from "../contracts";
 import type { Provider, ProviderSupportsArgs } from "../types";
+import { appendRuntimeLog } from "../../modules/runtimeLogManager";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type DynamicImport = (specifier: string) => Promise<any>;
@@ -542,6 +543,22 @@ export class GenericHttpProvider implements Provider {
         "Invalid generic-http request payload: request.method and request.path are required",
       );
     }
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: this.id,
+      component: "generic-http-provider",
+      operation: "single-request",
+      phase: "start",
+      stage: "provider-http-start",
+      message: "generic-http single request started",
+      transport: {
+        method: String(args.request.request.method || "").toUpperCase(),
+        path: String(args.request.request.path || "").trim() || undefined,
+      },
+    });
     const headers = resolveBaseHeaders({ backend: args.backend });
     applyHeaderMap(headers, args.request.request.headers || {});
     if (
@@ -570,6 +587,24 @@ export class GenericHttpProvider implements Provider {
     ) {
       requestId = (resultJson as { request_id: string }).request_id;
     }
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: this.id,
+      requestId,
+      component: "generic-http-provider",
+      operation: "single-request",
+      phase: "terminal",
+      stage: "provider-http-succeeded",
+      message: "generic-http single request succeeded",
+      transport: {
+        method: String(args.request.request.method || "").toUpperCase(),
+        path: String(args.request.request.path || "").trim() || undefined,
+        status: response.status,
+      },
+    });
     return {
       status: "succeeded" as const,
       requestId,
@@ -586,6 +621,21 @@ export class GenericHttpProvider implements Provider {
     if (!Array.isArray(args.request.steps) || args.request.steps.length === 0) {
       throw new Error("generic-http.steps.v1 requires at least one step");
     }
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: this.id,
+      component: "generic-http-provider",
+      operation: "steps-request",
+      phase: "start",
+      stage: "provider-http-steps-start",
+      message: "generic-http steps request started",
+      details: {
+        steps: args.request.steps.length,
+      },
+    });
     const pollInterval = Math.max(0, args.request.poll?.interval_ms ?? 2000);
     const pollTimeout = Math.max(1, args.request.poll?.timeout_ms ?? 600000);
     const state: Record<string, unknown> = {
@@ -600,6 +650,7 @@ export class GenericHttpProvider implements Provider {
         throw new Error("Invalid step definition: step.id and request.method are required");
       }
       const startedAt = Date.now();
+      let retryCount = 0;
       while (true) {
         const requestSpec = (() => {
           try {
@@ -642,7 +693,31 @@ export class GenericHttpProvider implements Provider {
           body: init.body ?? null,
         });
 
+        const requestStartedAt = Date.now();
         const response = await this.fetchImpl(url, init);
+        const duration = Date.now() - requestStartedAt;
+        appendRuntimeLog({
+          level: "debug",
+          scope: "provider",
+          backendId: args.backend.id,
+          backendType: args.backend.type,
+          providerId: this.id,
+          requestId: String(state.request_id || state.batch_id || state.task_id || "").trim() || undefined,
+          component: "generic-http-provider",
+          operation: "step",
+          phase: "running",
+          stage: "provider-http-step-response",
+          message: `generic-http step ${step.id} responded`,
+          transport: {
+            stepId: step.id,
+            method: String(requestSpec.method || "").toUpperCase(),
+            url,
+            path: String(requestSpec.path || "").trim() || undefined,
+            status: response.status,
+            duration,
+            retry: retryCount,
+          },
+        });
         const parsed = await readResponsePayload(
           response,
           requestSpec.response_type || "json",
@@ -666,6 +741,7 @@ export class GenericHttpProvider implements Provider {
                 `Step ${step.id} polling timeout after ${pollTimeout}ms`,
               );
             }
+            retryCount += 1;
             await sleep(pollInterval);
             continue;
           }
@@ -683,6 +759,19 @@ export class GenericHttpProvider implements Provider {
       responsePayload: lastPayload,
     });
     if (lastResponseKind === "bytes") {
+      appendRuntimeLog({
+        level: "info",
+        scope: "provider",
+        backendId: args.backend.id,
+        backendType: args.backend.type,
+        providerId: this.id,
+        requestId,
+        component: "generic-http-provider",
+        operation: "steps-request",
+        phase: "terminal",
+        stage: "provider-http-steps-succeeded",
+        message: "generic-http steps request succeeded with bundle output",
+      });
       return {
         status: "succeeded",
         requestId,
@@ -691,6 +780,19 @@ export class GenericHttpProvider implements Provider {
         responseJson: isObject(lastPayload) ? lastPayload : undefined,
       };
     }
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: this.id,
+      requestId,
+      component: "generic-http-provider",
+      operation: "steps-request",
+      phase: "terminal",
+      stage: "provider-http-steps-succeeded",
+      message: "generic-http steps request succeeded with result output",
+    });
     return {
       status: "succeeded",
       requestId,
@@ -711,20 +813,37 @@ export class GenericHttpProvider implements Provider {
         `Unsupported request kind/backend for GenericHttpProvider: requestKind=${args.requestKind}, backendType=${args.backend.type}`,
       );
     }
-    if (args.requestKind === "generic-http.request.v1") {
-      return this.executeSingleRequest({
-        request: args.request as GenericHttpRequestV1,
-        backend: args.backend,
+    try {
+      if (args.requestKind === "generic-http.request.v1") {
+        return await this.executeSingleRequest({
+          request: args.request as GenericHttpRequestV1,
+          backend: args.backend,
+        });
+      }
+      if (args.requestKind === "generic-http.steps.v1") {
+        return await this.executeStepsRequest({
+          request: args.request as GenericHttpStepsRequestV1,
+          backend: args.backend,
+        });
+      }
+      throw new Error(
+        `Unsupported request kind/backend for GenericHttpProvider: requestKind=${args.requestKind}, backendType=${args.backend.type}`,
+      );
+    } catch (error) {
+      appendRuntimeLog({
+        level: "error",
+        scope: "provider",
+        backendId: args.backend.id,
+        backendType: args.backend.type,
+        providerId: this.id,
+        component: "generic-http-provider",
+        operation: "execute",
+        phase: "terminal",
+        stage: "provider-execute-failed",
+        message: "generic-http provider execute failed",
+        error,
       });
+      throw error;
     }
-    if (args.requestKind === "generic-http.steps.v1") {
-      return this.executeStepsRequest({
-        request: args.request as GenericHttpStepsRequestV1,
-        backend: args.backend,
-      });
-    }
-    throw new Error(
-      `Unsupported request kind/backend for GenericHttpProvider: requestKind=${args.requestKind}, backendType=${args.backend.type}`,
-    );
   }
 }

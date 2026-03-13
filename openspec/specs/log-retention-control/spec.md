@@ -4,23 +4,24 @@
 TBD - created by archiving change add-plugin-log-system. Update Purpose after archive.
 ## Requirements
 ### Requirement: Runtime Logs SHALL Be Ephemeral and Session-Scoped
-Logs SHALL be retained in memory only during runtime and SHALL not require persistent storage in this change.
+Logs SHALL be persisted in plugin preferences and restored on next plugin startup within retention constraints.
 
 #### Scenario: Session restart behavior
-- **WHEN** plugin or Zotero restarts
-- **THEN** previous runtime logs SHALL not be restored automatically
+- **WHEN** plugin or Zotero restarts within retention window
+- **THEN** recent runtime logs SHALL be restored from persisted payload
+- **AND** expired records SHALL be pruned during hydration
 
 ### Requirement: Runtime Logs SHALL Enforce a Maximum Retained Entry Count of 2000
-The retention system SHALL bound in-memory entries to a fixed maximum of 2000.
+The retention system SHALL apply a mode-aware budget to bound stored diagnostics.
 
-#### Scenario: Append within limit
-- **WHEN** retained entries are below 2000
-- **THEN** each new entry SHALL be appended without eviction
+#### Scenario: Normal mode retention
+- **WHEN** diagnostic mode is disabled
+- **THEN** retention SHALL follow normal-mode entry budget (compatible with existing behavior)
 
-#### Scenario: Append over limit
-- **WHEN** retained entries are already 2000 and a new entry is appended
-- **THEN** the oldest entry SHALL be evicted
-- **AND** total retained entry count SHALL remain 2000
+#### Scenario: Diagnostic mode retention
+- **WHEN** diagnostic mode is enabled
+- **THEN** retention SHALL enforce dual thresholds (`3000 entries` and `20MB serialized estimate`)
+- **AND** eviction SHALL remove oldest entries first
 
 ### Requirement: Retention System SHALL Track and Expose Truncation State
 The system MUST maintain truncation metadata for user-visible diagnostics.
@@ -29,4 +30,8 @@ The system MUST maintain truncation metadata for user-visible diagnostics.
 - **WHEN** one or more entries are evicted due to retention limit
 - **THEN** system SHALL increase dropped-entry counter
 - **AND** log window SHALL display truncation notice derived from this counter
+
+#### Scenario: Budget reason is required
+- **WHEN** overflow eviction occurs
+- **THEN** system SHALL record budget-hit reason (`entry_limit` or `byte_budget`) for viewer/export diagnostics
 

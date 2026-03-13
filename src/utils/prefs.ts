@@ -8,6 +8,8 @@ type PluginPrefsMap = BasePluginPrefsMap & {
   runtimeLogsJson: string;
   skillRunnerModelCacheJson: string;
   skillRunnerDeferredTasksJson: string;
+  skillRunnerLocalRuntimeVersion: string;
+  skillRunnerLocalRuntimeStateJson: string;
   tagVocabularyStagedJson: string;
 };
 

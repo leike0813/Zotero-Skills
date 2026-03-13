@@ -5,6 +5,7 @@ import type {
   SkillRunnerJobRequestV1,
 } from "../contracts";
 import type { ProviderProgressEvent } from "../types";
+import { appendRuntimeLog } from "../../modules/runtimeLogManager";
 import {
   isWaiting,
   normalizeStatus,
@@ -325,6 +326,46 @@ export class SkillRunnerClient {
     }
   }
 
+  private appendTransportLog(args: {
+    level: "debug" | "info" | "warn" | "error";
+    stage: string;
+    message: string;
+    method?: string;
+    path?: string;
+    url?: string;
+    status?: number;
+    duration?: number;
+    retry?: number;
+    stepId?: string;
+    requestId?: string;
+    phase?: string;
+    details?: unknown;
+    error?: unknown;
+  }) {
+    appendRuntimeLog({
+      level: args.level,
+      scope: "provider",
+      providerId: "skillrunner",
+      requestId: args.requestId,
+      component: "skillrunner-client",
+      operation: "http",
+      phase: args.phase || "running",
+      stage: args.stage,
+      message: args.message,
+      transport: {
+        method: args.method,
+        path: args.path,
+        url: args.url,
+        status: args.status,
+        duration: args.duration,
+        retry: args.retry,
+        stepId: args.stepId,
+      },
+      details: args.details,
+      error: args.error,
+    });
+  }
+
   private buildUrl(path: string) {
     return `${this.baseUrl}${ensureLeadingSlash(path)}`;
   }
@@ -334,12 +375,25 @@ export class SkillRunnerClient {
   }
 
   private async executeCreateStep(step: SkillRunnerHttpStepDefinition) {
-    const response = await this.fetchImpl(this.buildUrl(step.request.path), {
+    const url = this.buildUrl(step.request.path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
       method: step.request.method,
       headers: {
         "content-type": "application/json",
       },
       body: JSON.stringify(step.request.json || {}),
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-create-response",
+      message: "skillrunner create step responded",
+      method: step.request.method,
+      path: step.request.path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      stepId: step.id,
     });
     const body = await readJsonOrThrow(response);
     const pathExpr = step.extract?.request_id || "$.request_id";
@@ -393,14 +447,29 @@ export class SkillRunnerClient {
       body = multipart.body;
     }
 
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-        headers,
-        body,
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+      headers,
+      body,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-upload-response",
+      message: "skillrunner upload step responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      stepId: step.id,
+      requestId,
+      details: {
+        multipart: true,
       },
-    );
+    });
     await readJsonOrThrow(response);
   }
 
@@ -417,7 +486,9 @@ export class SkillRunnerClient {
         ? timeoutRaw
         : 600000;
     const timeoutEnabled = timeoutMs > 0;
+    let pollRetry = 0;
     while (true) {
+      const pollStartedAt = Date.now();
       const body = await this.getJobState({
         requestPath: step.request.path,
         requestMethod: step.request.method,
@@ -436,6 +507,21 @@ export class SkillRunnerClient {
         );
       }
       if (isWaiting(status)) {
+        this.appendTransportLog({
+          level: "debug",
+          stage: "provider-http-poll-waiting",
+          message: `skillrunner poll waiting: ${status}`,
+          method: step.request.method,
+          path: step.request.path,
+          requestId,
+          duration: Date.now() - pollStartedAt,
+          retry: pollRetry,
+          stepId: step.id,
+          details: {
+            status,
+          },
+        });
+        pollRetry += 1;
         await sleep(intervalMs);
         continue;
       }
@@ -443,6 +529,7 @@ export class SkillRunnerClient {
         throw new Error(`SkillRunner polling timeout after ${timeoutMs}ms`);
       }
       timeoutAnchorAt = Date.now();
+      pollRetry += 1;
       await sleep(intervalMs);
     }
   }
@@ -452,14 +539,24 @@ export class SkillRunnerClient {
     requestMethod: string;
     requestId: string;
   }) {
-    const response = await this.fetchImpl(
-      this.buildUrl(
-        interpolatePath(args.requestPath, { request_id: args.requestId }),
-      ),
-      {
-        method: args.requestMethod,
-      },
-    );
+    const path = interpolatePath(args.requestPath, { request_id: args.requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: args.requestMethod,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-get-state-response",
+      message: "skillrunner get-state responded",
+      method: args.requestMethod,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId: args.requestId,
+      stepId: "poll",
+    });
     return (await readJsonOrThrow(response)) as {
       request_id?: string;
       status?: string;
@@ -472,12 +569,24 @@ export class SkillRunnerClient {
     step: SkillRunnerHttpStepDefinition,
     requestId: string,
   ) {
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-      },
-    );
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-bundle-response",
+      message: "skillrunner bundle fetch responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId,
+      stepId: step.id,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Bundle fetch failed: HTTP ${response.status} ${text}`);
@@ -490,12 +599,24 @@ export class SkillRunnerClient {
     step: SkillRunnerHttpStepDefinition,
     requestId: string,
   ) {
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-      },
-    );
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-result-response",
+      message: "skillrunner result fetch responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId,
+      stepId: step.id,
+    });
     return readJsonOrThrow(response);
   }
 

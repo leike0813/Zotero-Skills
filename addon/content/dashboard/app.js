@@ -298,6 +298,19 @@
     }
     const toolbar = el("div", "toolbar");
     toolbar.appendChild(el("h2", "page-title", backend.title));
+    const openDiagnostics = el(
+      "button",
+      "btn",
+      labels.logsOpenDiagnostics || "Diagnostic Export",
+    );
+    openDiagnostics.disabled = !backend.selectedLogTaskId;
+    openDiagnostics.addEventListener("click", function () {
+      sendAction("open-log-diagnostics", {
+        backendId: backend.backendId,
+        taskId: backend.selectedLogTaskId || "",
+      });
+    });
+    toolbar.appendChild(openDiagnostics);
     main.appendChild(toolbar);
 
     main.appendChild(

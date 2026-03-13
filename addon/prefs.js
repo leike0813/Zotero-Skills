@@ -3,6 +3,8 @@ pref("backendsConfigJson", "");
 pref("workflowSettingsJson", "");
 pref("skillRunnerModelCacheJson", "");
 pref("skillRunnerDeferredTasksJson", "");
+pref("skillRunnerLocalRuntimeVersion", "v0.4.4");
+pref("skillRunnerLocalRuntimeStateJson", "");
 pref("tagVocabularyStagedJson", "");
 pref("workflowDir", "");
 pref("sampleOutputDir", "");

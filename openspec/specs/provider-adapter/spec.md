@@ -39,31 +39,16 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 ### Requirement: SkillRunner interactive execution SHALL defer terminal ownership to backend state machine
 SkillRunner interactive 执行 SHALL 将终态裁决权交给后端状态机，插件侧仅负责同步与收敛。
 
-#### Scenario: interactive request returns deferred after submit
-- **WHEN** `skillrunner.job.v1` carries `runtime_options.execution_mode=interactive`
-- **THEN** provider SHALL return `status=deferred` with `requestId` and non-terminal backend status
-- **AND** plugin SHALL NOT mark job failed by local polling timeout during waiting states
-
-#### Scenario: backend terminal status drives final outcome
-- **WHEN** deferred task is reconciled to backend terminal `succeeded|failed|canceled`
-- **THEN** plugin task state SHALL match backend terminal state
-- **AND** only `succeeded` MAY trigger `applyResult`
+#### Scenario: managed local backend ensures runtime before dispatch
+- **WHEN** provider dispatch targets managed local backend `skillrunner-local`
+- **THEN** provider chain SHALL ensure local runtime is running before sending job create request
+- **AND** ensure failure SHALL surface as provider error without mutating unrelated backend profiles
 
 ### Requirement: SkillRunner provider chain SHALL consume a single plugin-side state machine SSOT
 SkillRunner provider/client/reconciler 全链路 SHALL 复用同一个插件侧状态机语义，避免分散判定导致漂移。
 
-#### Scenario: unknown backend status degrades to safe non-terminal state with diagnostics
-- **WHEN** provider/client or reconciler receives an unknown status value from backend or runtime payload
-- **THEN** plugin MUST normalize it to canonical safe non-terminal status (`running`)
-- **AND** plugin MUST emit structured state-machine diagnostics (`ruleId`, `requestId`, `action=degraded`)
-
-#### Scenario: illegal status transition is guarded without hard failure
-- **WHEN** chain observes a transition outside the legal transition matrix
-- **THEN** plugin MUST record a state-machine warning with transition context
-- **AND** plugin MUST apply degradation path instead of throwing hard runtime error
-
-#### Scenario: key event order invariants are enforced
-- **WHEN** runtime event sequence violates invariant rules (`request-created`, `deferred`, `waiting-resumed`, `apply-succeeded once`)
-- **THEN** plugin MUST emit state-machine diagnostics with violated `ruleId`
-- **AND** plugin MUST continue execution with degraded behavior
+#### Scenario: non-managed skillrunner backend skips local runtime management
+- **WHEN** provider dispatch targets a non-managed SkillRunner backend profile
+- **THEN** provider chain SHALL NOT invoke local ctl/lease management
+- **AND** request dispatch semantics SHALL remain unchanged from existing behavior
 

@@ -3,14 +3,19 @@ import { getString } from "../utils/locale";
 import { resolveToolkitMember } from "../utils/runtimeBridge";
 import { isWindowAlive } from "../utils/window";
 import {
+  buildRuntimeDiagnosticBundle,
+  buildRuntimeIssueSummary,
   clearRuntimeLogs,
   formatRuntimeLogsAsNDJSON,
   formatRuntimeLogsAsPrettyJson,
+  getRuntimeLogDiagnosticMode,
   listRuntimeLogs,
+  setRuntimeLogDiagnosticMode,
   snapshotRuntimeLogs,
   subscribeRuntimeLogs,
   type RuntimeLogEntry,
   type RuntimeLogLevel,
+  type RuntimeLogListFilters,
 } from "./runtimeLogManager";
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -20,6 +25,14 @@ type LevelFilterState = Record<RuntimeLogLevel, boolean>;
 type DialogCtor = new (rows: number, columns: number) => DialogHelper;
 
 let logViewerDialog: DialogHelper | undefined;
+
+export type LogViewerOpenArgs = {
+  initialFilters?: Pick<
+    RuntimeLogListFilters,
+    "workflowId" | "requestId" | "jobId" | "backendId" | "backendType" | "runId"
+  >;
+  focusDiagnostic?: boolean;
+};
 
 function createHtmlElement<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -222,6 +235,68 @@ function renderLogRows(args: {
 }
 
 export async function openLogViewerDialog() {
+  return openLogViewerDialogWithArgs();
+}
+
+function buildContextFiltersFromArgs(args?: LogViewerOpenArgs) {
+  const source = args?.initialFilters;
+  const normalized: RuntimeLogListFilters = {};
+  if (!source) {
+    return normalized;
+  }
+  const assign = (
+    key: "workflowId" | "requestId" | "jobId" | "backendId" | "backendType" | "runId",
+    value: unknown,
+  ) => {
+    const text = String(value || "").trim();
+    if (text) {
+      normalized[key] = text;
+    }
+  };
+  assign("workflowId", source.workflowId);
+  assign("requestId", source.requestId);
+  assign("jobId", source.jobId);
+  assign("backendId", source.backendId);
+  assign("backendType", source.backendType);
+  assign("runId", source.runId);
+  return normalized;
+}
+
+function hasAnyContextFilter(filters: RuntimeLogListFilters) {
+  return Boolean(
+    filters.workflowId ||
+      filters.requestId ||
+      filters.jobId ||
+      filters.backendId ||
+      filters.backendType ||
+      filters.runId,
+  );
+}
+
+function formatContextFilterLabel(filters: RuntimeLogListFilters) {
+  const pairs: string[] = [];
+  if (filters.backendId) {
+    pairs.push(`backend=${filters.backendId}`);
+  }
+  if (filters.backendType) {
+    pairs.push(`backendType=${filters.backendType}`);
+  }
+  if (filters.workflowId) {
+    pairs.push(`workflow=${filters.workflowId}`);
+  }
+  if (filters.runId) {
+    pairs.push(`run=${filters.runId}`);
+  }
+  if (filters.requestId) {
+    pairs.push(`request=${filters.requestId}`);
+  }
+  if (filters.jobId) {
+    pairs.push(`job=${filters.jobId}`);
+  }
+  return pairs.join(", ");
+}
+
+export async function openLogViewerDialogWithArgs(args?: LogViewerOpenArgs) {
   if (isWindowAlive(logViewerDialog?.window)) {
     logViewerDialog?.window?.focus();
     return;
@@ -233,6 +308,8 @@ export async function openLogViewerDialog() {
 
   let selectedEntryId = "";
   let levelFilter = defaultFilterState();
+  let contextFilters = buildContextFiltersFromArgs(args);
+  let diagnosticMode = getRuntimeLogDiagnosticMode();
   let unsubscribe: (() => void) | undefined;
   const dialogData: Record<string, unknown> = {
     loadCallback: () => {
@@ -286,11 +363,37 @@ export async function openLogViewerDialog() {
       truncationNotice.style.marginRight = "12px";
       toolbar.appendChild(truncationNotice);
 
+      const budgetNotice = createHtmlElement(doc, "span");
+      budgetNotice.id = "zs-log-viewer-budget";
+      budgetNotice.style.fontSize = "12px";
+      budgetNotice.style.color = "#1d4ed8";
+      budgetNotice.style.marginRight = "12px";
+      toolbar.appendChild(budgetNotice);
+
       const levelLabel = createHtmlElement(doc, "span");
       levelLabel.textContent = getString("log-viewer-level-filter-label" as any);
       levelLabel.style.fontSize = "12px";
       levelLabel.style.fontWeight = "600";
       toolbar.appendChild(levelLabel);
+
+      const diagWrap = createHtmlElement(doc, "label");
+      diagWrap.style.display = "inline-flex";
+      diagWrap.style.alignItems = "center";
+      diagWrap.style.gap = "4px";
+      const diagInput = createHtmlElement(doc, "input");
+      diagInput.type = "checkbox";
+      diagInput.checked = diagnosticMode;
+      diagInput.addEventListener("change", () => {
+        diagnosticMode = diagInput.checked;
+        setRuntimeLogDiagnosticMode(diagnosticMode);
+        render();
+      });
+      diagWrap.appendChild(diagInput);
+      const diagText = createHtmlElement(doc, "span");
+      diagText.textContent = getString("log-viewer-diagnostic-mode" as any);
+      diagText.style.fontSize = "12px";
+      diagWrap.appendChild(diagText);
+      toolbar.appendChild(diagWrap);
 
       for (const level of ALL_LEVELS) {
         const wrap = createHtmlElement(doc, "label");
@@ -322,6 +425,33 @@ export async function openLogViewerDialog() {
       actionBar.style.marginBottom = "8px";
       root.appendChild(actionBar);
 
+      const contextBar = createHtmlElement(doc, "div");
+      contextBar.style.display = "flex";
+      contextBar.style.flexWrap = "wrap";
+      contextBar.style.gap = "8px";
+      contextBar.style.marginBottom = "8px";
+      root.appendChild(contextBar);
+
+      const contextLabel = createHtmlElement(doc, "span");
+      contextLabel.style.fontSize = "12px";
+      contextLabel.style.color = "#334155";
+      contextBar.appendChild(contextLabel);
+
+      const clearContextBtn = createHtmlElement(doc, "button");
+      clearContextBtn.type = "button";
+      clearContextBtn.textContent = getString("log-viewer-clear-context-filter" as any);
+      clearContextBtn.addEventListener("click", () => {
+        contextFilters = {};
+        render();
+      });
+      contextBar.appendChild(clearContextBtn);
+
+      const sanitizerHint = createHtmlElement(doc, "span");
+      sanitizerHint.style.fontSize = "12px";
+      sanitizerHint.style.color = "#475569";
+      sanitizerHint.textContent = getString("log-viewer-sanitization-hint" as any);
+      contextBar.appendChild(sanitizerHint);
+
       const status = createHtmlElement(doc, "span");
       status.style.fontSize = "12px";
       status.style.color = "#166534";
@@ -343,7 +473,10 @@ export async function openLogViewerDialog() {
 
       const getVisibleEntries = () =>
         filterLogsByLevels(
-          listRuntimeLogs({ order: "desc" }),
+          listRuntimeLogs({
+            ...contextFilters,
+            order: "desc",
+          }),
           levelFilter,
         );
 
@@ -395,6 +528,50 @@ export async function openLogViewerDialog() {
       addAction(getString("log-viewer-copy-visible-ndjson" as any), () => {
         copyEntries(getVisibleEntries(), "ndjson");
       });
+      addAction(getString("log-viewer-copy-diagnostic-bundle" as any), () => {
+        try {
+          const bundle = buildRuntimeDiagnosticBundle({
+            filters: {
+              ...contextFilters,
+              levels: buildActiveLevels(levelFilter),
+            },
+          });
+          copyText(JSON.stringify(bundle, null, 2));
+          setStatus(
+            getString("log-viewer-copy-diagnostic-success" as any, {
+              args: {
+                count: bundle.entries.length,
+              },
+            }),
+          );
+        } catch (error) {
+          setStatus(
+            getString("log-viewer-copy-failed" as any, {
+              args: { error: String(error) },
+            }),
+            true,
+          );
+        }
+      });
+      addAction(getString("log-viewer-copy-issue-summary" as any), () => {
+        try {
+          const summary = buildRuntimeIssueSummary({
+            filters: {
+              ...contextFilters,
+              levels: buildActiveLevels(levelFilter),
+            },
+          });
+          copyText(summary);
+          setStatus(getString("log-viewer-copy-issue-summary-success" as any));
+        } catch (error) {
+          setStatus(
+            getString("log-viewer-copy-failed" as any, {
+              args: { error: String(error) },
+            }),
+            true,
+          );
+        }
+      });
       addAction(getString("log-viewer-clear" as any), () => {
         clearRuntimeLogs();
         selectedEntryId = "";
@@ -403,8 +580,13 @@ export async function openLogViewerDialog() {
 
       const render = () => {
         const snapshot = snapshotRuntimeLogs();
+        diagnosticMode = snapshot.diagnosticMode;
+        diagInput.checked = diagnosticMode;
         const visible = filterLogsByLevels(
-          snapshot.entries.slice().reverse(),
+          listRuntimeLogs({
+            ...contextFilters,
+            order: "desc",
+          }),
           levelFilter,
         );
         if (!visible.some((entry) => entry.id === selectedEntryId)) {
@@ -426,6 +608,35 @@ export async function openLogViewerDialog() {
         } else {
           truncationNotice.textContent = "";
         }
+        const budgetBits = [
+          `mode=${snapshot.retentionMode}`,
+          `bytes=${snapshot.estimatedBytes}/${snapshot.maxBytes || "∞"}`,
+        ];
+        if (snapshot.droppedByReason.entry_limit > 0) {
+          budgetBits.push(`entry_limit=${snapshot.droppedByReason.entry_limit}`);
+        }
+        if (snapshot.droppedByReason.byte_budget > 0) {
+          budgetBits.push(`byte_budget=${snapshot.droppedByReason.byte_budget}`);
+        }
+        if (snapshot.droppedByReason.expired > 0) {
+          budgetBits.push(`expired=${snapshot.droppedByReason.expired}`);
+        }
+        budgetNotice.textContent = getString("log-viewer-budget" as any, {
+          args: {
+            value: budgetBits.join(", "),
+          },
+        });
+        if (hasAnyContextFilter(contextFilters)) {
+          contextLabel.textContent = getString("log-viewer-context-filter" as any, {
+            args: {
+              filter: formatContextFilterLabel(contextFilters),
+            },
+          });
+          clearContextBtn.style.display = "";
+        } else {
+          contextLabel.textContent = getString("log-viewer-context-filter-none" as any);
+          clearContextBtn.style.display = "none";
+        }
 
         renderLogRows({
           container: rows,
@@ -439,6 +650,9 @@ export async function openLogViewerDialog() {
       };
 
       render();
+      if (args?.focusDiagnostic) {
+        setStatus(getString("log-viewer-diagnostic-focus" as any));
+      }
       unsubscribe = subscribeRuntimeLogs(() => {
         render();
       });

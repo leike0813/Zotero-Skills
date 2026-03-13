@@ -107,6 +107,16 @@ describe("workflow runtime log instrumentation", function () {
     assert.isTrue(stages.has("apply-start"));
     assert.isTrue(stages.has("apply-succeeded"));
     assert.isTrue(stages.has("trigger-finished"));
+
+    const providerEntries = listRuntimeLogs({
+      scopes: ["provider"],
+    });
+    const providerStages = new Set(providerEntries.map((entry) => entry.stage));
+    assert.isTrue(providerStages.has("provider-dispatch-start"));
+    assert.isTrue(providerStages.has("provider-dispatch-succeeded"));
+    assert.isTrue(providerStages.has("provider-execute-start"));
+    assert.isTrue(providerStages.has("provider-execute-succeeded"));
+    assert.isTrue(providerEntries.every((entry) => String(entry.providerId || "").trim().length > 0));
   });
 
   it("records normalized apply failure logs", async function () {

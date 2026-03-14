@@ -1,6 +1,7 @@
 import type { DialogHelper } from "zotero-plugin-toolkit";
 import { getString } from "../utils/locale";
 import { isWindowAlive } from "../utils/window";
+import { resolveBackendDisplayName } from "../backends/displayName";
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -47,9 +48,10 @@ function createManagementFrame(doc: Document, uiUrl: string) {
 }
 
 function buildDialogTitle(args: { backendId: string; baseUrl: string }) {
+  const displayName = resolveBackendDisplayName(args.backendId);
   return getString("backend-manager-management-title" as any, {
     args: {
-      id: args.backendId,
+      id: displayName || args.backendId,
       baseUrl: args.baseUrl,
     },
   });

@@ -2,7 +2,9 @@ import { config } from "../../package.json";
 import { getPref, setPref } from "../utils/prefs";
 import { getEffectiveWorkflowDir } from "./workflowRuntime";
 import { getString } from "../utils/locale";
-import { getDefaultSkillRunnerLocalRuntimeVersion } from "./skillRunnerLocalRuntimeManager";
+import { subscribeManagedLocalRuntimeStateChange } from "./skillRunnerLocalRuntimeManager";
+
+let unbindManagedLocalRuntimeStateChange: (() => void) | null = null;
 
 export async function registerPrefsScripts(window: Window) {
   if (!addon.data.prefs) {
@@ -18,6 +20,10 @@ function bindPrefEvents() {
   if (!doc) {
     return;
   }
+  if (unbindManagedLocalRuntimeStateChange) {
+    unbindManagedLocalRuntimeStateChange();
+    unbindManagedLocalRuntimeStateChange = null;
+  }
 
   const workflowDirInput = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-dir`,
@@ -31,17 +37,9 @@ function bindPrefEvents() {
   const backendManageButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-backend-manage`,
   ) as XUL.Button | null;
-  const localRuntimeVersionInput = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-version`,
-  ) as HTMLInputElement | null;
+
   const localRuntimeDeployButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-deploy`,
-  ) as XUL.Button | null;
-  const localRuntimeStatusButton = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-status`,
-  ) as XUL.Button | null;
-  const localRuntimeStartButton = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-start`,
   ) as XUL.Button | null;
   const localRuntimeStopButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-stop`,
@@ -49,68 +47,64 @@ function bindPrefEvents() {
   const localRuntimeUninstallButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall`,
   ) as XUL.Button | null;
-  const localRuntimeDoctorButton = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-doctor`,
-  ) as XUL.Button | null;
-  const localRuntimeCopyCommandsButton = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-copy-commands`,
-  ) as XUL.Button | null;
   const localRuntimeOpenDebugConsoleButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-open-debug-console`,
   ) as XUL.Button | null;
-  const localRuntimeAutoPullToggleButton = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-auto-pull-toggle`,
+  const localRuntimeOpenManagementButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-open-management`,
   ) as XUL.Button | null;
+  const localRuntimeRefreshModelCacheButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-refresh-model-cache`,
+  ) as XUL.Button | null;
+  const localRuntimeLed = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-runtime-led`,
+  ) as HTMLElement | null;
+  const localRuntimeAutoStartIcon = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-autostart-icon`,
+  ) as HTMLElement | null;
   const localRuntimeStatusText = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-status-text`,
   ) as HTMLElement | null;
-  const localRuntimeStateText = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-skillrunner-local-state-text`,
-  ) as HTMLElement | null;
 
-  const localRuntimeButtons = [
+  const runtimeActionButtons = [
     localRuntimeDeployButton,
-    localRuntimeStatusButton,
-    localRuntimeStartButton,
     localRuntimeStopButton,
     localRuntimeUninstallButton,
-    localRuntimeDoctorButton,
-    localRuntimeCopyCommandsButton,
-    localRuntimeOpenDebugConsoleButton,
-    localRuntimeAutoPullToggleButton,
+    localRuntimeOpenManagementButton,
+    localRuntimeRefreshModelCacheButton,
   ].filter(Boolean) as XUL.Button[];
+
+  const setButtonDisabled = (button: XUL.Button | null, disabled: boolean) => {
+    if (!button) {
+      return;
+    }
+    if (disabled) {
+      button.setAttribute("disabled", "true");
+      return;
+    }
+    if (
+      typeof (button as { removeAttribute?: (name: string) => void })
+        .removeAttribute === "function"
+    ) {
+      (button as { removeAttribute: (name: string) => void }).removeAttribute(
+        "disabled",
+      );
+    } else {
+      button.setAttribute("disabled", "false");
+    }
+  };
+
+  const setRuntimeActionButtonsDisabled = (disabled: boolean) => {
+    for (const button of runtimeActionButtons) {
+      setButtonDisabled(button, disabled);
+    }
+  };
 
   const setLocalRuntimeStatusText = (text: string) => {
     if (!localRuntimeStatusText) {
       return;
     }
     localRuntimeStatusText.textContent = text;
-  };
-
-  const setLocalRuntimeStateText = (text: string) => {
-    if (!localRuntimeStateText) {
-      return;
-    }
-    localRuntimeStateText.textContent = text;
-  };
-
-  const setLocalRuntimeButtonsDisabled = (disabled: boolean) => {
-    for (const button of localRuntimeButtons) {
-      if (!button) {
-        continue;
-      }
-      if (disabled) {
-        button.setAttribute("disabled", "true");
-      } else {
-        if (typeof (button as { removeAttribute?: (name: string) => void }).removeAttribute === "function") {
-          (button as { removeAttribute: (name: string) => void }).removeAttribute(
-            "disabled",
-          );
-        } else {
-          button.setAttribute("disabled", "false");
-        }
-      }
-    }
   };
 
   const formatLocalRuntimeStatusMessage = (result: unknown) => {
@@ -129,104 +123,94 @@ function bindPrefEvents() {
     return `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${message}`;
   };
 
-  const getRuntimeStateLabel = (value: unknown) => {
+  const getRuntimeStateLabel = (value: unknown, hasRuntimeInfo: boolean) => {
     const normalized = String(value || "").trim().toLowerCase();
+    if (!hasRuntimeInfo) {
+      return getString("pref-skillrunner-local-runtime-state-no-runtime" as any);
+    }
     if (normalized === "running") {
       return getString("pref-skillrunner-local-runtime-state-running" as any);
     }
     if (normalized === "starting") {
-      return getString("pref-skillrunner-local-runtime-state-starting" as any);
+      return getString("pref-skillrunner-local-runtime-state-reconciling" as any);
     }
     if (normalized === "stopped") {
       return getString("pref-skillrunner-local-runtime-state-stopped" as any);
     }
-    if (normalized === "degraded") {
-      return getString("pref-skillrunner-local-runtime-state-degraded" as any);
-    }
-    if (normalized === "broken") {
-      return getString("pref-skillrunner-local-runtime-state-broken" as any);
+    if (
+      normalized === "reconciling_after_heartbeat_fail" ||
+      normalized === "degraded"
+    ) {
+      return getString("pref-skillrunner-local-runtime-state-reconciling" as any);
     }
     return getString("pref-skillrunner-local-runtime-state-unknown" as any);
   };
 
-  const getLeaseStateLabel = (value: unknown) => {
-    const normalized = String(value || "").trim().toLowerCase();
-    if (normalized === "acquired") {
-      return getString("pref-skillrunner-local-lease-state-acquired" as any);
-    }
-    if (normalized === "conflict") {
-      return getString("pref-skillrunner-local-lease-state-conflict" as any);
-    }
-    if (normalized === "failed") {
-      return getString("pref-skillrunner-local-lease-state-failed" as any);
-    }
-    return getString("pref-skillrunner-local-lease-state-pending" as any);
-  };
-
-  const getAutoStartStateLabel = (value: unknown) => {
-    return value === true
-      ? getString("pref-skillrunner-local-auto-start-off" as any)
-      : getString("pref-skillrunner-local-auto-start-on" as any);
-  };
-
-  const getUILocale = () => {
-    const runtime = globalThis as {
-      Zotero?: {
-        locale?: string;
-      };
-    };
-    const zoteroLocale = String(runtime.Zotero?.locale || "").trim();
-    if (zoteroLocale) {
-      return zoteroLocale.toLowerCase();
-    }
-    const intlLocale = String(Intl.DateTimeFormat().resolvedOptions().locale || "").trim();
-    return intlLocale.toLowerCase();
-  };
-
-  const resolveLocalizedActionLabel = (key: string) => {
-    const resolved = String(getString(key as any) || "").trim();
-    if (resolved && resolved !== key && resolved !== `${config.addonRef}-${key}`) {
-      return resolved;
-    }
-    const isZh = getUILocale().startsWith("zh");
-    if (key === "pref-skillrunner-local-auto-pull-enable") {
-      return isZh ? "开启自动拉起" : "Enable Auto-start";
-    }
-    return isZh ? "关闭自动拉起" : "Disable Auto-start";
-  };
-
-  const setAutoPullToggleButtonLabel = (autoStartPaused: unknown) => {
-    if (!localRuntimeAutoPullToggleButton) {
-      return;
-    }
-    const key =
-      autoStartPaused === true
-        ? "pref-skillrunner-local-auto-pull-enable"
-        : "pref-skillrunner-local-auto-pull-disable";
-    localRuntimeAutoPullToggleButton.setAttribute(
-      "label",
-      resolveLocalizedActionLabel(key),
-    );
-  };
-
-  const updateLocalRuntimeStateSummaryFromResult = (result: unknown) => {
+  const updateLocalRuntimeIndicatorsFromResult = (result: unknown) => {
     const typed = (result || {}) as {
       details?: Record<string, unknown>;
     };
     const details = typed.details || {};
-    const runtime = getRuntimeStateLabel(details.runtimeState);
-    const lease = getLeaseStateLabel(details.leaseState);
-    const autoStart = getAutoStartStateLabel(details.autoStartPaused);
-    setAutoPullToggleButtonLabel(details.autoStartPaused);
-    setLocalRuntimeStateText(
-      getString("pref-skillrunner-local-state-summary-template" as any, {
-        args: {
-          runtime,
-          lease,
-          autoStart,
-        },
-      }),
+    const runtimeState = String(details.runtimeState || "").trim().toLowerCase();
+    const hasRuntimeInfo = details.hasRuntimeInfo === true;
+    const autoStartEnabled = details.autoStartPaused === false;
+    let runtimeClass = "is-gray";
+    if (hasRuntimeInfo) {
+      if (runtimeState === "running") {
+        runtimeClass = "is-green";
+      } else if (runtimeState === "reconciling_after_heartbeat_fail") {
+        runtimeClass = "is-orange";
+      } else if (runtimeState === "stopped") {
+        runtimeClass = "is-red";
+      } else if (runtimeState === "starting" || runtimeState === "degraded") {
+        runtimeClass = "is-orange";
+      } else {
+        runtimeClass = "is-red";
+      }
+    }
+    if (localRuntimeLed) {
+      localRuntimeLed.className = `zs-runtime-led ${runtimeClass}`;
+      localRuntimeLed.setAttribute(
+        "title",
+        getRuntimeStateLabel(details.runtimeState, hasRuntimeInfo),
+      );
+    }
+    if (localRuntimeAutoStartIcon) {
+      localRuntimeAutoStartIcon.className = `zs-autostart-icon ${autoStartEnabled ? "is-green" : "is-red"}`;
+      localRuntimeAutoStartIcon.setAttribute(
+        "title",
+        autoStartEnabled
+          ? getString("pref-skillrunner-local-auto-start-on" as any)
+          : getString("pref-skillrunner-local-auto-start-off" as any),
+      );
+    }
+    return details;
+  };
+
+  const applyRuntimeButtonGate = (details: Record<string, unknown> | null) => {
+    const runtimeState = String(details?.runtimeState || "")
+      .trim()
+      .toLowerCase();
+    const hasRuntimeInfo = details?.hasRuntimeInfo === true;
+    const inFlightAction = String(details?.inFlightAction || "").trim();
+    const actionBusy = inFlightAction.length > 0 || runtimeState === "starting";
+    const running = runtimeState === "running";
+
+    setButtonDisabled(localRuntimeDeployButton, actionBusy || running);
+    setButtonDisabled(localRuntimeStopButton, actionBusy || !running);
+    setButtonDisabled(
+      localRuntimeUninstallButton,
+      actionBusy || running || !hasRuntimeInfo,
     );
+    setButtonDisabled(
+      localRuntimeOpenManagementButton,
+      actionBusy || !running,
+    );
+    setButtonDisabled(
+      localRuntimeRefreshModelCacheButton,
+      actionBusy || !running,
+    );
+    setButtonDisabled(localRuntimeOpenDebugConsoleButton, false);
   };
 
   const refreshLocalRuntimeStateSummary = async () => {
@@ -234,17 +218,53 @@ function bindPrefEvents() {
       const state = await addon.hooks.onPrefsEvent("stateSkillRunnerLocalRuntime", {
         window: addon.data.prefs?.window,
       });
-      updateLocalRuntimeStateSummaryFromResult(state);
+      const details = updateLocalRuntimeIndicatorsFromResult(state);
+      applyRuntimeButtonGate(details);
+      return details;
     } catch {
-      setLocalRuntimeStateText(
-        getString("pref-skillrunner-local-state-summary-idle" as any),
-      );
-      setAutoPullToggleButtonLabel(true);
+      updateLocalRuntimeIndicatorsFromResult({
+        details: {
+          runtimeState: "unknown",
+          hasRuntimeInfo: false,
+          autoStartPaused: true,
+        },
+      });
+      applyRuntimeButtonGate(null);
+      return null;
     }
   };
+  unbindManagedLocalRuntimeStateChange = subscribeManagedLocalRuntimeStateChange(
+    () => {
+      void refreshLocalRuntimeStateSummary();
+    },
+  );
+  const prefsWindow = addon.data.prefs?.window as
+    | (Window & {
+        addEventListener?: (
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions | boolean,
+        ) => void;
+      })
+    | undefined;
+  if (typeof prefsWindow?.addEventListener === "function") {
+    prefsWindow.addEventListener(
+      "unload",
+      () => {
+        if (unbindManagedLocalRuntimeStateChange) {
+          unbindManagedLocalRuntimeStateChange();
+          unbindManagedLocalRuntimeStateChange = null;
+        }
+      },
+      { once: true },
+    );
+  }
 
-  const runLocalRuntimeAction = async (type: string, payload?: Record<string, unknown>) => {
-    setLocalRuntimeButtonsDisabled(true);
+  const runLocalRuntimeAction = async (
+    type: string,
+    payload?: Record<string, unknown>,
+  ) => {
+    setRuntimeActionButtonsDisabled(true);
     setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
     try {
       const response = await addon.hooks.onPrefsEvent(type, {
@@ -258,8 +278,6 @@ function bindPrefEvents() {
         `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
       );
       await refreshLocalRuntimeStateSummary();
-    } finally {
-      setLocalRuntimeButtonsDisabled(false);
     }
   };
 
@@ -267,34 +285,6 @@ function bindPrefEvents() {
     return addon.hooks.onPrefsEvent("openSkillRunnerLocalDeployDebugConsole", {
       window: addon.data.prefs?.window,
     });
-  };
-
-  const copyTextToClipboard = async (text: string) => {
-    const runtime = globalThis as {
-      Zotero?: {
-        Utilities?: {
-          Internal?: {
-            copyTextToClipboard?: (value: string) => void;
-          };
-        };
-      };
-      navigator?: {
-        clipboard?: {
-          writeText?: (value: string) => Promise<void>;
-        };
-      };
-    };
-    const copyByZotero = runtime.Zotero?.Utilities?.Internal?.copyTextToClipboard;
-    if (typeof copyByZotero === "function") {
-      copyByZotero(text);
-      return;
-    }
-    const writeText = runtime.navigator?.clipboard?.writeText;
-    if (typeof writeText === "function") {
-      await writeText(text);
-      return;
-    }
-    throw new Error("clipboard API unavailable");
   };
 
   if (workflowDirInput) {
@@ -315,8 +305,7 @@ function bindPrefEvents() {
       const rawWorkflowDir = workflowDirInput?.value || "";
       const normalizedWorkflowDir = rawWorkflowDir.trim();
       if (workflowDirInput) {
-        const nextWorkflowDir =
-          normalizedWorkflowDir || getEffectiveWorkflowDir();
+        const nextWorkflowDir = normalizedWorkflowDir || getEffectiveWorkflowDir();
         setPref("workflowDir", nextWorkflowDir);
         workflowDirInput.value = nextWorkflowDir;
       }
@@ -344,71 +333,23 @@ function bindPrefEvents() {
     });
   }
 
-  if (localRuntimeVersionInput) {
-    const prefVersion = String(getPref("skillRunnerLocalRuntimeVersion") || "").trim();
-    const normalizedVersion = prefVersion || getDefaultSkillRunnerLocalRuntimeVersion();
-    localRuntimeVersionInput.value = normalizedVersion;
-    setPref("skillRunnerLocalRuntimeVersion", normalizedVersion);
-    localRuntimeVersionInput.addEventListener("change", (event: Event) => {
-      const value = String((event.target as HTMLInputElement).value || "").trim();
-      const nextValue = value || getDefaultSkillRunnerLocalRuntimeVersion();
-      setPref("skillRunnerLocalRuntimeVersion", nextValue);
-      localRuntimeVersionInput.value = nextValue;
-    });
-  }
-
   if (localRuntimeStatusText) {
     setLocalRuntimeStatusText(
       getString("pref-skillrunner-local-status-idle" as any),
     );
   }
-  if (localRuntimeStateText) {
-    setLocalRuntimeStateText(
-      getString("pref-skillrunner-local-state-summary-idle" as any),
-    );
-  }
-  setAutoPullToggleButtonLabel(true);
+  updateLocalRuntimeIndicatorsFromResult({
+    details: {
+      runtimeState: "unknown",
+      hasRuntimeInfo: false,
+      autoStartPaused: true,
+    },
+  });
   void refreshLocalRuntimeStateSummary();
 
   if (localRuntimeDeployButton) {
     localRuntimeDeployButton.addEventListener("command", () => {
-      const version = String(localRuntimeVersionInput?.value || "").trim();
-      setLocalRuntimeButtonsDisabled(true);
-      setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
-      void (async () => {
-        try {
-          try {
-            await openLocalRuntimeDebugConsole();
-          } catch {
-            // Keep deploy flow running even if debug console fails to open.
-          }
-          const response = await addon.hooks.onPrefsEvent("deploySkillRunnerLocalRuntime", {
-            window: addon.data.prefs?.window,
-            version,
-          });
-          setLocalRuntimeStatusText(formatLocalRuntimeStatusMessage(response));
-          await refreshLocalRuntimeStateSummary();
-        } catch (error) {
-          setLocalRuntimeStatusText(
-            `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
-          );
-          await refreshLocalRuntimeStateSummary();
-        } finally {
-          setLocalRuntimeButtonsDisabled(false);
-        }
-      })();
-    });
-  }
-
-  if (localRuntimeStatusButton) {
-    localRuntimeStatusButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("statusSkillRunnerLocalRuntime");
-    });
-  }
-
-  if (localRuntimeStartButton) {
-    localRuntimeStartButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("startSkillRunnerLocalRuntime");
+      void runLocalRuntimeAction("deploySkillRunnerLocalRuntime");
     });
   }
 
@@ -424,75 +365,29 @@ function bindPrefEvents() {
     });
   }
 
-  if (localRuntimeDoctorButton) {
-    localRuntimeDoctorButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("doctorSkillRunnerLocalRuntime");
-    });
-  }
-
-  if (localRuntimeCopyCommandsButton) {
-    localRuntimeCopyCommandsButton.addEventListener("command", () => {
-      const version = String(localRuntimeVersionInput?.value || "").trim();
-      setLocalRuntimeButtonsDisabled(true);
-      setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
-      void (async () => {
-        try {
-          const response = (await addon.hooks.onPrefsEvent(
-            "copySkillRunnerLocalDeployCommands",
-            {
-              window: addon.data.prefs?.window,
-              version,
-            },
-          )) as {
-            details?: { commands?: unknown };
-          };
-          const commands = String(response?.details?.commands || "").trim();
-          if (!commands) {
-            throw new Error("manual deploy commands are empty");
-          }
-          await copyTextToClipboard(commands);
-          setLocalRuntimeStatusText(
-            `${getString("pref-skillrunner-local-status-ok-prefix" as any)} ${getString("pref-skillrunner-local-copy-commands-copied" as any)}`,
-          );
-          await refreshLocalRuntimeStateSummary();
-        } catch (error) {
-          setLocalRuntimeStatusText(
-            `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
-          );
-          await refreshLocalRuntimeStateSummary();
-        } finally {
-          setLocalRuntimeButtonsDisabled(false);
-        }
-      })();
-    });
-  }
-
   if (localRuntimeOpenDebugConsoleButton) {
     localRuntimeOpenDebugConsoleButton.addEventListener("command", () => {
-      setLocalRuntimeButtonsDisabled(true);
-      setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
       void (async () => {
         try {
           await openLocalRuntimeDebugConsole();
-          setLocalRuntimeStatusText(
-            `${getString("pref-skillrunner-local-status-ok-prefix" as any)} ${getString("pref-skillrunner-local-debug-console-opened" as any)}`,
-          );
-          await refreshLocalRuntimeStateSummary();
-        } catch (error) {
-          setLocalRuntimeStatusText(
-            `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
-          );
-          await refreshLocalRuntimeStateSummary();
+        } catch {
+          // keep debug-console action silent in status text to avoid polluting runtime action feedback
         } finally {
-          setLocalRuntimeButtonsDisabled(false);
+          await refreshLocalRuntimeStateSummary();
         }
       })();
     });
   }
 
-  if (localRuntimeAutoPullToggleButton) {
-    localRuntimeAutoPullToggleButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("toggleSkillRunnerLocalRuntimeAutoPull");
+  if (localRuntimeOpenManagementButton) {
+    localRuntimeOpenManagementButton.addEventListener("command", () => {
+      void runLocalRuntimeAction("openSkillRunnerManagedBackendPage");
+    });
+  }
+
+  if (localRuntimeRefreshModelCacheButton) {
+    localRuntimeRefreshModelCacheButton.addEventListener("command", () => {
+      void runLocalRuntimeAction("refreshSkillRunnerManagedModelCache");
     });
   }
 }

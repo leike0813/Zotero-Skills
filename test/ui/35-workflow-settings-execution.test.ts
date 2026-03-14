@@ -42,21 +42,25 @@ describe("workflow settings execution", function () {
     Zotero.Prefs.set(
       backendsConfigPrefKey,
       JSON.stringify({
+        schemaVersion: 2,
         backends: [
           {
             id: "skillrunner-local",
+            displayName: "skillrunner-local",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },
           },
           {
             id: "skillrunner-alt",
+            displayName: "skillrunner-alt",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:18030",
             auth: { kind: "none" },
           },
           {
             id: "generic-http-local",
+            displayName: "generic-http-local",
             type: "generic-http",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },

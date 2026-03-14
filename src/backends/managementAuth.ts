@@ -1,5 +1,6 @@
 import type { BackendInstance, BackendManagementAuth } from "./types";
 import { getPref, setPref } from "../utils/prefs";
+import { createBackendsPrefsDocument } from "./registry";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 
@@ -140,13 +141,9 @@ export function updateBackendManagementAuth(args: {
     throw new Error(`backend "${backendId}" not found`);
   }
 
-  const doc = Array.isArray(parsed)
-    ? nextEntries
-    : {
-        ...(isObject(parsed) ? parsed : {}),
-        backends: nextEntries,
-      };
-
-  setPref(BACKENDS_CONFIG_PREF_KEY, JSON.stringify(doc));
+  setPref(
+    BACKENDS_CONFIG_PREF_KEY,
+    JSON.stringify(createBackendsPrefsDocument(nextEntries as BackendInstance[])),
+  );
   return normalizedAuth;
 }

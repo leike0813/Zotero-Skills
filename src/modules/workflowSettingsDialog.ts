@@ -16,6 +16,7 @@ import {
   resolveProviderSchemaEntries,
   type FormSchemaEntry,
 } from "./workflowSettingsDialogModel";
+import { resolveBackendDisplayName } from "../backends/displayName";
 
 type FormSchemaType = "string" | "number" | "boolean";
 
@@ -626,7 +627,7 @@ export async function openWorkflowSettingsDialog(args?: {
   const profileById = new Map(profiles.map((entry) => [entry.id, entry]));
   const profileItems = profiles.map((profile) => ({
     id: profile.id,
-    label: `${profile.id} (${profile.baseUrl})`,
+    label: `${resolveBackendDisplayName(profile.id, profile.displayName)} (${profile.baseUrl})`,
   }));
   // Domain layer resets pending run-once override so every open starts from persisted snapshot.
   const initialState = getWorkflowSettingsDialogInitialState(workflowId);

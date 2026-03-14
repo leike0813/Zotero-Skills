@@ -2,6 +2,10 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import { registerPrefsScripts } from "../../src/modules/preferenceScript";
+import {
+  emitManagedLocalRuntimeStateChangedForTests,
+  resetManagedLocalRuntimeStateChangeListenersForTests,
+} from "../../src/modules/skillRunnerLocalRuntimeManager";
 import { ensureWorkflowMenuForWindow } from "../../src/modules/workflowMenu";
 import {
   getEffectiveWorkflowDir,
@@ -210,42 +214,33 @@ function createPrefsWindow() {
 
   const backendManageButton = document.createXULElement("button");
   backendManageButton.id = `zotero-prefpane-${config.addonRef}-backend-manage`;
-  const localRuntimeVersionInput = document.createXULElement("input");
-  localRuntimeVersionInput.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-version`;
   const localRuntimeDeployButton = document.createXULElement("button");
   localRuntimeDeployButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-deploy`;
-  const localRuntimeStatusButton = document.createXULElement("button");
-  localRuntimeStatusButton.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-status`;
-  const localRuntimeStartButton = document.createXULElement("button");
-  localRuntimeStartButton.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-start`;
   const localRuntimeStopButton = document.createXULElement("button");
   localRuntimeStopButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-stop`;
   const localRuntimeUninstallButton = document.createXULElement("button");
   localRuntimeUninstallButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall`;
-  const localRuntimeDoctorButton = document.createXULElement("button");
-  localRuntimeDoctorButton.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-doctor`;
-  const localRuntimeCopyCommandsButton = document.createXULElement("button");
-  localRuntimeCopyCommandsButton.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-copy-commands`;
   const localRuntimeOpenDebugConsoleButton = document.createXULElement("button");
   localRuntimeOpenDebugConsoleButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-open-debug-console`;
-  const localRuntimeAutoPullToggleButton = document.createXULElement("button");
-  localRuntimeAutoPullToggleButton.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-auto-pull-toggle`;
+  const localRuntimeOpenManagementButton = document.createXULElement("button");
+  localRuntimeOpenManagementButton.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-open-management`;
+  const localRuntimeRefreshModelCacheButton = document.createXULElement("button");
+  localRuntimeRefreshModelCacheButton.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-refresh-model-cache`;
+  const localRuntimeLed = document.createXULElement("span");
+  localRuntimeLed.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-runtime-led`;
+  const localRuntimeAutoStartIcon = document.createXULElement("span");
+  localRuntimeAutoStartIcon.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-autostart-icon`;
   const localRuntimeStatusText = document.createXULElement("description");
   localRuntimeStatusText.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-status-text`;
-  const localRuntimeStateText = document.createXULElement("description");
-  localRuntimeStateText.id =
-    `zotero-prefpane-${config.addonRef}-skillrunner-local-state-text`;
 
   return {
     window: { document } as unknown as Window,
@@ -253,18 +248,15 @@ function createPrefsWindow() {
     scanButton,
     workflowSettingsButton,
     backendManageButton,
-    localRuntimeVersionInput,
     localRuntimeDeployButton,
-    localRuntimeStatusButton,
-    localRuntimeStartButton,
     localRuntimeStopButton,
     localRuntimeUninstallButton,
-    localRuntimeDoctorButton,
-    localRuntimeCopyCommandsButton,
     localRuntimeOpenDebugConsoleButton,
-    localRuntimeAutoPullToggleButton,
+    localRuntimeOpenManagementButton,
+    localRuntimeRefreshModelCacheButton,
+    localRuntimeLed,
+    localRuntimeAutoStartIcon,
     localRuntimeStatusText,
-    localRuntimeStateText,
   };
 }
 
@@ -316,6 +308,7 @@ describe("gui: preference scripts", function () {
       },
     };
     Zotero.Prefs.clear(workflowDirPrefKey, true);
+    resetManagedLocalRuntimeStateChangeListenersForTests();
   });
 
   afterEach(function () {
@@ -327,6 +320,7 @@ describe("gui: preference scripts", function () {
 
     const runtime = globalThis as { addon?: unknown };
     runtime.addon = prevAddon;
+    resetManagedLocalRuntimeStateChangeListenersForTests();
   });
 
   it("binds preference inputs and dispatches workflow scan/settings/backend manager commands", async function () {
@@ -396,31 +390,10 @@ describe("gui: preference scripts", function () {
     });
   });
 
-  it("binds local runtime controls and dispatches deploy/status/start/stop/uninstall/doctor actions", async function () {
+  it("binds local runtime controls and dispatches oneclick/stop/uninstall/debug actions", async function () {
     const calls: Array<{ type: string; data: unknown }> = [];
-    const copyPayloads: string[] = [];
-    const runtime = globalThis as {
-      Zotero?: {
-        Utilities?: {
-          Internal?: {
-            copyTextToClipboard?: (value: string) => void;
-          };
-        };
-      };
-    };
-    const previousCopy = runtime.Zotero?.Utilities?.Internal?.copyTextToClipboard;
-    if (!runtime.Zotero) {
-      runtime.Zotero = {};
-    }
-    if (!runtime.Zotero.Utilities) {
-      runtime.Zotero.Utilities = {};
-    }
-    if (!runtime.Zotero.Utilities.Internal) {
-      runtime.Zotero.Utilities.Internal = {};
-    }
-    runtime.Zotero.Utilities.Internal.copyTextToClipboard = (value: string) => {
-      copyPayloads.push(value);
-    };
+    let stateCalls = 0;
+    let releaseDeploy: (() => void) | null = null;
     (
       globalThis as {
         addon: {
@@ -431,12 +404,142 @@ describe("gui: preference scripts", function () {
       }
     ).addon.hooks.onPrefsEvent = async (type, data) => {
       calls.push({ type, data });
-      if (type === "copySkillRunnerLocalDeployCommands") {
+      if (type === "stateSkillRunnerLocalRuntime") {
+        stateCalls += 1;
+        if (stateCalls <= 1) {
+          return {
+            ok: true,
+            details: {
+              runtimeState: "stopped",
+              leaseState: "pending",
+              autoStartPaused: true,
+              hasRuntimeInfo: true,
+              inFlightAction: "",
+              monitoringState: "inactive",
+            },
+          };
+        }
         return {
           ok: true,
-          message: "manual commands generated",
           details: {
-            commands: "echo test",
+            runtimeState: "running",
+            leaseState: "acquired",
+            autoStartPaused: false,
+            hasRuntimeInfo: true,
+            inFlightAction: "",
+            monitoringState: "heartbeat",
+          },
+        };
+      }
+      if (type === "deploySkillRunnerLocalRuntime") {
+        await new Promise<void>((resolve) => {
+          releaseDeploy = resolve;
+        });
+        return {
+          ok: true,
+          message: "oneclick complete",
+        };
+      }
+      return {
+        ok: true,
+        message: `ok-${type}`,
+      };
+    };
+
+    const {
+      window,
+      localRuntimeDeployButton,
+      localRuntimeStopButton,
+      localRuntimeUninstallButton,
+      localRuntimeOpenDebugConsoleButton,
+      localRuntimeOpenManagementButton,
+      localRuntimeRefreshModelCacheButton,
+      localRuntimeLed,
+      localRuntimeAutoStartIcon,
+      localRuntimeStatusText,
+    } = createPrefsWindow();
+    await registerPrefsScripts(window);
+
+      assert.equal(localRuntimeOpenDebugConsoleButton.getAttribute("disabled"), null);
+      localRuntimeDeployButton.dispatch("command");
+      await flushTasks();
+      const statusBeforeDebugClick = localRuntimeStatusText.textContent || "";
+      localRuntimeOpenDebugConsoleButton.dispatch("command");
+      await flushTasks();
+      assert.equal(
+        localRuntimeStatusText.textContent || "",
+        statusBeforeDebugClick,
+      );
+      releaseDeploy?.();
+      await flushTasks();
+      await flushTasks();
+      emitManagedLocalRuntimeStateChangedForTests();
+      await flushTasks();
+      localRuntimeStopButton.dispatch("command");
+      await flushTasks();
+      localRuntimeUninstallButton.dispatch("command");
+      await flushTasks();
+      localRuntimeOpenManagementButton.dispatch("command");
+      await flushTasks();
+      localRuntimeRefreshModelCacheButton.dispatch("command");
+      await flushTasks();
+
+    const callTypes = calls.map((entry) => entry.type);
+    assert.equal(callTypes[0], "stateSkillRunnerLocalRuntime");
+    assert.include(callTypes, "deploySkillRunnerLocalRuntime");
+    assert.include(callTypes, "stopSkillRunnerLocalRuntime");
+    assert.include(callTypes, "uninstallSkillRunnerLocalRuntime");
+    assert.include(callTypes, "openSkillRunnerLocalDeployDebugConsole");
+    assert.include(callTypes, "openSkillRunnerManagedBackendPage");
+    assert.include(callTypes, "refreshSkillRunnerManagedModelCache");
+    assert.notInclude(callTypes, "statusSkillRunnerLocalRuntime");
+    assert.notInclude(callTypes, "startSkillRunnerLocalRuntime");
+    assert.notInclude(callTypes, "doctorSkillRunnerLocalRuntime");
+    assert.notInclude(callTypes, "copySkillRunnerLocalDeployCommands");
+    assert.notInclude(callTypes, "toggleSkillRunnerLocalRuntimeAutoPull");
+
+    const deployCall = calls.find((entry) => entry.type === "deploySkillRunnerLocalRuntime");
+    assert.deepEqual(deployCall?.data, { window });
+    const stopCall = calls.find((entry) => entry.type === "stopSkillRunnerLocalRuntime");
+    assert.deepEqual(stopCall?.data, { window });
+    const uninstallCall = calls.find(
+      (entry) => entry.type === "uninstallSkillRunnerLocalRuntime",
+    );
+    assert.deepEqual(uninstallCall?.data, { window });
+    const snapshotCalls = calls.filter(
+      (entry) => entry.type === "stateSkillRunnerLocalRuntime",
+    );
+    assert.isAtLeast(snapshotCalls.length, 5);
+    assert.match(
+      localRuntimeStatusText.textContent || "",
+      /Success:|成功：|pref-skillrunner-local-status-ok-prefix/,
+    );
+    assert.match(localRuntimeLed.className, /is-green|is-red|is-gray|is-orange/);
+    assert.match(localRuntimeAutoStartIcon.className, /is-green|is-red/);
+  });
+
+  it("disables oneclick/stop/uninstall when snapshot is starting or in-flight while keeping debug enabled", async function () {
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "starting",
+            leaseState: "pending",
+            autoStartPaused: false,
+            hasRuntimeInfo: true,
+            inFlightAction: "auto-ensure-starting",
+            monitoringState: "heartbeat",
           },
         };
       }
@@ -446,124 +549,37 @@ describe("gui: preference scripts", function () {
       };
     };
 
-    const versionPrefKey = `${config.prefsPrefix}.skillRunnerLocalRuntimeVersion`;
-    Zotero.Prefs.clear(versionPrefKey, true);
+    const {
+      window,
+      localRuntimeDeployButton,
+      localRuntimeStopButton,
+      localRuntimeUninstallButton,
+      localRuntimeOpenDebugConsoleButton,
+      localRuntimeOpenManagementButton,
+      localRuntimeRefreshModelCacheButton,
+      localRuntimeStatusText,
+    } = createPrefsWindow();
 
-    try {
-      const {
-        window,
-        localRuntimeVersionInput,
-        localRuntimeDeployButton,
-        localRuntimeStatusButton,
-        localRuntimeStartButton,
-        localRuntimeStopButton,
-        localRuntimeUninstallButton,
-        localRuntimeDoctorButton,
-        localRuntimeCopyCommandsButton,
-        localRuntimeOpenDebugConsoleButton,
-        localRuntimeAutoPullToggleButton,
-        localRuntimeStatusText,
-      } = createPrefsWindow();
-      await registerPrefsScripts(window);
+    await registerPrefsScripts(window);
+    await flushTasks();
 
-      assert.isNotEmpty(localRuntimeVersionInput.value);
-      localRuntimeVersionInput.value = "v9.9.9";
-      localRuntimeVersionInput.dispatch("change", { target: localRuntimeVersionInput });
-      assert.equal(
-        Zotero.Prefs.get(versionPrefKey, true),
-        "v9.9.9",
-      );
+    assert.equal(localRuntimeDeployButton.getAttribute("disabled"), "true");
+    assert.equal(localRuntimeStopButton.getAttribute("disabled"), "true");
+    assert.equal(localRuntimeUninstallButton.getAttribute("disabled"), "true");
+    assert.equal(localRuntimeOpenManagementButton.getAttribute("disabled"), "true");
+    assert.equal(
+      localRuntimeRefreshModelCacheButton.getAttribute("disabled"),
+      "true",
+    );
+    assert.equal(localRuntimeOpenDebugConsoleButton.getAttribute("disabled"), null);
 
-      localRuntimeDeployButton.dispatch("command");
-      await flushTasks();
-      await flushTasks();
-      localRuntimeStatusButton.dispatch("command");
-      await flushTasks();
-      localRuntimeStartButton.dispatch("command");
-      await flushTasks();
-      localRuntimeStopButton.dispatch("command");
-      await flushTasks();
-      localRuntimeUninstallButton.dispatch("command");
-      await flushTasks();
-      localRuntimeDoctorButton.dispatch("command");
-      await flushTasks();
-      localRuntimeCopyCommandsButton.dispatch("command");
-      await flushTasks();
-      localRuntimeOpenDebugConsoleButton.dispatch("command");
-      await flushTasks();
-      localRuntimeAutoPullToggleButton.dispatch("command");
-      await flushTasks();
-
-      assert.equal(calls[0].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[0].data, {
-        window,
-      });
-      assert.equal(calls[1].type, "openSkillRunnerLocalDeployDebugConsole");
-      assert.deepEqual(calls[1].data, {
-        window,
-      });
-      assert.equal(calls[2].type, "deploySkillRunnerLocalRuntime");
-      assert.deepEqual(calls[2].data, {
-        window,
-        version: "v9.9.9",
-      });
-      assert.equal(calls[3].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[3].data, { window });
-      assert.equal(calls[4].type, "statusSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[4].data, { window });
-      assert.equal(calls[5].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[5].data, { window });
-      assert.equal(calls[6].type, "startSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[6].data, { window });
-      assert.equal(calls[7].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[7].data, { window });
-      assert.equal(calls[8].type, "stopSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[8].data, { window });
-      assert.equal(calls[9].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[9].data, { window });
-      assert.equal(calls[10].type, "uninstallSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[10].data, { window });
-      assert.equal(calls[11].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[11].data, { window });
-      assert.equal(calls[12].type, "doctorSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[12].data, { window });
-      assert.equal(calls[13].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[13].data, { window });
-      assert.equal(calls[14].type, "copySkillRunnerLocalDeployCommands");
-      assert.deepEqual(calls[14].data, {
-        window,
-        version: "v9.9.9",
-      });
-      assert.equal(calls[15].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[15].data, { window });
-      assert.equal(calls[16].type, "openSkillRunnerLocalDeployDebugConsole");
-      assert.deepEqual(calls[16].data, { window });
-      assert.equal(calls[17].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[17].data, {
-        window,
-      });
-      assert.equal(calls[18].type, "toggleSkillRunnerLocalRuntimeAutoPull");
-      assert.deepEqual(calls[18].data, { window });
-      assert.equal(calls[19].type, "stateSkillRunnerLocalRuntime");
-      assert.deepEqual(calls[19].data, { window });
-      assert.lengthOf(calls, 20);
-      assert.deepEqual(copyPayloads, ["echo test"]);
-      const autoPullLabel = String(
-        localRuntimeAutoPullToggleButton.getAttribute("label") || "",
-      ).trim();
-      assert.isNotEmpty(autoPullLabel);
-      assert.notMatch(autoPullLabel, /pref-skillrunner-local-auto-pull/);
-      assert.match(
-        autoPullLabel,
-        /Enable Auto-start|Disable Auto-start|开启自动拉起|关闭自动拉起/,
-      );
-      assert.match(
-        localRuntimeStatusText.textContent || "",
-        /Success:|成功：|pref-skillrunner-local-status-ok-prefix/,
-      );
-    } finally {
-      runtime.Zotero!.Utilities!.Internal!.copyTextToClipboard = previousCopy;
-    }
+    const statusBeforeDebugClick = localRuntimeStatusText.textContent || "";
+    localRuntimeOpenDebugConsoleButton.dispatch("command");
+    await flushTasks();
+    assert.equal(
+      localRuntimeStatusText.textContent || "",
+      statusBeforeDebugClick,
+    );
   });
 });
 

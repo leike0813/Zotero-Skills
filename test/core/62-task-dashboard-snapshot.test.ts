@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import type { BackendInstance } from "../../src/backends/types";
+import { resolveBackendDisplayName } from "../../src/backends/displayName";
 import {
   mergeDashboardTaskRows,
   normalizeDashboardBackends,
@@ -126,5 +127,18 @@ describe("task dashboard snapshot", function () {
     });
     assert.equal(normalized, "home");
   });
-});
 
+  it("maps managed local backend id to localized display name", function () {
+    const displayName = resolveBackendDisplayName("local-skillrunner-backend");
+    assert.notEqual(displayName, "local-skillrunner-backend");
+    assert.isNotEmpty(displayName);
+  });
+
+  it("prefers configured displayName for non-managed backend ids", function () {
+    const displayName = resolveBackendDisplayName(
+      "backend-generic-http-local",
+      "My Generic Backend",
+    );
+    assert.equal(displayName, "My Generic Backend");
+  });
+});

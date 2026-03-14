@@ -3,6 +3,7 @@ import { loadBackendsRegistry } from "../backends/registry";
 import type { BackendInstance } from "../backends/types";
 import { PASS_THROUGH_BACKEND_TYPE } from "../config/defaults";
 import { getString } from "../utils/locale";
+import { resolveBackendDisplayName } from "../backends/displayName";
 import { isWindowAlive } from "../utils/window";
 import { listRuntimeLogs } from "./runtimeLogManager";
 import {
@@ -377,7 +378,7 @@ function buildDashboardSnapshot(args: {
     },
     ...args.backends.map((backend) => ({
       key: toBackendTabKey(backend.id),
-      label: `${backend.id} (${backend.type})`,
+      label: `${resolveBackendDisplayName(backend.id, backend.displayName)} (${backend.type})`,
       backendId: backend.id,
       backendType: backend.type,
     })),
@@ -419,10 +420,20 @@ function buildDashboardSnapshot(args: {
     backendBaseUrl: selectedBackend.baseUrl,
     title: isSkillRunnerBackend(selectedBackend)
       ? localize("task-dashboard-skillrunner-title", "SkillRunner Backend: {id}", {
-          args: { id: selectedBackend.id },
+          args: {
+            id: resolveBackendDisplayName(
+              selectedBackend.id,
+              selectedBackend.displayName,
+            ),
+          },
         })
       : localize("task-dashboard-generic-title", "Generic HTTP Backend: {id}", {
-          args: { id: selectedBackend.id },
+          args: {
+            id: resolveBackendDisplayName(
+              selectedBackend.id,
+              selectedBackend.displayName,
+            ),
+          },
         }),
     rows,
     emptyRowsText: labels.backendNoTasks,

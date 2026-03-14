@@ -28,19 +28,19 @@ import {
 import {
   deployAndConfigureLocalSkillRunner,
   getManagedLocalRuntimeStateSnapshot,
-  getLocalRuntimeStatus,
-  getLocalRuntimeManualDeployCommands,
   resetLocalRuntimeAutoStartSessionState,
   releaseManagedLocalRuntimeLeaseOnShutdown,
-  runLocalDoctor,
-  startLocalRuntime,
+  runManagedRuntimeStartupPreflightProbe,
   startManagedLocalRuntimeAutoEnsureLoop,
   stopManagedLocalRuntimeAutoEnsureLoop,
   stopLocalRuntime,
-  toggleLocalRuntimeAutoPull,
   uninstallLocalRuntime,
 } from "./modules/skillRunnerLocalRuntimeManager";
 import { openSkillRunnerLocalDeployDebugDialog } from "./modules/skillRunnerLocalDeployDebugDialog";
+import { loadBackendsRegistry } from "./backends/registry";
+import { openSkillRunnerManagementDialog } from "./modules/skillRunnerManagementDialog";
+import { refreshSkillRunnerModelCacheForBackend } from "./providers/skillrunner/modelCache";
+import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConstants";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -135,6 +135,7 @@ async function onStartup() {
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
   resetLocalRuntimeAutoStartSessionState();
+  await runManagedRuntimeStartupPreflightProbe();
   startManagedLocalRuntimeAutoEnsureLoop();
 
   BasicExampleFactory.registerPrefs();
@@ -231,6 +232,23 @@ async function onNotify(
   return;
 }
 
+async function resolveManagedLocalBackend() {
+  const snapshot = getManagedLocalRuntimeStateSnapshot();
+  const backendId = String(snapshot.details?.managedBackendId || "").trim();
+  if (!backendId || backendId !== MANAGED_LOCAL_BACKEND_ID) {
+    throw new Error("managed local backend is not configured");
+  }
+  const loaded = await loadBackendsRegistry();
+  if (loaded.fatalError) {
+    throw new Error(loaded.fatalError);
+  }
+  const backend = loaded.backends.find((entry) => entry.id === backendId);
+  if (!backend) {
+    throw new Error(`managed backend "${backendId}" is not found`);
+  }
+  return backend;
+}
+
 /**
  * This function is just an example of dispatcher for Preference UI events.
  * Any operations should be placed in a function to keep this funcion clear.
@@ -301,22 +319,48 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       return deployAndConfigureLocalSkillRunner({
         version: typeof data.version === "string" ? data.version : undefined,
       });
-    case "copySkillRunnerLocalDeployCommands":
-      return getLocalRuntimeManualDeployCommands({
-        version: typeof data.version === "string" ? data.version : undefined,
-      });
-    case "statusSkillRunnerLocalRuntime":
-      return getLocalRuntimeStatus();
     case "stateSkillRunnerLocalRuntime":
       return getManagedLocalRuntimeStateSnapshot();
-    case "toggleSkillRunnerLocalRuntimeAutoPull":
-      return toggleLocalRuntimeAutoPull();
-    case "startSkillRunnerLocalRuntime":
-      return startLocalRuntime();
+    case "openSkillRunnerManagedBackendPage": {
+      try {
+        const backend = await resolveManagedLocalBackend();
+        await openSkillRunnerManagementDialog({
+          backendId: backend.id,
+          baseUrl: backend.baseUrl,
+        });
+        return {
+          ok: true,
+          stage: "open-managed-backend-page",
+          message: "managed backend page opened",
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "open-managed-backend-page",
+          message: String(error),
+        };
+      }
+    }
+    case "refreshSkillRunnerManagedModelCache": {
+      try {
+        const backend = await resolveManagedLocalBackend();
+        const refreshed = await refreshSkillRunnerModelCacheForBackend({ backend });
+        return {
+          ok: true,
+          stage: "refresh-managed-model-cache",
+          message: "managed backend model cache refreshed",
+          details: refreshed as Record<string, unknown>,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "refresh-managed-model-cache",
+          message: String(error),
+        };
+      }
+    }
     case "stopSkillRunnerLocalRuntime":
       return stopLocalRuntime();
-    case "doctorSkillRunnerLocalRuntime":
-      return runLocalDoctor();
     case "uninstallSkillRunnerLocalRuntime":
       return uninstallLocalRuntime({
         clearData: data.clearData === true,

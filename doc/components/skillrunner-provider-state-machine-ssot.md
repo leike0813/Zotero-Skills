@@ -68,41 +68,66 @@
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued
+    direction LR
 
-    queued --> queued
-    queued --> running
-    queued --> waiting_user
-    queued --> waiting_auth
-    queued --> succeeded
-    queued --> failed
-    queued --> canceled
+    %% ── 初始入口 ──
+    [*] --> queued : enqueue
 
-    running --> queued
-    running --> running
-    running --> waiting_user
-    running --> waiting_auth
-    running --> succeeded
-    running --> failed
-    running --> canceled
+    %% ── 执行态内部迁移 ──
+    queued --> queued : idempotent poll
+    queued --> running : job started
+    running --> running : idempotent poll
+    running --> queued : re-queued（降级）
 
-    waiting_user --> running
-    waiting_user --> waiting_user
-    waiting_user --> waiting_auth
-    waiting_user --> succeeded
-    waiting_user --> failed
-    waiting_user --> canceled
+    %% ── 执行态 → 等待态 ──
+    queued --> waiting_user : backend waiting (user)
+    queued --> waiting_auth : backend waiting (auth)
+    running --> waiting_user : backend waiting (user)
+    running --> waiting_auth : backend waiting (auth)
 
-    waiting_auth --> running
-    waiting_auth --> waiting_user
-    waiting_auth --> waiting_auth
-    waiting_auth --> succeeded
-    waiting_auth --> failed
-    waiting_auth --> canceled
+    %% ── 等待态内部迁移 ──
+    waiting_user --> waiting_user : idempotent poll
+    waiting_user --> waiting_auth : auth required
+    waiting_auth --> waiting_auth : idempotent poll
+    waiting_auth --> waiting_user : input required
 
-    succeeded --> succeeded
-    failed --> failed
-    canceled --> canceled
+    %% ── 等待态 → 执行态（恢复） ──
+    waiting_user --> running : user replied / resumed
+    waiting_auth --> running : auth completed / resumed
+
+    %% ── 活跃态 → 终态 ──
+    queued --> succeeded : direct success
+    queued --> failed : direct failure
+    queued --> canceled : canceled
+    running --> succeeded : job succeeded
+    running --> failed : job failed
+    running --> canceled : canceled
+    waiting_user --> succeeded : backend resolved
+    waiting_user --> failed : backend failed
+    waiting_user --> canceled : canceled
+    waiting_auth --> succeeded : backend resolved
+    waiting_auth --> failed : backend failed
+    waiting_auth --> canceled : canceled
+
+    %% ── 终态（吸收态，仅自迁移）──
+    succeeded --> succeeded : idempotent
+    failed --> failed : idempotent
+    canceled --> canceled : idempotent
+    succeeded --> [*]
+    failed --> [*]
+    canceled --> [*]
+
+    %% ── 注解 ──
+    note right of queued
+        isActive(s) = !isTerminal(s)
+    end note
+    note right of waiting_user
+        isWaiting(s) = s ∈ {waiting_user, waiting_auth}
+    end note
+    note right of succeeded
+        isTerminal(s) = s ∈ {succeeded, failed, canceled}
+        终态仅允许同态自迁移（幂等容错）
+    end note
 ```
 
 ## 执行时序图

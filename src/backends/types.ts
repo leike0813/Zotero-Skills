@@ -6,6 +6,7 @@ export type BackendManagementAuth = {
 
 export type BackendInstance = {
   id: string;
+  displayName?: string;
   type: string;
   baseUrl: string;
   auth?: {

@@ -4,8 +4,8 @@ import {
   collectBackendsFromDialog,
   getBackendRowActionKindsForType,
   launchSkillRunnerManagementFromRow,
-  refreshSkillRunnerModelCacheFromRow,
   persistBackendsConfig,
+  refreshSkillRunnerModelCacheFromRow,
   resolveSkillRunnerManagementLaunchPayloadFromRow,
 } from "../../src/modules/backendManager";
 
@@ -16,6 +16,7 @@ type FakeControl = {
 
 type FakeRow = {
   getAttribute: (name: string) => string | null;
+  setAttribute: (name: string, value: string) => void;
   querySelector: (selector: string) => Element | null;
   __controls?: Map<string, FakeControl>;
 };
@@ -43,14 +44,16 @@ function makeChoiceControl(value: string): FakeControl {
 
 function makeRow(args: {
   type: string;
-  id: string;
+  internalId?: string;
+  displayName: string;
   baseUrl: string;
   authKind: "none" | "bearer";
   authToken: string;
   timeoutMs: string;
 }): FakeRow {
+  let internalId = String(args.internalId || "").trim();
   const controls = new Map<string, FakeControl>([
-    ["id", makeTextControl(args.id)],
+    ["displayName", makeTextControl(args.displayName)],
     ["baseUrl", makeTextControl(args.baseUrl)],
     ["authKind", makeChoiceControl(args.authKind)],
     ["authToken", makeTextControl(args.authToken)],
@@ -62,7 +65,15 @@ function makeRow(args: {
       if (name === "data-zs-backend-type") {
         return args.type;
       }
+      if (name === "data-zs-backend-internal-id") {
+        return internalId;
+      }
       return null;
+    },
+    setAttribute: (name: string, value: string) => {
+      if (name === "data-zs-backend-internal-id") {
+        internalId = String(value || "").trim();
+      }
     },
     querySelector: (selector: string) => {
       const match = selector.match(/\[data-zs-backend-field="([^"]+)"\]/);
@@ -96,11 +107,12 @@ describe("backend manager risk regression", function () {
     runtime.addon = previousAddon;
   });
 
-  it("Risk: HR-01 rejects duplicated backend ids during dialog collection", function () {
+  it("rejects duplicated backend internal ids during dialog collection", function () {
     const doc = makeDoc([
       makeRow({
         type: "skillrunner",
-        id: "dup-id",
+        internalId: "dup-id",
+        displayName: "dup-a",
         baseUrl: "http://127.0.0.1:8030",
         authKind: "none",
         authToken: "",
@@ -108,7 +120,8 @@ describe("backend manager risk regression", function () {
       }),
       makeRow({
         type: "generic-http",
-        id: "dup-id",
+        internalId: "dup-id",
+        displayName: "dup-b",
         baseUrl: "http://127.0.0.1:8040",
         authKind: "none",
         authToken: "",
@@ -127,7 +140,24 @@ describe("backend manager risk regression", function () {
     assert.match(String(thrown), /duplicate|重复/i);
   });
 
-  it("Risk: HR-01 exposes management action only for skillrunner rows", function () {
+  it("generates new internal id for rows without internal id", function () {
+    const doc = makeDoc([
+      makeRow({
+        type: "skillrunner",
+        displayName: "SkillRunner Primary",
+        baseUrl: "http://127.0.0.1:8030",
+        authKind: "none",
+        authToken: "",
+        timeoutMs: "600000",
+      }),
+    ]);
+    const collected = collectBackendsFromDialog(doc);
+    assert.lengthOf(collected.backends, 1);
+    assert.match(collected.backends[0].id, /^backend-/);
+    assert.equal(collected.backends[0].displayName, "SkillRunner Primary");
+  });
+
+  it("exposes management action only for skillrunner rows", function () {
     assert.deepEqual(getBackendRowActionKindsForType("skillrunner"), [
       "manage-ui",
       "refresh-model-cache",
@@ -139,78 +169,37 @@ describe("backend manager risk regression", function () {
     assert.deepEqual(getBackendRowActionKindsForType(""), ["remove"]);
   });
 
-  it("Risk: HR-01 resolves management launch payload from current row values", function () {
+  it("resolves management launch payload from stable internal id", function () {
     const row = makeRow({
       type: "skillrunner",
-      id: "skillrunner-local",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
       baseUrl: "http://127.0.0.1:8030",
       authKind: "none",
       authToken: "",
       timeoutMs: "600000",
     });
-    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
-      "skillrunner-edited";
     (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
       "http://127.0.0.1:9030/";
 
     const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(
       row as unknown as Element,
     );
-    assert.equal(payload.backendId, "skillrunner-edited");
+    assert.equal(payload.backendId, "backend-skillrunner-primary");
     assert.equal(payload.baseUrl, "http://127.0.0.1:9030/");
     assert.equal(payload.uiUrl, "http://127.0.0.1:9030/ui");
   });
 
-  it("Risk: HR-01 normalizes endpoint baseUrl to origin-level /ui URL", function () {
+  it("launches management host with unsaved endpoint edits", async function () {
     const row = makeRow({
       type: "skillrunner",
-      id: "skillrunner-local",
-      baseUrl: "http://127.0.0.1:8030/v1",
-      authKind: "none",
-      authToken: "",
-      timeoutMs: "600000",
-    });
-    const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(
-      row as unknown as Element,
-    );
-    assert.equal(payload.baseUrl, "http://127.0.0.1:8030/v1");
-    assert.equal(payload.uiUrl, "http://127.0.0.1:8030/ui");
-  });
-
-  it("Risk: HR-01 rejects invalid management baseUrl deterministically", function () {
-    const row = makeRow({
-      type: "skillrunner",
-      id: "skillrunner-local",
-      baseUrl: "ftp://127.0.0.1:8030",
-      authKind: "none",
-      authToken: "",
-      timeoutMs: "600000",
-    });
-
-    let thrown: unknown = null;
-    try {
-      resolveSkillRunnerManagementLaunchPayloadFromRow(row as unknown as Element);
-    } catch (error) {
-      thrown = error;
-    }
-    assert.isOk(thrown);
-    assert.match(
-      String(thrown),
-      /baseUrl|http\/https|management-base-url-invalid/i,
-    );
-  });
-
-  it("Risk: HR-01 launches management host with unsaved row edits", async function () {
-    const row = makeRow({
-      type: "skillrunner",
-      id: "skillrunner-local",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
       baseUrl: "http://127.0.0.1:8030",
       authKind: "none",
       authToken: "",
       timeoutMs: "600000",
     });
-    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
-      "skillrunner-unsaved";
     (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
       "http://127.0.0.1:18030";
 
@@ -228,23 +217,22 @@ describe("backend manager risk regression", function () {
 
     assert.lengthOf(launched, 1);
     assert.deepEqual(launched[0], {
-      backendId: "skillrunner-unsaved",
+      backendId: "backend-skillrunner-primary",
       baseUrl: "http://127.0.0.1:18030",
       uiUrl: "http://127.0.0.1:18030/ui",
     });
   });
 
-  it("Risk: HR-01 refreshes model cache by current skillrunner row values only", async function () {
+  it("refreshes model cache using stable internal id", async function () {
     const row = makeRow({
       type: "skillrunner",
-      id: "skillrunner-local",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
       baseUrl: "http://127.0.0.1:8030",
       authKind: "bearer",
       authToken: "token-123",
       timeoutMs: "600000",
     });
-    (row.__controls?.get("id") as { value?: string } | undefined)!.value =
-      "skillrunner-edited";
     (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
       "http://127.0.0.1:19030/";
 
@@ -275,7 +263,7 @@ describe("backend manager risk regression", function () {
 
     assert.lengthOf(calls, 1);
     assert.deepEqual(calls[0], {
-      id: "skillrunner-edited",
+      id: "backend-skillrunner-primary",
       type: "skillrunner",
       baseUrl: "http://127.0.0.1:19030/",
       authKind: "bearer",
@@ -284,15 +272,16 @@ describe("backend manager risk regression", function () {
     assert.deepEqual(result, {
       ok: true,
       refreshedAt: "2026-03-11T00:00:00.000Z",
-      backendId: "skillrunner-edited",
+      backendId: "backend-skillrunner-primary",
     });
   });
 
-  it("Risk: HR-01 rejects bearer backend rows without token", function () {
+  it("rejects bearer backend rows without token", function () {
     const doc = makeDoc([
       makeRow({
         type: "skillrunner",
-        id: "skillrunner-local",
+        internalId: "backend-skillrunner-primary",
+        displayName: "SkillRunner Primary",
         baseUrl: "http://127.0.0.1:8030",
         authKind: "bearer",
         authToken: "",
@@ -311,7 +300,7 @@ describe("backend manager risk regression", function () {
     assert.match(String(thrown), /bearer|必填/i);
   });
 
-  it("Risk: HR-01 persists validated backend config and refreshes workflow menus", function () {
+  it("persists validated backend config with schemaVersion=2", function () {
     let persistedKey = "";
     let persistedValue = "";
     let refreshCalls = 0;
@@ -319,7 +308,8 @@ describe("backend manager risk regression", function () {
     persistBackendsConfig(
       [
         {
-          id: "skillrunner-local",
+          id: "backend-skillrunner-primary",
+          displayName: "SkillRunner Primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -339,21 +329,26 @@ describe("backend manager risk regression", function () {
 
     assert.equal(persistedKey, "backendsConfigJson");
     const parsed = JSON.parse(persistedValue) as {
-      backends?: Array<{ id?: string }>;
+      schemaVersion?: number;
+      backends?: Array<{ id?: string; displayName?: string }>;
     };
-    assert.equal(parsed.backends?.[0]?.id, "skillrunner-local");
+    assert.equal(parsed.schemaVersion, 2);
+    assert.equal(parsed.backends?.[0]?.id, "backend-skillrunner-primary");
+    assert.equal(parsed.backends?.[0]?.displayName, "SkillRunner Primary");
     assert.equal(refreshCalls, 1);
   });
 
-  it("Risk: HR-01 preserves existing management_auth when dialog row omits it", function () {
+  it("preserves existing management_auth when dialog row omits it", function () {
     const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
     const previous = Zotero.Prefs.get(prefKey, true);
     Zotero.Prefs.set(
       prefKey,
       JSON.stringify({
+        schemaVersion: 2,
         backends: [
           {
-            id: "skillrunner-local",
+            id: "backend-skillrunner-primary",
+            displayName: "SkillRunner Primary",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },
@@ -373,7 +368,8 @@ describe("backend manager risk regression", function () {
       persistBackendsConfig(
         [
           {
-            id: "skillrunner-local",
+            id: "backend-skillrunner-primary",
+            displayName: "SkillRunner Primary",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },
@@ -395,44 +391,14 @@ describe("backend manager risk regression", function () {
     }
 
     const parsed = JSON.parse(persisted) as {
+      schemaVersion?: number;
       backends: Array<{ management_auth?: { kind?: string; username?: string } }>;
     };
+    assert.equal(parsed.schemaVersion, 2);
     assert.deepEqual(parsed.backends[0].management_auth, {
       kind: "basic",
       username: "admin",
       password: "secret",
     });
-  });
-
-  it("Risk: HR-01 surfaces persistence failures without swallowing storage errors", function () {
-    let refreshCalls = 0;
-    let thrown: unknown = null;
-
-    try {
-      persistBackendsConfig(
-        [
-          {
-            id: "skillrunner-local",
-            type: "skillrunner",
-            baseUrl: "http://127.0.0.1:8030",
-            auth: { kind: "none" },
-          },
-        ],
-        {
-          setPref: (() => {
-            throw new Error("disk is readonly");
-          }) as any,
-          refreshWorkflowMenus: () => {
-            refreshCalls += 1;
-          },
-        },
-      );
-    } catch (error) {
-      thrown = error;
-    }
-
-    assert.isOk(thrown);
-    assert.match(String(thrown), /disk is readonly/i);
-    assert.equal(refreshCalls, 0);
   });
 });

@@ -4,6 +4,55 @@
 <groupbox
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
 >
+  <html:style>
+    #zotero-prefpane-__addonRef__-skillrunner-local-inline-status {
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .zs-runtime-led {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      border: 1px solid #6b7280;
+      background: #9ca3af;
+    }
+    .zs-runtime-led.is-green {
+      background: #16a34a;
+      border-color: #166534;
+    }
+    .zs-runtime-led.is-red {
+      background: #dc2626;
+      border-color: #991b1b;
+    }
+    .zs-runtime-led.is-gray {
+      background: #9ca3af;
+      border-color: #6b7280;
+    }
+    .zs-runtime-led.is-orange {
+      background: #f59e0b;
+      border-color: #b45309;
+    }
+    .zs-autostart-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+      color: #dc2626;
+      user-select: none;
+    }
+    .zs-autostart-icon.is-green {
+      color: #16a34a;
+    }
+    .zs-autostart-icon.is-red {
+      color: #dc2626;
+    }
+  </html:style>
   <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
   <label><html:h3 data-l10n-id="pref-section-plugin"></html:h3></label>
   <hbox align="center">
@@ -43,30 +92,10 @@
   <description data-l10n-id="pref-backend-manage-help"></description>
 
   <label><html:h3 data-l10n-id="pref-section-skillrunner-local-runtime"></html:h3></label>
-  <hbox align="center">
-    <html:label
-      for="zotero-prefpane-__addonRef__-skillrunner-local-version"
-      data-l10n-id="pref-skillrunner-local-version-tag"
-    ></html:label>
-  </hbox>
-  <hbox>
-    <html:input
-      type="text"
-      id="zotero-prefpane-__addonRef__-skillrunner-local-version"
-    ></html:input>
-  </hbox>
   <hbox>
     <button
       id="zotero-prefpane-__addonRef__-skillrunner-local-deploy"
       data-l10n-id="pref-skillrunner-local-deploy"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-status"
-      data-l10n-id="pref-skillrunner-local-status"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-start"
-      data-l10n-id="pref-skillrunner-local-start"
     ></button>
     <button
       id="zotero-prefpane-__addonRef__-skillrunner-local-stop"
@@ -77,30 +106,37 @@
       data-l10n-id="pref-skillrunner-local-uninstall"
     ></button>
     <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-doctor"
-      data-l10n-id="pref-skillrunner-local-doctor"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-copy-commands"
-      data-l10n-id="pref-skillrunner-local-copy-commands"
-    ></button>
-    <button
       id="zotero-prefpane-__addonRef__-skillrunner-local-open-debug-console"
       data-l10n-id="pref-skillrunner-local-open-debug-console"
     ></button>
+  </hbox>
+  <hbox id="zotero-prefpane-__addonRef__-skillrunner-local-inline-status">
+    <html:span data-l10n-id="pref-skillrunner-local-runtime-indicator"></html:span>
+    <html:span
+      id="zotero-prefpane-__addonRef__-skillrunner-local-runtime-led"
+      class="zs-runtime-led is-gray"
+      title="-"
+    ></html:span>
+    <html:span data-l10n-id="pref-skillrunner-local-autostart-indicator"></html:span>
+    <html:span
+      id="zotero-prefpane-__addonRef__-skillrunner-local-autostart-icon"
+      class="zs-autostart-icon is-red"
+      title="-"
+      >▶</html:span
+    >
     <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-auto-pull-toggle"
-      data-l10n-id="pref-skillrunner-local-auto-pull-enable"
+      id="zotero-prefpane-__addonRef__-skillrunner-local-open-management"
+      data-l10n-id="pref-skillrunner-local-open-management"
+    ></button>
+    <button
+      id="zotero-prefpane-__addonRef__-skillrunner-local-refresh-model-cache"
+      data-l10n-id="pref-skillrunner-local-refresh-model-cache"
     ></button>
   </hbox>
   <description data-l10n-id="pref-skillrunner-local-help"></description>
   <description
     id="zotero-prefpane-__addonRef__-skillrunner-local-status-text"
     data-l10n-id="pref-skillrunner-local-status-idle"
-  ></description>
-  <description
-    id="zotero-prefpane-__addonRef__-skillrunner-local-state-text"
-    data-l10n-id="pref-skillrunner-local-state-summary-idle"
   ></description>
 
   <label><html:h3 data-l10n-id="pref-section-about"></html:h3></label>

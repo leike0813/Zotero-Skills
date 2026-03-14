@@ -5,7 +5,11 @@ import {
 } from "../config/defaults";
 import { refreshWorkflowMenus } from "./workflowMenu";
 import { getPref, setPref } from "../utils/prefs";
-import { loadBackendsRegistry } from "../backends/registry";
+import {
+  createBackendsPrefsDocument,
+  loadBackendsRegistry,
+  syncBackendReferenceState,
+} from "../backends/registry";
 import { isWindowAlive } from "../utils/window";
 import { getString } from "../utils/locale";
 import {
@@ -14,6 +18,12 @@ import {
 } from "./skillRunnerManagementDialog";
 import type { BackendInstance } from "../backends/types";
 import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner/modelCache";
+import {
+  generateBackendInternalId,
+  isManagedLocalBackendId,
+  normalizeBackendDisplayName,
+} from "../backends/identity";
+import { MANAGED_LOCAL_BACKEND_ID } from "./skillRunnerLocalRuntimeConstants";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const PROVIDER_SECTIONS = [
@@ -33,7 +43,8 @@ type BackendPersistenceDeps = {
 };
 
 type EditableBackendRow = {
-  id: string;
+  internalId: string;
+  displayName: string;
   type: string;
   baseUrl: string;
   authKind: "none" | "bearer";
@@ -271,7 +282,8 @@ function createChoiceControl(args: {
 
 function buildFallbackBackendRow(): EditableBackendRow {
   return {
-    id: DEFAULT_BACKEND_ID,
+    internalId: DEFAULT_BACKEND_ID,
+    displayName: DEFAULT_BACKEND_ID,
     type: DEFAULT_BACKEND_TYPE,
     baseUrl: String(
       getPref("skillRunnerEndpoint") || DEFAULT_SKILLRUNNER_ENDPOINT,
@@ -284,7 +296,8 @@ function buildFallbackBackendRow(): EditableBackendRow {
 
 function normalizeRowFromBackend(backend: BackendInstance): EditableBackendRow {
   return {
-    id: backend.id,
+    internalId: backend.id,
+    displayName: normalizeBackendDisplayName(backend.displayName, backend.id),
     type: backend.type,
     baseUrl: backend.baseUrl,
     authKind: backend.auth?.kind === "bearer" ? "bearer" : "none",
@@ -396,8 +409,9 @@ function appendBackendRow(args: {
   const row = createHtmlElement(args.tbody.ownerDocument!, "tr");
   row.setAttribute("data-zs-backend-row", "1");
   row.setAttribute("data-zs-backend-type", args.backend.type);
+  row.setAttribute("data-zs-backend-internal-id", args.backend.internalId);
 
-  appendTextCell(row, "id", args.backend.id, "190px");
+  appendTextCell(row, "displayName", args.backend.displayName, "190px");
   appendTextCell(row, "baseUrl", args.backend.baseUrl, "320px");
   appendSelectCell(
     row,
@@ -522,10 +536,14 @@ function readRowField(row: Element, field: string) {
   return getElementValue(control);
 }
 
+function readRowInternalId(row: Element) {
+  return String(row.getAttribute("data-zs-backend-internal-id") || "").trim();
+}
+
 export function resolveSkillRunnerManagementLaunchPayloadFromRow(
   row: Element,
 ): SkillRunnerManagementLaunchPayload {
-  const backendId = String(readRowField(row, "id") || "").trim();
+  const backendId = readRowInternalId(row);
   const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
   const uiUrl = buildSkillRunnerManagementUiUrl(baseUrl);
   return {
@@ -546,12 +564,13 @@ function resolveSkillRunnerBackendFromRow(
       }),
     );
   }
-  const backendId = String(readRowField(row, "id") || "").trim();
+  const backendId = readRowInternalId(row);
   if (!backendId) {
     throw new Error(
       getString("backend-manager-error-model-cache-id-required" as any),
     );
   }
+  const displayName = String(readRowField(row, "displayName") || "").trim();
   const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
   if (!baseUrl) {
     throw new Error(
@@ -577,6 +596,7 @@ function resolveSkillRunnerBackendFromRow(
   }
   return {
     id: backendId,
+    displayName: normalizeBackendDisplayName(displayName, backendId),
     type: DEFAULT_BACKEND_TYPE,
     baseUrl,
     auth:
@@ -623,24 +643,35 @@ export function collectBackendsFromDialog(doc: Document): {
   }
 
   const seen = new Set<string>();
+  const usedIds = new Set<string>();
   const supportedTypes = new Set(PROVIDER_SECTIONS.map((entry) => entry.type));
   const backends: BackendInstance[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const type = String(row.getAttribute("data-zs-backend-type") || "").trim();
-    const id = readRowField(row, "id");
+    let id = readRowInternalId(row);
+    const displayName = String(readRowField(row, "displayName") || "").trim();
     const baseUrl = readRowField(row, "baseUrl");
     const authKind = readRowField(row, "authKind") || "none";
     const authToken = readRowField(row, "authToken");
     const timeoutText = readRowField(row, "timeoutMs");
 
-    if (!id) {
+    if (!displayName) {
       throw new Error(
         getString("backend-manager-error-id-required" as any, {
           args: { row: i + 1 },
         }),
       );
     }
+    if (!id) {
+      id = generateBackendInternalId({
+        displayName,
+        type,
+        usedIds,
+      });
+      row.setAttribute("data-zs-backend-internal-id", id);
+    }
+    usedIds.add(id);
     if (seen.has(id)) {
       throw new Error(
         getString("backend-manager-error-duplicate-id" as any, {
@@ -696,6 +727,7 @@ export function collectBackendsFromDialog(doc: Document): {
 
     backends.push({
       id,
+      displayName: normalizeBackendDisplayName(displayName, id),
       type,
       baseUrl,
       auth:
@@ -797,12 +829,63 @@ export function persistBackendsConfig(
       management_auth: persisted,
     };
   });
+  const idMapping = new Map<string, string>();
+  const removedIds = new Set<string>();
+  const raw = String(getPref(BACKENDS_CONFIG_PREF_KEY) || "").trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { backends?: BackendInstance[] };
+      const existing = Array.isArray(parsed?.backends) ? parsed.backends : [];
+      const managed = existing.find((entry) =>
+        isManagedLocalBackendId(entry.id),
+      );
+      const existingIds = new Set(
+        existing
+          .map((entry) => String(entry.id || "").trim())
+          .filter((id) => id && !isManagedLocalBackendId(id)),
+      );
+      const nextIds = new Set(
+        mergedBackends
+          .map((entry) => String(entry.id || "").trim())
+          .filter((id) => id && !isManagedLocalBackendId(id)),
+      );
+      for (const existingId of existingIds) {
+        if (!nextIds.has(existingId)) {
+          removedIds.add(existingId);
+        }
+      }
+      if (
+        managed &&
+        !mergedBackends.some(
+          (entry) => isManagedLocalBackendId(entry.id),
+        )
+      ) {
+        const normalizedManaged = {
+          ...managed,
+          id: MANAGED_LOCAL_BACKEND_ID,
+          displayName: normalizeBackendDisplayName(
+            managed.displayName,
+            "Local Backend",
+          ),
+        };
+        const legacyManagedId = String(managed.id || "").trim();
+        if (legacyManagedId && legacyManagedId !== MANAGED_LOCAL_BACKEND_ID) {
+          idMapping.set(legacyManagedId, MANAGED_LOCAL_BACKEND_ID);
+        }
+        mergedBackends.push(normalizedManaged);
+      }
+    } catch {
+      // ignore parse failures and keep current mergedBackends
+    }
+  }
   resolved.setPref(
     BACKENDS_CONFIG_PREF_KEY,
-    JSON.stringify({
-      backends: mergedBackends,
-    }),
+    JSON.stringify(createBackendsPrefsDocument(mergedBackends)),
   );
+  syncBackendReferenceState({
+    idMapping,
+    removedIds,
+  });
   resolved.refreshWorkflowMenus();
 }
 
@@ -823,7 +906,9 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
   const loaded = await loadBackendsRegistry();
   const initialRows = loaded.fatalError
     ? [buildFallbackBackendRow()]
-    : loaded.backends.map((entry) => normalizeRowFromBackend(entry));
+    : loaded.backends
+        .filter((entry) => !isManagedLocalBackendId(entry.id))
+        .map((entry) => normalizeRowFromBackend(entry));
 
   if (loaded.fatalError) {
     alertWindow?.alert?.(
@@ -930,7 +1015,8 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
           appendBackendRow({
             tbody,
             backend: {
-              id: "",
+              internalId: "",
+              displayName: "",
               type: providerType,
               baseUrl: "",
               authKind: "none",

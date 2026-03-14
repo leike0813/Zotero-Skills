@@ -61,6 +61,7 @@ describe("provider/backend registry", function () {
     prevEndpointPref = Zotero.Prefs.get(endpointPrefKey, true);
 
     setBackendsConfig({
+      schemaVersion: 2,
       backends: [
         {
           id: "skillrunner-local",
@@ -110,6 +111,7 @@ describe("provider/backend registry", function () {
 
   it("loads optional management_auth for skillrunner backend", async function () {
     setBackendsConfig({
+      schemaVersion: 2,
       backends: [
         {
           id: "skillrunner-local",
@@ -499,6 +501,7 @@ describe("provider/backend registry", function () {
 
   it("only disables workflows that bind to invalid backend entries", async function () {
     setBackendsConfig({
+      schemaVersion: 2,
       backends: [
         {
           id: "skillrunner-local",
@@ -561,4 +564,5 @@ describe("provider/backend registry", function () {
     assert.isOk(backend);
     assert.equal(backend?.baseUrl, "http://127.0.0.1:18030");
   });
+
 });

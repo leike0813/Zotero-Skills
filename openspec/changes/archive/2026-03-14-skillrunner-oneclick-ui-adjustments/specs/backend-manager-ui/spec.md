@@ -1,8 +1,5 @@
-# backend-manager-ui Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change embed-skillrunner-management-ui. Update Purpose after archive.
-## Requirements
 ### Requirement: Backend Manager MUST expose SkillRunner management-page entry
 系统 MUST 在 Backend Manager 的 SkillRunner profile 行提供“进入管理页面”动作，用于直接打开对应后端的管理 UI。  
 对于插件托管本地后端 `local-skillrunner-backend`，Backend Manager SHALL 隐藏该行，避免用户误编辑；保存时 SHALL 保留该托管后端配置。
@@ -16,19 +13,3 @@ TBD - created by archiving change embed-skillrunner-management-ui. Update Purpos
 - **WHEN** Backend Manager loads config containing `local-skillrunner-backend`
 - **THEN** the UI SHALL NOT render an editable row for that backend
 - **AND** saving changes to other rows SHALL keep the managed backend entry in persisted config
-
-### Requirement: Backend Internal ID And Display Name Separation
-Backend profiles SHALL use immutable internal IDs for runtime binding and editable display names for user-visible labels.
-
-#### Scenario: Legacy profile migration
-- **WHEN** backend config entries have `id` but no `displayName`
-- **THEN** plugin SHALL set `displayName = old.id`
-- **AND** plugin SHALL generate a new unique internal `id`
-
-### Requirement: Managed Local Backend Isolation
-Backend manager SHALL hide managed local backend entries in both legacy and new managed IDs.
-
-#### Scenario: Hide managed local backend
-- **WHEN** backend manager renders backend rows
-- **THEN** entries with ID `local-skillrunner-backend` or legacy `skillrunner-local` (managed legacy) SHALL NOT be shown in backend manager
-

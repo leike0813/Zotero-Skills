@@ -30,6 +30,10 @@ function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
     "default",
     `chrome://${config.addonRef}/content/icons/favicon.png`,
   );
+  _ztoolkit.ProgressWindow.setIconURI(
+    "skillrunner-backend",
+    `chrome://${config.addonRef}/content/icons/icon_backend.png`,
+  );
 }
 
 import { BasicTool, unregister } from "zotero-plugin-toolkit";

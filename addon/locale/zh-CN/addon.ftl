@@ -268,3 +268,7 @@ backend-manager-error-model-cache-id-required = 刷新模型缓存时 backend id
 backend-manager-error-model-cache-bearer-required = 刷新模型缓存时 bearer token 为必填项
 backend-manager-error-bearer-required = 第 { $row } 行：bearer token 为必填项
 backend-manager-error-timeout-invalid = 第 { $row } 行：timeout 必须是正数
+backend-display-local-skillrunner = 本地后端
+skillrunner-local-runtime-toast-up = 本地后端已启动。
+skillrunner-local-runtime-toast-down = 本地后端已停止。
+skillrunner-local-runtime-toast-abnormal-stop = 本地后端异常停止。

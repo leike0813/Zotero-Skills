@@ -6,16 +6,28 @@ import {
 } from "../config/defaults";
 import { getPref, setPref } from "../utils/prefs";
 import type { LoadedWorkflow } from "../workflows/types";
+import {
+  normalizeBackendDisplayName,
+} from "./identity";
 import type { BackendInstance, LoadedBackends } from "./types";
 
 type BackendsDocument = {
   defaultBackendId?: unknown;
+  schemaVersion?: unknown;
   backends?: unknown;
+};
+
+type BackendsDocShape = {
+  schemaVersion: number;
+  entries: unknown[];
 };
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const LEGACY_SKILLRUNNER_ENDPOINT_PREF_KEY = "skillRunnerEndpoint";
+const WORKFLOW_SETTINGS_PREF_KEY = "workflowSettingsJson";
+const TASK_DASHBOARD_HISTORY_PREF_KEY = "taskDashboardHistoryJson";
 const DEFAULT_BACKEND_TIMEOUT_MS = 600000;
+const BACKENDS_SCHEMA_VERSION = 2;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -25,13 +37,29 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function normalizeBackendsSchemaVersion(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return 0;
+}
+
 function buildMigratedDocument(skillRunnerEndpoint: string): {
+  schemaVersion: number;
   backends: BackendInstance[];
 } {
   return {
+    schemaVersion: BACKENDS_SCHEMA_VERSION,
     backends: [
       {
         id: DEFAULT_BACKEND_ID,
+        displayName: DEFAULT_BACKEND_ID,
         type: DEFAULT_BACKEND_TYPE,
         baseUrl: skillRunnerEndpoint,
         auth: {
@@ -64,11 +92,10 @@ function ensureBackendsPrefsDocument() {
   return serialized;
 }
 
-function normalizeBackendsDocument(parsed: unknown): {
-  entries: unknown[];
-} {
+function normalizeBackendsDocument(parsed: unknown): BackendsDocShape {
   if (Array.isArray(parsed)) {
     return {
+      schemaVersion: 0,
       entries: parsed,
     };
   }
@@ -82,8 +109,148 @@ function normalizeBackendsDocument(parsed: unknown): {
     throw new Error("Backends config object must contain backends[]");
   }
   return {
+    schemaVersion: normalizeBackendsSchemaVersion(doc.schemaVersion),
     entries: doc.backends,
   };
+}
+
+function applyBackendIdMappingToWorkflowSettings(args: {
+  idMapping: Map<string, string>;
+  removedIds: Set<string>;
+}) {
+  const raw = String(getPref(WORKFLOW_SETTINGS_PREF_KEY) || "").trim();
+  if (!raw) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!isObject(parsed)) {
+    return false;
+  }
+  let changed = false;
+  const next = { ...(parsed as Record<string, unknown>) };
+  for (const [workflowId, value] of Object.entries(next)) {
+    if (!isObject(value)) {
+      continue;
+    }
+    const options = { ...(value as Record<string, unknown>) };
+    const backendId = String(options.backendId || "").trim();
+    if (!backendId) {
+      continue;
+    }
+    const mappedId = args.idMapping.get(backendId);
+    if (mappedId) {
+      options.backendId = mappedId;
+      next[workflowId] = options;
+      changed = true;
+      continue;
+    }
+    if (args.removedIds.has(backendId)) {
+      delete options.backendId;
+      next[workflowId] = options;
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return false;
+  }
+  setPref(WORKFLOW_SETTINGS_PREF_KEY, JSON.stringify(next));
+  return true;
+}
+
+function rewriteHistoryRecordIdPrefix(recordId: string, from: string, to: string) {
+  if (!recordId || !from || !to) {
+    return recordId;
+  }
+  const prefix = `${from}:`;
+  if (!recordId.startsWith(prefix)) {
+    return recordId;
+  }
+  return `${to}:${recordId.slice(prefix.length)}`;
+}
+
+function applyBackendIdMappingToTaskHistory(args: {
+  idMapping: Map<string, string>;
+  removedIds: Set<string>;
+}) {
+  const raw = String(getPref(TASK_DASHBOARD_HISTORY_PREF_KEY) || "").trim();
+  if (!raw) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : isObject(parsed) && Array.isArray(parsed.records)
+      ? parsed.records
+      : null;
+  if (!rows) {
+    return false;
+  }
+  let changed = false;
+  const nextRows: unknown[] = [];
+  for (const row of rows) {
+    if (!isObject(row)) {
+      nextRows.push(row);
+      continue;
+    }
+    const nextRow = { ...row };
+    const backendId = String(nextRow.backendId || "").trim();
+    if (!backendId) {
+      nextRows.push(nextRow);
+      continue;
+    }
+    if (args.removedIds.has(backendId)) {
+      changed = true;
+      continue;
+    }
+    const mappedId = args.idMapping.get(backendId);
+    if (!mappedId || mappedId === backendId) {
+      nextRows.push(nextRow);
+      continue;
+    }
+    nextRow.backendId = mappedId;
+    nextRow.id = rewriteHistoryRecordIdPrefix(
+      String(nextRow.id || ""),
+      backendId,
+      mappedId,
+    );
+    nextRows.push(nextRow);
+    changed = true;
+  }
+  if (!changed) {
+    return false;
+  }
+  setPref(
+    TASK_DASHBOARD_HISTORY_PREF_KEY,
+    JSON.stringify({
+      records: nextRows,
+    }),
+  );
+  return true;
+}
+
+function syncBackendReferences(args: {
+  idMapping: Map<string, string>;
+  removedIds?: Set<string>;
+}) {
+  const removedIds = args.removedIds || new Set<string>();
+  applyBackendIdMappingToWorkflowSettings({
+    idMapping: args.idMapping,
+    removedIds,
+  });
+  applyBackendIdMappingToTaskHistory({
+    idMapping: args.idMapping,
+    removedIds,
+  });
 }
 
 function normalizeBackendEntry(
@@ -107,6 +274,7 @@ function normalizeBackendEntry(
     return { error: `entry[${index}] (${idRaw}) missing non-empty baseUrl` };
   }
   const id = idRaw.trim();
+  const displayName = normalizeBackendDisplayName(rawEntry.displayName, id);
   const type = typeRaw.trim();
   const baseUrl = baseUrlRaw.trim();
 
@@ -239,12 +407,36 @@ function normalizeBackendEntry(
   return {
     backend: {
       id,
+      displayName,
       type,
       baseUrl,
       ...(auth ? { auth } : {}),
       ...(defaults ? { defaults } : {}),
       ...(managementAuth ? { management_auth: managementAuth } : {}),
     },
+  };
+}
+
+export function syncBackendReferenceState(args: {
+  idMapping?: Map<string, string>;
+  removedIds?: Iterable<string>;
+}) {
+  const mapping = args.idMapping || new Map<string, string>();
+  const removedIds = new Set<string>(args.removedIds || []);
+  if (mapping.size === 0 && removedIds.size === 0) {
+    return false;
+  }
+  syncBackendReferences({
+    idMapping: mapping,
+    removedIds,
+  });
+  return true;
+}
+
+export function createBackendsPrefsDocument(backends: BackendInstance[]) {
+  return {
+    schemaVersion: BACKENDS_SCHEMA_VERSION,
+    backends,
   };
 }
 
@@ -271,7 +463,7 @@ export async function loadBackendsRegistry(): Promise<LoadedBackends> {
     };
   }
 
-  let normalized: { entries: unknown[] };
+  let normalized: BackendsDocShape;
   try {
     normalized = normalizeBackendsDocument(parsed);
   } catch (error) {

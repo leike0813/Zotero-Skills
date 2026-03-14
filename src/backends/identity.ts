@@ -1,0 +1,55 @@
+import {
+  LEGACY_MANAGED_LOCAL_BACKEND_IDS,
+  MANAGED_LOCAL_BACKEND_ID,
+} from "../modules/skillRunnerLocalRuntimeConstants";
+
+function normalizeToken(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+export function normalizeBackendDisplayName(value: unknown, fallback: string) {
+  const normalized = String(value || "").trim();
+  if (normalized) {
+    return normalized;
+  }
+  return String(fallback || "").trim();
+}
+
+export function isManagedLocalBackendId(value: unknown) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (normalized === MANAGED_LOCAL_BACKEND_ID) {
+    return true;
+  }
+  return LEGACY_MANAGED_LOCAL_BACKEND_IDS.has(normalized);
+}
+
+export function generateBackendInternalId(args: {
+  displayName: string;
+  type: string;
+  usedIds: Set<string>;
+}) {
+  const displayToken = normalizeToken(args.displayName || "");
+  const typeToken = normalizeToken(args.type || "");
+  const seed = [typeToken, displayToken].filter(Boolean).join("-");
+  const base = `backend-${seed || "profile"}`;
+  let candidate = base;
+  let suffix = 2;
+  while (
+    args.usedIds.has(candidate) ||
+    candidate === MANAGED_LOCAL_BACKEND_ID ||
+    LEGACY_MANAGED_LOCAL_BACKEND_IDS.has(candidate)
+  ) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  args.usedIds.add(candidate);
+  return candidate;
+}
+

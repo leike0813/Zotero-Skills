@@ -1,6 +1,8 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
-import hooks from "../../src/hooks";
+import hooks, {
+  setSkillRunnerStartupBackendReconcileRunnerForTests,
+} from "../../src/hooks";
 import {
   BasicExampleFactory,
   KeyExampleFactory,
@@ -77,6 +79,7 @@ describe("hooks startup template cleanup", function () {
       (usedAddonObject as { hooks?: unknown }).hooks = prevAddonHooks;
     }
     runtime.Localization = prevLocalization;
+    setSkillRunnerStartupBackendReconcileRunnerForTests();
   });
 
   it("keeps prefs registration but does not register template shortcut/prompt/ui examples", async function () {
@@ -339,5 +342,16 @@ describe("hooks startup template cleanup", function () {
     assert.equal(calls.registerItemPaneSection, 0);
     assert.equal(calls.registerReaderItemPaneSection, 0);
     assert.equal(calls.registerStyleSheet, 0);
+  });
+
+  it("triggers startup skillrunner backend ledger reconcile runner", async function () {
+    let calls = 0;
+    setSkillRunnerStartupBackendReconcileRunnerForTests(async () => {
+      calls += 1;
+    });
+
+    await hooks.onStartup();
+
+    assert.equal(calls, 1);
   });
 });

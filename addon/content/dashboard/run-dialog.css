@@ -25,13 +25,146 @@ body {
   font: 13px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-.run-root {
+.workspace-root {
   width: 100%;
   height: 100%;
-  padding: 12px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.workspace-sidebar {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef3fb 100%);
+  overflow: auto;
+}
+
+.workspace-main {
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
+}
+
+.workspace-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px;
+}
+
+.workspace-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-group {
+  border: 1px solid #d9e2ef;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.workspace-group-header {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #e4eaf3;
+  background: #f3f7fd;
+  color: #12315a;
+  font: 600 12px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.workspace-group-header:hover {
+  background: #eaf1fb;
+}
+
+.workspace-group-body {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.workspace-finished {
+  border: 1px dashed #d6deea;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.workspace-finished-header {
+  width: 100%;
+  border: none;
+  border-bottom: 1px dashed #d6deea;
+  background: transparent;
+  color: #4b5563;
+  font: 600 11px/1.3 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.workspace-finished-body {
+  display: grid;
+  gap: 5px;
+  padding: 6px;
+}
+
+.task-tab {
+  width: 100%;
+  border: 1px solid #d5deec;
+  background: #fff;
+  border-radius: 8px;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  font: 12px/1.35 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.task-tab:hover:not(:disabled) {
+  background: #f5f9ff;
+}
+
+.task-tab.active {
+  border-color: #3b82f6;
+  background: #ebf3ff;
+}
+
+.task-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.task-tab.compact {
+  min-height: 24px;
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+.task-tab-title {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.task-tab-workflow {
+  color: #4f6b8a;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.task-tab-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #64748b;
+  font-size: 11px;
 }
 
 .card {
@@ -436,4 +569,19 @@ body {
 
 .hidden {
   display: none !important;
+}
+
+@media (max-width: 980px) {
+  .workspace-root {
+    grid-template-columns: 1fr;
+    grid-template-rows: 240px minmax(0, 1fr);
+  }
+
+  .meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chat-bubble {
+    max-width: 90%;
+  }
 }

@@ -184,6 +184,37 @@ export function cleanupTaskDashboardHistory() {
   };
 }
 
+export function removeTaskDashboardHistoryByBackendAndRequestIds(args: {
+  backendId: string;
+  requestIds: string[];
+}) {
+  const backendId = String(args.backendId || "").trim();
+  const requestIdSet = new Set(
+    (Array.isArray(args.requestIds) ? args.requestIds : [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+  );
+  if (!backendId || requestIdSet.size === 0) {
+    return 0;
+  }
+  const before = readHistoryRecords();
+  const after = before.filter((record) => {
+    if (String(record.backendId || "").trim() !== backendId) {
+      return true;
+    }
+    const requestId = String(record.requestId || "").trim();
+    if (!requestId) {
+      return true;
+    }
+    return !requestIdSet.has(requestId);
+  });
+  const removed = before.length - after.length;
+  if (removed > 0) {
+    writeHistoryRecords(after);
+  }
+  return removed;
+}
+
 export function resetTaskDashboardHistory() {
   writeHistoryRecords([]);
 }

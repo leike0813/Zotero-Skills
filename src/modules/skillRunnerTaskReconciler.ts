@@ -1,6 +1,8 @@
 import type { BackendInstance } from "../backends/types";
+import { resolveBackendDisplayName } from "../backends/displayName";
 import type { JobRecord, JobState } from "../jobQueue/manager";
 import { SkillRunnerClient } from "../providers/skillrunner/client";
+import { resolveSkillRunnerBackendCommunicationFailedToastText } from "../utils/localizationGovernance";
 import { executeApplyResult } from "../workflows/runtime";
 import { ZipBundleReader } from "../workflows/zipBundleReader";
 import {
@@ -11,8 +13,16 @@ import {
 } from "./workflowExecution/bundleIO";
 import { appendRuntimeLog } from "./runtimeLogManager";
 import { getLoadedWorkflowEntries, rescanWorkflowRegistry } from "./workflowRuntime";
-import { recordTaskDashboardHistoryFromJob } from "./taskDashboardHistory";
-import { recordWorkflowTaskUpdate } from "./taskRuntime";
+import {
+  listTaskDashboardHistory,
+  recordTaskDashboardHistoryFromJob,
+  removeTaskDashboardHistoryByBackendAndRequestIds,
+} from "./taskDashboardHistory";
+import {
+  listActiveWorkflowTasks,
+  recordWorkflowTaskUpdate,
+  removeWorkflowTasksByBackendAndRequestIds,
+} from "./taskRuntime";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 import { localizeWorkflowText } from "./workflowExecution/messageFormatter";
 import { resolveTargetParentIDFromRequest } from "./workflowExecution/requestMeta";
@@ -75,6 +85,49 @@ const APPLY_MAX_ATTEMPTS = 5;
 const APPLY_RETRY_BASE_MS = 1000;
 const APPLY_RETRY_MAX_MS = 30000;
 
+export type SkillRunnerBackendTaskLedgerReconcileSource =
+  | "startup"
+  | "local-runtime-up";
+
+export type SkillRunnerBackendTaskLedgerReconcileResult = {
+  ok: boolean;
+  source: SkillRunnerBackendTaskLedgerReconcileSource;
+  backendId: string;
+  stage: string;
+  message: string;
+  checkedRequestIds: string[];
+  missingRequestIds: string[];
+  removedActiveCount: number;
+  removedHistoryCount: number;
+};
+
+type BackendReconcileFailureToastPayload = {
+  backendId: string;
+  displayName: string;
+  source: SkillRunnerBackendTaskLedgerReconcileSource;
+  text: string;
+};
+
+let backendReconcileFailureToastEmitter: (
+  payload: BackendReconcileFailureToastPayload,
+) => void = (payload) => {
+  showWorkflowToast({
+    text: payload.text,
+    type: "error",
+  });
+};
+
+export function setSkillRunnerBackendReconcileFailureToastEmitterForTests(
+  emitter?: (payload: BackendReconcileFailureToastPayload) => void,
+) {
+  backendReconcileFailureToastEmitter = emitter || ((payload) => {
+    showWorkflowToast({
+      text: payload.text,
+      type: "error",
+    });
+  });
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -95,6 +148,52 @@ function computeApplyRetryDelayMs(attempt: number) {
   const safeAttempt = Math.max(1, Math.floor(attempt));
   const delay = APPLY_RETRY_BASE_MS * 2 ** (safeAttempt - 1);
   return Math.min(APPLY_RETRY_MAX_MS, delay);
+}
+
+function extractHttpStatusFromError(error: unknown) {
+  const message = normalizeString(
+    error && typeof error === "object" && "message" in error
+      ? (error as { message?: unknown }).message
+      : error,
+  );
+  if (!message) {
+    return 0;
+  }
+  const matched = message.match(/HTTP\s+(\d{3})\b/i);
+  if (!matched) {
+    return 0;
+  }
+  const parsed = Number(matched[1]);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.floor(parsed);
+}
+
+function collectRequestIdsForBackend(backendId: string) {
+  const normalizedBackendId = normalizeString(backendId);
+  if (!normalizedBackendId) {
+    return [] as string[];
+  }
+  const requestIds = new Set<string>();
+  for (const row of listActiveWorkflowTasks()) {
+    if (normalizeString(row.backendId) !== normalizedBackendId) {
+      continue;
+    }
+    const requestId = normalizeString(row.requestId);
+    if (!requestId) {
+      continue;
+    }
+    requestIds.add(requestId);
+  }
+  for (const row of listTaskDashboardHistory({ backendId: normalizedBackendId })) {
+    const requestId = normalizeString(row.requestId);
+    if (!requestId) {
+      continue;
+    }
+    requestIds.add(requestId);
+  }
+  return Array.from(requestIds.values());
 }
 
 function appendStateMachineWarning(args: {
@@ -317,6 +416,151 @@ async function resolveWorkflow(workflowId: string) {
     (entry) => entry.manifest.id === workflowId,
   );
   return workflow || null;
+}
+
+export async function reconcileSkillRunnerBackendTaskLedgerOnce(args: {
+  backend: BackendInstance;
+  source: SkillRunnerBackendTaskLedgerReconcileSource;
+  emitFailureToast?: boolean;
+}): Promise<SkillRunnerBackendTaskLedgerReconcileResult> {
+  const backendId = normalizeString(args.backend.id);
+  const source = args.source;
+  const baseUrl = normalizeString(args.backend.baseUrl);
+  const backendType = normalizeString(args.backend.type);
+  if (!backendId || backendType !== "skillrunner") {
+    return {
+      ok: true,
+      source,
+      backendId,
+      stage: "backend-task-ledger-reconcile-skip",
+      message: "backend task ledger reconcile skipped",
+      checkedRequestIds: [],
+      missingRequestIds: [],
+      removedActiveCount: 0,
+      removedHistoryCount: 0,
+    };
+  }
+  const requestIds = collectRequestIdsForBackend(backendId);
+  if (requestIds.length === 0) {
+    return {
+      ok: true,
+      source,
+      backendId,
+      stage: "backend-task-ledger-reconcile-empty",
+      message: "no task ledger entries to reconcile",
+      checkedRequestIds: [],
+      missingRequestIds: [],
+      removedActiveCount: 0,
+      removedHistoryCount: 0,
+    };
+  }
+  const missingRequestIds: string[] = [];
+  try {
+    const client = new SkillRunnerClient({
+      baseUrl,
+    });
+    for (const requestId of requestIds) {
+      try {
+        await client.getRunState({
+          requestId,
+        });
+      } catch (error) {
+        const status = extractHttpStatusFromError(error);
+        if (status === 404) {
+          missingRequestIds.push(requestId);
+          continue;
+        }
+        throw error;
+      }
+    }
+    const removedActiveCount = removeWorkflowTasksByBackendAndRequestIds({
+      backendId,
+      requestIds: missingRequestIds,
+    });
+    const removedHistoryCount = removeTaskDashboardHistoryByBackendAndRequestIds({
+      backendId,
+      requestIds: missingRequestIds,
+    });
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId,
+      backendType,
+      providerId: "skillrunner",
+      component: "skillrunner-reconciler",
+      operation: "backend-task-ledger-reconcile",
+      phase: source,
+      stage: "backend-task-ledger-reconcile-finished",
+      message: "backend task ledger reconcile finished",
+      details: {
+        source,
+        checkedRequestIds: requestIds,
+        missingRequestIds,
+        removedActiveCount,
+        removedHistoryCount,
+      },
+    });
+    return {
+      ok: true,
+      source,
+      backendId,
+      stage: "backend-task-ledger-reconcile-finished",
+      message: "backend task ledger reconcile finished",
+      checkedRequestIds: requestIds,
+      missingRequestIds,
+      removedActiveCount,
+      removedHistoryCount,
+    };
+  } catch (error) {
+    const displayName = resolveBackendDisplayName(backendId, args.backend.displayName);
+    const toastText = resolveSkillRunnerBackendCommunicationFailedToastText(
+      displayName || backendId,
+    );
+    appendRuntimeLog({
+      level: "error",
+      scope: "provider",
+      backendId,
+      backendType,
+      providerId: "skillrunner",
+      component: "skillrunner-reconciler",
+      operation: "backend-task-ledger-reconcile",
+      phase: source,
+      stage: "backend-task-ledger-reconcile-failed",
+      message: "backend task ledger reconcile failed",
+      error,
+      details: {
+        source,
+        checkedRequestIds: requestIds,
+      },
+    });
+    if (args.emitFailureToast !== false) {
+      try {
+        backendReconcileFailureToastEmitter({
+          backendId,
+          displayName: displayName || backendId,
+          source,
+          text: toastText,
+        });
+      } catch {
+        // keep toast reporting best-effort
+      }
+    }
+    return {
+      ok: false,
+      source,
+      backendId,
+      stage: "backend-task-ledger-reconcile-failed",
+      message: normalizeString(
+        error && typeof error === "object" && "message" in error
+          ? (error as { message?: unknown }).message
+          : error,
+      ) || "backend task ledger reconcile failed",
+      checkedRequestIds: requestIds,
+      missingRequestIds: [],
+      removedActiveCount: 0,
+      removedHistoryCount: 0,
+    };
+  }
 }
 
 export class SkillRunnerTaskReconciler {

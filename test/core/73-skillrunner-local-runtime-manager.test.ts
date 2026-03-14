@@ -11,6 +11,7 @@ import {
   getManagedLocalRuntimeStateSnapshot,
   getLocalRuntimeManualDeployCommands,
   readManagedLocalRuntimeState,
+  setManagedLocalRuntimePostUpTaskReconcileRunnerForTests,
   resetLocalRuntimeAutoStartSessionState,
   releaseManagedLocalRuntimeLeaseOnShutdown,
   runManagedRuntimeAutoEnsureTickForTests,
@@ -160,6 +161,7 @@ describe("skillrunner local runtime manager", function () {
     resetManagedLocalRuntimeStateChangeListenersForTests();
     resetManagedRuntimeAsyncTriggerForTests();
     resetLocalRuntimeToastStateForTests();
+    setManagedLocalRuntimePostUpTaskReconcileRunnerForTests();
     setSuppressManagedRuntimeAutoEnsureTriggerForTests(false);
     await releaseManagedLocalRuntimeLeaseOnShutdown();
   });
@@ -332,6 +334,13 @@ describe("skillrunner local runtime manager", function () {
               })
             : JSON.stringify({ ok: true }),
       }) as Response;
+    const postUpReconcileCalls: Array<{ backendId: string; source: string }> = [];
+    setManagedLocalRuntimePostUpTaskReconcileRunnerForTests(async (args) => {
+      postUpReconcileCalls.push({
+        backendId: args.backendId,
+        source: args.source,
+      });
+    });
 
     const result = await deployAndConfigureLocalSkillRunner({
       version: "v0.5.2",
@@ -343,6 +352,12 @@ describe("skillrunner local runtime manager", function () {
     const snapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(snapshot.details?.runtimeState, "running");
     assert.equal(snapshot.details?.autoStartPaused, false);
+    assert.deepEqual(postUpReconcileCalls, [
+      {
+        backendId: "local-skillrunner-backend",
+        source: "local-runtime-up",
+      },
+    ]);
   });
 
   it("emits runtime-up toast for one-click start", async function () {

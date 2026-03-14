@@ -2,10 +2,20 @@ import { assert } from "chai";
 import { handlers } from "../../src/handlers";
 import type { JobRecord } from "../../src/jobQueue/manager";
 import {
+  reconcileSkillRunnerBackendTaskLedgerOnce,
+  setSkillRunnerBackendReconcileFailureToastEmitterForTests,
   mapSkillRunnerBackendStatusToJobState,
   SkillRunnerTaskReconciler,
 } from "../../src/modules/skillRunnerTaskReconciler";
-import { resetWorkflowTasks, listWorkflowTasks } from "../../src/modules/taskRuntime";
+import {
+  resetWorkflowTasks,
+  listWorkflowTasks,
+  recordWorkflowTaskUpdate,
+} from "../../src/modules/taskRuntime";
+import {
+  listTaskDashboardHistory,
+  recordTaskDashboardHistoryFromJob,
+} from "../../src/modules/taskDashboardHistory";
 import { getPref, setPref } from "../../src/utils/prefs";
 
 function createJsonResponse(payload: unknown, status = 200): Response {
@@ -58,6 +68,39 @@ function makeDeferredJob(args?: {
   };
 }
 
+function makeDashboardJob(args: {
+  id: string;
+  runId: string;
+  requestId: string;
+  state: JobRecord["state"];
+  backendId: string;
+  backendBaseUrl: string;
+  workflowId?: string;
+}) {
+  return {
+    id: args.id,
+    workflowId: args.workflowId || "literature-explainer",
+    request: { targetParentID: 123 },
+    meta: {
+      runId: args.runId,
+      taskName: args.id,
+      workflowLabel: "Literature Explainer",
+      requestId: args.requestId,
+      backendId: args.backendId,
+      backendType: "skillrunner",
+      backendBaseUrl: args.backendBaseUrl,
+      providerId: "skillrunner",
+      targetParentID: 123,
+    },
+    state: args.state,
+    createdAt: "2026-03-12T00:00:00.000Z",
+    updatedAt: "2026-03-12T00:00:01.000Z",
+    result: {
+      requestId: args.requestId,
+    },
+  } as JobRecord;
+}
+
 function forceApplyRetryDueNow(reconciler: SkillRunnerTaskReconciler) {
   const runtime = reconciler as unknown as {
     contexts?: Map<string, Record<string, unknown>>;
@@ -86,13 +129,16 @@ describe("skillrunner task reconciler", function () {
 
   beforeEach(function () {
     setPref("skillRunnerDeferredTasksJson", "");
+    setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
   });
 
   afterEach(function () {
     (globalThis as { fetch?: typeof fetch }).fetch = originalFetch;
     setPref("skillRunnerDeferredTasksJson", "");
+    setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
+    setSkillRunnerBackendReconcileFailureToastEmitterForTests();
   });
 
   it("maps backend status to local job state one-to-one", function () {
@@ -387,5 +433,123 @@ describe("skillrunner task reconciler", function () {
     assert.lengthOf(Array.isArray(parsed.records) ? parsed.records : [], 0);
     const tasks = listWorkflowTasks();
     assert.equal(tasks[0]?.state, "succeeded");
+  });
+
+  it("reconciles backend task ledger and removes request ids missing on backend", async function () {
+    recordWorkflowTaskUpdate(
+      makeDashboardJob({
+        id: "active-missing",
+        runId: "run-active-missing",
+        requestId: "req-missing",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    recordWorkflowTaskUpdate(
+      makeDashboardJob({
+        id: "active-live",
+        runId: "run-active-live",
+        requestId: "req-live",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    recordTaskDashboardHistoryFromJob(
+      makeDashboardJob({
+        id: "history-missing",
+        runId: "run-history-missing",
+        requestId: "req-missing",
+        state: "failed",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    recordTaskDashboardHistoryFromJob(
+      makeDashboardJob({
+        id: "history-live",
+        runId: "run-history-live",
+        requestId: "req-live",
+        state: "succeeded",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-missing")) {
+        return createJsonResponse({ detail: "not found" }, 404);
+      }
+      if (url.endsWith("/v1/jobs/req-live")) {
+        return createJsonResponse({
+          request_id: "req-live",
+          status: "running",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const result = await reconcileSkillRunnerBackendTaskLedgerOnce({
+      backend: {
+        id: "remote-skillrunner",
+        displayName: "Remote SkillRunner",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8031",
+        auth: { kind: "none" },
+      },
+      source: "startup",
+    });
+
+    assert.isTrue(result.ok);
+    assert.include(result.missingRequestIds, "req-missing");
+    assert.notInclude(result.missingRequestIds, "req-live");
+    const activeRows = listWorkflowTasks();
+    assert.sameMembers(
+      activeRows.map((entry) => String(entry.requestId || "")),
+      ["req-live"],
+    );
+    const historyRows = listTaskDashboardHistory({
+      backendId: "remote-skillrunner",
+    });
+    assert.sameMembers(
+      historyRows.map((entry) => String(entry.requestId || "")),
+      ["req-live"],
+    );
+  });
+
+  it("reports toast when backend reconcile fails due to communication error", async function () {
+    recordTaskDashboardHistoryFromJob(
+      makeDashboardJob({
+        id: "history-live",
+        runId: "run-history-live",
+        requestId: "req-live",
+        state: "succeeded",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    const toasts: string[] = [];
+    setSkillRunnerBackendReconcileFailureToastEmitterForTests((payload) => {
+      toasts.push(payload.text);
+    });
+    (globalThis as { fetch?: typeof fetch }).fetch = async () => {
+      throw new Error("network down");
+    };
+
+    const result = await reconcileSkillRunnerBackendTaskLedgerOnce({
+      backend: {
+        id: "remote-skillrunner",
+        displayName: "Remote SkillRunner",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8031",
+        auth: { kind: "none" },
+      },
+      source: "startup",
+      emitFailureToast: true,
+    });
+
+    assert.isFalse(result.ok);
+    assert.lengthOf(toasts, 1);
+    assert.include(toasts[0], "Remote SkillRunner");
   });
 });

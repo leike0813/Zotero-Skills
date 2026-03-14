@@ -69,12 +69,17 @@ export function getStringWithLocaleFallback(args: {
     enUS: string;
   };
   locale?: string;
+  values?: Record<string, unknown>;
 }) {
   let localized = "";
   try {
     const runtime = globalThis as { addon?: unknown };
     if (runtime.addon) {
-      localized = String(getString(args.key as any) || "").trim();
+      localized = String(
+        args.values
+          ? getString(args.key as any, { args: args.values })
+          : getString(args.key as any),
+      ).trim();
     }
   } catch {
     localized = "";
@@ -137,5 +142,21 @@ export function resolveManagedLocalRuntimeToastText(
   return getStringWithLocaleFallback({
     key: "skillrunner-local-runtime-toast-abnormal-stop",
     fallback: managedLocalRuntimeToastFallback["runtime-abnormal-stop"],
+  });
+}
+
+export function resolveSkillRunnerBackendCommunicationFailedToastText(
+  backendDisplayName: string,
+) {
+  const normalizedDisplayName = String(backendDisplayName || "").trim() || "unknown";
+  return getStringWithLocaleFallback({
+    key: "skillrunner-backend-communication-failed",
+    fallback: {
+      zhCN: `与后端${normalizedDisplayName}通信失败`,
+      enUS: `Failed to communicate with backend ${normalizedDisplayName}`,
+    },
+    values: {
+      backend: normalizedDisplayName,
+    },
   });
 }

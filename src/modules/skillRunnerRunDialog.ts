@@ -1,5 +1,7 @@
 import type { DialogHelper } from "zotero-plugin-toolkit";
 import { config } from "../../package.json";
+import { resolveBackendDisplayName } from "../backends/displayName";
+import { loadBackendsRegistry } from "../backends/registry";
 import type { BackendInstance } from "../backends/types";
 import { getString } from "../utils/locale";
 import { resolveAddonRef } from "../utils/runtimeBridge";
@@ -13,12 +15,26 @@ import {
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { appendRuntimeLog } from "./runtimeLogManager";
 import {
+  cleanupTaskDashboardHistory,
+  listTaskDashboardHistory,
+  type TaskDashboardHistoryRecord,
+} from "./taskDashboardHistory";
+import {
+  mergeDashboardTaskRows,
+  normalizeDashboardBackends,
+} from "./taskDashboardSnapshot";
+import {
   isTerminal,
   isWaiting,
   normalizeStatus,
   normalizeStatusWithGuard,
   type SkillRunnerStateMachineViolation,
 } from "./skillRunnerProviderStateMachine";
+import {
+  listActiveWorkflowTasks,
+  subscribeWorkflowTasks,
+  type WorkflowTaskRecord,
+} from "./taskRuntime";
 
 export type RunDialogMessageRole = "assistant" | "user" | "system";
 export type RunDialogMessageKind =
@@ -209,6 +225,86 @@ type RunDialogEntry = {
   refreshState?: () => Promise<void>;
   removeMessageListener?: () => void;
   session: RunSessionState;
+};
+
+type RunWorkspaceTaskItem = {
+  key: string;
+  backendId: string;
+  backendDisplayName: string;
+  requestId?: string;
+  workflowLabel?: string;
+  status: string;
+  stateLabel: string;
+  updatedAt: string;
+  title: string;
+  selectable: boolean;
+  terminal: boolean;
+};
+
+type RunWorkspaceGroup = {
+  backendId: string;
+  backendDisplayName: string;
+  collapsed: boolean;
+  finishedCollapsed: boolean;
+  activeTasks: RunWorkspaceTaskItem[];
+  finishedTasks: RunWorkspaceTaskItem[];
+  latestUpdatedAt: string;
+};
+
+type RunWorkspaceSnapshot = {
+  title: string;
+  labels: {
+    completedTasksTitle: string;
+    waitingRequestId: string;
+    emptyTasks: string;
+  };
+  workspace: {
+    selectedTaskKey: string;
+    groups: RunWorkspaceGroup[];
+  };
+  session: RunDialogSnapshot | null;
+};
+
+type RunWorkspaceState = {
+  dialog?: DialogHelper;
+  frameWindow: Window | null;
+  removeMessageListener?: () => void;
+  refreshTimer?: number;
+  unsubscribeTasks?: () => void;
+  refreshChain: Promise<void>;
+  selectedTaskKey: string;
+  requestedTaskKey: string;
+  groupCollapsed: Map<string, boolean>;
+  finishedCollapsed: Map<string, boolean>;
+  taskIndex: Map<
+    string,
+    {
+      item: RunWorkspaceTaskItem;
+      backend: BackendInstance;
+    }
+  >;
+  groups: RunWorkspaceGroup[];
+  currentEntry?: RunDialogEntry;
+  loadingBackends: boolean;
+  latestOpenTarget?: {
+    key: string;
+    backend: BackendInstance;
+    requestId: string;
+  };
+};
+
+const SKILLRUNNER_BACKEND_TYPE = "skillrunner";
+
+const runWorkspaceState: RunWorkspaceState = {
+  frameWindow: null,
+  refreshChain: Promise.resolve(),
+  selectedTaskKey: "",
+  requestedTaskKey: "",
+  groupCollapsed: new Map(),
+  finishedCollapsed: new Map(),
+  taskIndex: new Map(),
+  groups: [],
+  loadingBackends: false,
 };
 
 const runDialogMap = new Map<string, RunDialogEntry>();
@@ -749,6 +845,316 @@ function resolveFrameWindow(frame: Element | null) {
   return candidate.contentWindow || null;
 }
 
+function toTime(input: string | undefined) {
+  const parsed = Date.parse(String(input || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveRunWorkspaceTaskKey(args: {
+  backendId: string;
+  requestId?: string;
+  taskId: string;
+}) {
+  const backendId = String(args.backendId || "").trim();
+  const requestId = String(args.requestId || "").trim();
+  if (!backendId) {
+    return "";
+  }
+  if (requestId) {
+    return resolveRunDialogKey(backendId, requestId);
+  }
+  return `${backendId}::task:${String(args.taskId || "").trim()}`;
+}
+
+function resolveRunWorkspaceTaskTitle(args: {
+  taskName?: string;
+  workflowLabel?: string;
+  requestId?: string;
+  waitingRequestIdLabel: string;
+}) {
+  const taskName = String(args.taskName || "").trim();
+  if (taskName) {
+    return taskName;
+  }
+  const workflowLabel = String(args.workflowLabel || "").trim();
+  if (workflowLabel) {
+    return workflowLabel;
+  }
+  const requestId = String(args.requestId || "").trim();
+  if (requestId) {
+    return requestId;
+  }
+  return args.waitingRequestIdLabel;
+}
+
+function resolveRunWorkspaceStatusLabel(value: string) {
+  const normalized = normalizeStatus(value, "running");
+  if (normalized === "queued") {
+    return localize("task-manager-status-queued", "Queued");
+  }
+  if (normalized === "running") {
+    return localize("task-manager-status-running", "Running");
+  }
+  if (normalized === "waiting_user") {
+    return localize("task-dashboard-status-waiting-user", "Waiting User");
+  }
+  if (normalized === "waiting_auth") {
+    return localize("task-dashboard-status-waiting-auth", "Waiting Auth");
+  }
+  if (normalized === "succeeded") {
+    return localize("task-dashboard-status-succeeded", "Succeeded");
+  }
+  if (normalized === "failed") {
+    return localize("task-dashboard-status-failed", "Failed");
+  }
+  if (normalized === "canceled") {
+    return localize("task-dashboard-status-canceled", "Canceled");
+  }
+  return localize("task-dashboard-status-unknown", "Unknown");
+}
+
+function isSkillRunnerRecord(record: {
+  backendType?: string;
+  backendId?: string;
+}) {
+  const backendType = String(record.backendType || "").trim();
+  const backendId = String(record.backendId || "").trim();
+  return (
+    backendType === SKILLRUNNER_BACKEND_TYPE ||
+    backendId === "local-skillrunner-backend" ||
+    backendId === "skillrunner-local"
+  );
+}
+
+async function buildRunWorkspaceModel() {
+  cleanupTaskDashboardHistory();
+  const history = listTaskDashboardHistory().filter((entry) =>
+    isSkillRunnerRecord(entry),
+  ) as TaskDashboardHistoryRecord[];
+  const active = listActiveWorkflowTasks().filter((entry) =>
+    isSkillRunnerRecord(entry),
+  ) as WorkflowTaskRecord[];
+  let configured: BackendInstance[] = [];
+  try {
+    const loaded = await loadBackendsRegistry();
+    configured = loaded.backends.filter(
+      (entry) =>
+        String(entry.type || "").trim() === SKILLRUNNER_BACKEND_TYPE ||
+        String(entry.id || "").trim() === "local-skillrunner-backend",
+    );
+  } catch {
+    configured = [];
+  }
+  const normalizedBackends = normalizeDashboardBackends({
+    configured,
+    history,
+    active,
+  }).filter(
+    (entry) =>
+      String(entry.type || "").trim() === SKILLRUNNER_BACKEND_TYPE ||
+      String(entry.id || "").trim() === "local-skillrunner-backend",
+  );
+
+  const groupsMap = new Map<
+    string,
+    {
+      backendId: string;
+      backendDisplayName: string;
+      latestUpdatedAt: string;
+      rows: RunWorkspaceTaskItem[];
+      backend: BackendInstance;
+    }
+  >();
+  const index = new Map<
+    string,
+    {
+      item: RunWorkspaceTaskItem;
+      backend: BackendInstance;
+    }
+  >();
+
+  const waitingRequestIdLabel = localize(
+    "task-dashboard-run-waiting-request-id",
+    "Waiting for requestId",
+  );
+
+  for (const backend of normalizedBackends) {
+    const backendId = String(backend.id || "").trim();
+    if (!backendId) {
+      continue;
+    }
+    const backendDisplayName = resolveBackendDisplayName(
+      backendId,
+      backend.displayName,
+    );
+    const mergedRows = mergeDashboardTaskRows({
+      backendId,
+      history,
+      active,
+    });
+    if (!mergedRows.length) {
+      continue;
+    }
+    const group = {
+      backendId,
+      backendDisplayName,
+      latestUpdatedAt: "",
+      rows: [] as RunWorkspaceTaskItem[],
+      backend,
+    };
+    for (const row of mergedRows) {
+      const requestId = String(row.requestId || "").trim();
+      const key = resolveRunWorkspaceTaskKey({
+        backendId,
+        requestId,
+        taskId: row.id,
+      });
+      if (!key) {
+        continue;
+      }
+      const normalizedStatus = normalizeStatus(row.state, "running");
+      const task: RunWorkspaceTaskItem = {
+        key,
+        backendId,
+        backendDisplayName,
+        requestId: requestId || undefined,
+        workflowLabel:
+          String(row.workflowLabel || "").trim() ||
+          String((row as { workflowId?: unknown }).workflowId || "").trim() ||
+          undefined,
+        status: normalizedStatus,
+        stateLabel: resolveRunWorkspaceStatusLabel(normalizedStatus),
+        updatedAt: String(row.updatedAt || "").trim() || "",
+        title: resolveRunWorkspaceTaskTitle({
+          taskName: row.taskName,
+          workflowLabel: row.workflowLabel,
+          requestId,
+          waitingRequestIdLabel,
+        }),
+        selectable: requestId.length > 0,
+        terminal: isTerminal(normalizedStatus),
+      };
+      group.rows.push(task);
+      index.set(key, {
+        item: task,
+        backend: {
+          ...backend,
+          baseUrl: String(row.backendBaseUrl || "").trim() || backend.baseUrl,
+        },
+      });
+      if (!group.latestUpdatedAt || toTime(task.updatedAt) > toTime(group.latestUpdatedAt)) {
+        group.latestUpdatedAt = task.updatedAt;
+      }
+    }
+    groupsMap.set(group.backendId, group);
+  }
+
+  if (
+    runWorkspaceState.latestOpenTarget &&
+    !index.has(runWorkspaceState.latestOpenTarget.key)
+  ) {
+    const target = runWorkspaceState.latestOpenTarget;
+    const task: RunWorkspaceTaskItem = {
+      key: target.key,
+      backendId: target.backend.id,
+      backendDisplayName: resolveBackendDisplayName(
+        target.backend.id,
+        target.backend.displayName,
+      ),
+      requestId: target.requestId,
+      workflowLabel: undefined,
+      status: "running",
+      stateLabel: resolveRunWorkspaceStatusLabel("running"),
+      updatedAt: new Date().toISOString(),
+      title: target.requestId,
+      selectable: true,
+      terminal: false,
+    };
+    const existing = groupsMap.get(target.backend.id);
+    if (existing) {
+      existing.rows.unshift(task);
+      existing.latestUpdatedAt = task.updatedAt;
+    } else {
+      groupsMap.set(target.backend.id, {
+        backendId: target.backend.id,
+        backendDisplayName: task.backendDisplayName,
+        latestUpdatedAt: task.updatedAt,
+        rows: [task],
+        backend: target.backend,
+      });
+    }
+    index.set(task.key, {
+      item: task,
+      backend: target.backend,
+    });
+  }
+
+  const groups = Array.from(groupsMap.values())
+    .map((entry) => {
+      const sorted = [...entry.rows].sort(
+        (a, b) => toTime(b.updatedAt) - toTime(a.updatedAt),
+      );
+      return {
+        backendId: entry.backendId,
+        backendDisplayName: entry.backendDisplayName,
+        collapsed: runWorkspaceState.groupCollapsed.get(entry.backendId) === true,
+        finishedCollapsed: runWorkspaceState.finishedCollapsed.has(entry.backendId)
+          ? runWorkspaceState.finishedCollapsed.get(entry.backendId) === true
+          : true,
+        activeTasks: sorted.filter((task) => !task.terminal),
+        finishedTasks: sorted.filter((task) => task.terminal),
+        latestUpdatedAt: entry.latestUpdatedAt,
+      } as RunWorkspaceGroup;
+    })
+    .sort((a, b) => {
+      const diff = toTime(b.latestUpdatedAt) - toTime(a.latestUpdatedAt);
+      if (diff !== 0) {
+        return diff;
+      }
+      return a.backendDisplayName.localeCompare(b.backendDisplayName);
+    });
+
+  return {
+    groups,
+    index,
+  };
+}
+
+function pickRunWorkspaceSelectedTaskKey(args: {
+  groups: RunWorkspaceGroup[];
+  index: RunWorkspaceState["taskIndex"];
+  requestedTaskKey: string;
+  currentTaskKey: string;
+}) {
+  const requested = String(args.requestedTaskKey || "").trim();
+  if (requested) {
+    const row = args.index.get(requested);
+    if (row?.item.selectable) {
+      return requested;
+    }
+  }
+  const current = String(args.currentTaskKey || "").trim();
+  if (current) {
+    const row = args.index.get(current);
+    if (row?.item.selectable) {
+      return current;
+    }
+  }
+  for (const group of args.groups) {
+    for (const task of group.activeTasks) {
+      if (task.selectable) {
+        return task.key;
+      }
+    }
+    for (const task of group.finishedTasks) {
+      if (task.selectable) {
+        return task.key;
+      }
+    }
+  }
+  return "";
+}
+
 function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
   const pending = entry.session.pendingInteraction;
   const pendingAuth = entry.session.pendingAuth;
@@ -763,7 +1169,12 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
       },
     ),
     backendTitle: localize("task-dashboard-skillrunner-title", "SkillRunner Backend: {id}", {
-      args: { id: entry.backend.id },
+      args: {
+        id: resolveBackendDisplayName(
+          entry.backend.id,
+          entry.backend.displayName,
+        ),
+      },
     }),
     requestId: entry.requestId,
     status: normalizedStatus,
@@ -996,17 +1407,46 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
   };
 }
 
-function pushSnapshot(
-  entry: RunDialogEntry,
-  messageType: "run-dialog:init" | "run-dialog:snapshot",
-) {
-  if (!entry.frameWindow) {
+function buildRunWorkspaceSnapshot(session: RunDialogSnapshot | null): RunWorkspaceSnapshot {
+  return {
+    title: localize("task-dashboard-run-dialog-title", "Run Details: {requestId}", {
+      args: {
+        requestId: session?.requestId || "",
+      },
+    }),
+    labels: {
+      completedTasksTitle: localize(
+        "task-dashboard-run-completed-tasks-title",
+        "Completed Tasks",
+      ),
+      waitingRequestId: localize(
+        "task-dashboard-run-waiting-request-id",
+        "Waiting for requestId",
+      ),
+      emptyTasks: localize(
+        "task-dashboard-run-workspace-empty",
+        "No SkillRunner tasks.",
+      ),
+    },
+    workspace: {
+      selectedTaskKey: runWorkspaceState.selectedTaskKey,
+      groups: runWorkspaceState.groups,
+    },
+    session,
+  };
+}
+
+function pushSnapshot(messageType: "run-dialog:init" | "run-dialog:snapshot") {
+  if (!runWorkspaceState.frameWindow) {
     return;
   }
-  entry.frameWindow.postMessage(
+  const session = runWorkspaceState.currentEntry
+    ? buildRunDialogSnapshot(runWorkspaceState.currentEntry)
+    : null;
+  runWorkspaceState.frameWindow.postMessage(
     {
       type: messageType,
-      payload: buildRunDialogSnapshot(entry),
+      payload: buildRunWorkspaceSnapshot(session),
     },
     "*",
   );
@@ -1023,7 +1463,7 @@ async function startRunObserver(entry: RunDialogEntry) {
   });
   entry.session.loading = true;
   entry.session.error = undefined;
-  pushSnapshot(entry, "run-dialog:snapshot");
+  pushSnapshot("run-dialog:snapshot");
 
   const syncHistory = async () => {
     const historyPayload = await client.listRunChatHistory({
@@ -1083,7 +1523,7 @@ async function startRunObserver(entry: RunDialogEntry) {
       entry.session.error = compactError(error);
     } finally {
       if (!stopped) {
-        pushSnapshot(entry, "run-dialog:snapshot");
+        pushSnapshot("run-dialog:snapshot");
       }
     }
   };
@@ -1131,7 +1571,7 @@ async function startRunObserver(entry: RunDialogEntry) {
       if (shouldClearRunDialogPendingForStatus(entry.session.status)) {
         clearPendingState();
       }
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
       return;
     }
     if (
@@ -1161,7 +1601,7 @@ async function startRunObserver(entry: RunDialogEntry) {
     if (entry.session.messages.length > 500) {
       entry.session.messages = entry.session.messages.slice(-500);
     }
-    pushSnapshot(entry, "run-dialog:snapshot");
+    pushSnapshot("run-dialog:snapshot");
     if (shouldRefresh) {
       scheduleRefreshRunState();
     }
@@ -1195,10 +1635,10 @@ async function startRunObserver(entry: RunDialogEntry) {
       }
     } catch (error) {
       entry.session.error = compactError(error);
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
     } finally {
       entry.session.loading = false;
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
     }
   };
   void runLoop();
@@ -1212,7 +1652,7 @@ async function startRunObserver(entry: RunDialogEntry) {
   };
 }
 
-async function handleRunDialogAction(
+async function handleRunDialogActionForEntry(
   entry: RunDialogEntry,
   envelope: RunDialogActionEnvelope,
 ) {
@@ -1222,7 +1662,7 @@ async function handleRunDialogAction(
     return;
   }
   if (action === "ready") {
-    pushSnapshot(entry, "run-dialog:init");
+    pushSnapshot("run-dialog:init");
     return;
   }
   if (action === "close-dialog") {
@@ -1231,7 +1671,7 @@ async function handleRunDialogAction(
   }
   if (action === "cancel-run") {
     if (isTerminalStatus(entry.session.status)) {
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
       return;
     }
     try {
@@ -1256,7 +1696,7 @@ async function handleRunDialogAction(
         ),
       );
     }
-    pushSnapshot(entry, "run-dialog:snapshot");
+    pushSnapshot("run-dialog:snapshot");
     return;
   }
   if (action === "reply-run") {
@@ -1318,7 +1758,7 @@ async function handleRunDialogAction(
       if (submitted && entry.refreshState) {
         await entry.refreshState();
       } else {
-        pushSnapshot(entry, "run-dialog:snapshot");
+        pushSnapshot("run-dialog:snapshot");
       }
       return;
     }
@@ -1387,7 +1827,7 @@ async function handleRunDialogAction(
     if (submitted && entry.refreshState) {
       await entry.refreshState();
     } else {
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
     }
     return;
   }
@@ -1442,9 +1882,154 @@ async function handleRunDialogAction(
     if (imported && entry.refreshState) {
       await entry.refreshState();
     } else {
-      pushSnapshot(entry, "run-dialog:snapshot");
+      pushSnapshot("run-dialog:snapshot");
     }
   }
+}
+
+async function stopRunDialogEntryObserver(entry: RunDialogEntry | undefined) {
+  if (!entry) {
+    return;
+  }
+  if (entry.stopObserver) {
+    entry.stopObserver();
+    entry.stopObserver = undefined;
+  }
+  entry.refreshState = undefined;
+}
+
+function buildRunDialogEntry(args: {
+  key: string;
+  backend: BackendInstance;
+  requestId: string;
+}): RunDialogEntry {
+  const dialog = runWorkspaceState.dialog as DialogHelper;
+  return {
+    key: args.key,
+    backend: args.backend,
+    requestId: args.requestId,
+    dialog,
+    frameWindow: runWorkspaceState.frameWindow,
+    session: {
+      requestId: args.requestId,
+      status: "running",
+      messages: [],
+      seenMessageKeys: new Set<string>(),
+      lastSeq: 0,
+      loading: true,
+    },
+  };
+}
+
+async function selectWorkspaceTask(taskKey: string) {
+  const key = String(taskKey || "").trim();
+  if (!key) {
+    await stopRunDialogEntryObserver(runWorkspaceState.currentEntry);
+    runWorkspaceState.currentEntry = undefined;
+    runWorkspaceState.selectedTaskKey = "";
+    pushSnapshot("run-dialog:snapshot");
+    return;
+  }
+  const target = runWorkspaceState.taskIndex.get(key);
+  if (!target || !target.item.selectable || !target.item.requestId) {
+    return;
+  }
+  if (runWorkspaceState.currentEntry?.key === key) {
+    return;
+  }
+  await stopRunDialogEntryObserver(runWorkspaceState.currentEntry);
+
+  const requestId = String(target.item.requestId || "").trim();
+  const entry =
+    runDialogMap.get(key) ||
+    buildRunDialogEntry({
+      key,
+      backend: target.backend,
+      requestId,
+    });
+  entry.dialog = runWorkspaceState.dialog as DialogHelper;
+  entry.frameWindow = runWorkspaceState.frameWindow;
+  runDialogMap.set(key, entry);
+  runWorkspaceState.currentEntry = entry;
+  runWorkspaceState.selectedTaskKey = key;
+  pushSnapshot("run-dialog:snapshot");
+  entry.stopObserver = await startRunObserver(entry);
+}
+
+async function refreshWorkspaceSnapshot(args?: {
+  forceInit?: boolean;
+  requestedTaskKey?: string;
+}) {
+  if (args?.requestedTaskKey) {
+    runWorkspaceState.requestedTaskKey = String(args.requestedTaskKey || "").trim();
+  }
+  runWorkspaceState.refreshChain = runWorkspaceState.refreshChain.then(async () => {
+    const model = await buildRunWorkspaceModel();
+    runWorkspaceState.groups = model.groups;
+    runWorkspaceState.taskIndex = model.index;
+    if (
+      runWorkspaceState.latestOpenTarget &&
+      model.index.has(runWorkspaceState.latestOpenTarget.key)
+    ) {
+      runWorkspaceState.latestOpenTarget = undefined;
+    }
+    const nextSelected = pickRunWorkspaceSelectedTaskKey({
+      groups: model.groups,
+      index: model.index,
+      requestedTaskKey: runWorkspaceState.requestedTaskKey,
+      currentTaskKey: runWorkspaceState.selectedTaskKey,
+    });
+    runWorkspaceState.requestedTaskKey = "";
+    await selectWorkspaceTask(nextSelected);
+    pushSnapshot(args?.forceInit ? "run-dialog:init" : "run-dialog:snapshot");
+  });
+  await runWorkspaceState.refreshChain;
+}
+
+async function handleRunWorkspaceAction(envelope: RunDialogActionEnvelope) {
+  const action = String(envelope.action || "").trim();
+  const payload = envelope.payload || {};
+  if (!action) {
+    return;
+  }
+  if (action === "ready") {
+    await refreshWorkspaceSnapshot({
+      forceInit: true,
+    });
+    return;
+  }
+  if (action === "select-task") {
+    await refreshWorkspaceSnapshot({
+      requestedTaskKey: String(payload.taskKey || "").trim(),
+    });
+    return;
+  }
+  if (action === "toggle-group-collapse") {
+    const backendId = String(payload.backendId || "").trim();
+    if (backendId) {
+      const next =
+        runWorkspaceState.groupCollapsed.get(backendId) !== true;
+      runWorkspaceState.groupCollapsed.set(backendId, next);
+      await refreshWorkspaceSnapshot();
+    }
+    return;
+  }
+  if (action === "toggle-finished-collapse") {
+    const backendId = String(payload.backendId || "").trim();
+    if (backendId) {
+      const current = runWorkspaceState.finishedCollapsed.has(backendId)
+        ? runWorkspaceState.finishedCollapsed.get(backendId) === true
+        : true;
+      runWorkspaceState.finishedCollapsed.set(backendId, !current);
+      await refreshWorkspaceSnapshot();
+    }
+    return;
+  }
+  const entry = runWorkspaceState.currentEntry;
+  if (!entry) {
+    return;
+  }
+  await handleRunDialogActionForEntry(entry, envelope);
 }
 
 export async function openSkillRunnerRunDialog(args: {
@@ -1457,37 +2042,26 @@ export async function openSkillRunnerRunDialog(args: {
     return;
   }
   const dialogKey = resolveRunDialogKey(backendId, requestId);
-  const existing = runDialogMap.get(dialogKey);
-  if (existing && isWindowAlive(existing.dialog.window)) {
-    existing.dialog.window?.focus();
+  runWorkspaceState.latestOpenTarget = {
+    key: dialogKey,
+    backend: args.backend,
+    requestId,
+  };
+  runWorkspaceState.requestedTaskKey = dialogKey;
+
+  if (isWindowAlive(runWorkspaceState.dialog?.window)) {
+    runWorkspaceState.dialog?.window?.focus();
+    await refreshWorkspaceSnapshot({
+      requestedTaskKey: dialogKey,
+    });
     return;
-  }
-  if (existing) {
-    runDialogMap.delete(dialogKey);
   }
 
   const pageUrl = resolveRunDialogPageUrl();
   const title = localize("task-dashboard-run-dialog-title", "Run Details: {requestId}", {
     args: { requestId },
   });
-
   let dialogHelper: DialogHelper | undefined;
-  const entry: RunDialogEntry = {
-    key: dialogKey,
-    backend: args.backend,
-    requestId,
-    // assigned after open
-    dialog: undefined as unknown as DialogHelper,
-    frameWindow: null,
-    session: {
-      requestId,
-      status: "running",
-      messages: [],
-      seenMessageKeys: new Set<string>(),
-      lastSeq: 0,
-      loading: true,
-    },
-  };
 
   const dialogData: Record<string, unknown> = {
     loadCallback: () => {
@@ -1505,11 +2079,11 @@ export async function openSkillRunnerRunDialog(args: {
       root.innerHTML = "";
       const frame = createRunDialogFrame(doc, pageUrl);
       root.appendChild(frame);
-      entry.frameWindow = resolveFrameWindow(frame);
+      runWorkspaceState.frameWindow = resolveFrameWindow(frame);
       frame.addEventListener("load", () => {
-        entry.frameWindow = resolveFrameWindow(frame);
-        if (!entry.frameWindow) {
-          dialogHelper?.window?.alert?.(
+        runWorkspaceState.frameWindow = resolveFrameWindow(frame);
+        if (!runWorkspaceState.frameWindow) {
+          runWorkspaceState.dialog?.window?.alert?.(
             localize(
               "task-dashboard-open-management-failed",
               "Run dialog host failed to resolve frame window.",
@@ -1520,7 +2094,10 @@ export async function openSkillRunnerRunDialog(args: {
           );
           return;
         }
-        pushSnapshot(entry, "run-dialog:init");
+        void refreshWorkspaceSnapshot({
+          forceInit: true,
+          requestedTaskKey: dialogKey,
+        });
       });
 
       const onMessage = (event: MessageEvent) => {
@@ -1528,30 +2105,43 @@ export async function openSkillRunnerRunDialog(args: {
         if (!data || data.type !== "run-dialog:action") {
           return;
         }
-        void handleRunDialogAction(entry, data as RunDialogActionEnvelope);
+        void handleRunWorkspaceAction(data as RunDialogActionEnvelope);
       };
       dialogWindow.addEventListener("message", onMessage);
-      entry.removeMessageListener = () => {
+      runWorkspaceState.removeMessageListener = () => {
         dialogWindow.removeEventListener("message", onMessage);
       };
-
-      void startRunObserver(entry).then((stop) => {
-        entry.stopObserver = stop;
+      runWorkspaceState.unsubscribeTasks = subscribeWorkflowTasks(() => {
+        void refreshWorkspaceSnapshot();
       });
-      pushSnapshot(entry, "run-dialog:snapshot");
+      runWorkspaceState.refreshTimer = dialogWindow.setInterval(() => {
+        void refreshWorkspaceSnapshot();
+      }, 2500);
+      pushSnapshot("run-dialog:snapshot");
     },
     unloadCallback: () => {
-      if (entry.stopObserver) {
-        entry.stopObserver();
-        entry.stopObserver = undefined;
+      if (runWorkspaceState.removeMessageListener) {
+        runWorkspaceState.removeMessageListener();
+        runWorkspaceState.removeMessageListener = undefined;
       }
-      entry.refreshState = undefined;
-      if (entry.removeMessageListener) {
-        entry.removeMessageListener();
-        entry.removeMessageListener = undefined;
+      if (runWorkspaceState.unsubscribeTasks) {
+        runWorkspaceState.unsubscribeTasks();
+        runWorkspaceState.unsubscribeTasks = undefined;
       }
-      entry.frameWindow = null;
-      runDialogMap.delete(dialogKey);
+      if (runWorkspaceState.refreshTimer && runWorkspaceState.dialog?.window) {
+        runWorkspaceState.dialog.window.clearInterval(runWorkspaceState.refreshTimer);
+      }
+      runWorkspaceState.refreshTimer = undefined;
+      void stopRunDialogEntryObserver(runWorkspaceState.currentEntry);
+      runWorkspaceState.currentEntry = undefined;
+      runWorkspaceState.frameWindow = null;
+      runWorkspaceState.selectedTaskKey = "";
+      runWorkspaceState.requestedTaskKey = "";
+      runWorkspaceState.latestOpenTarget = undefined;
+      runWorkspaceState.groups = [];
+      runWorkspaceState.taskIndex.clear();
+      runDialogMap.clear();
+      runWorkspaceState.dialog = undefined;
     },
   };
 
@@ -1561,8 +2151,8 @@ export async function openSkillRunnerRunDialog(args: {
       namespace: "html",
       id: "zs-skillrunner-run-dialog-root",
       styles: {
-        width: "1180px",
-        height: "820px",
+        width: "1380px",
+        height: "860px",
         padding: "0",
         margin: "0",
         display: "flex",
@@ -1570,10 +2160,8 @@ export async function openSkillRunnerRunDialog(args: {
     })
     .addButton(localize("task-manager-close", "Close"), "close")
     .setDialogData(dialogData);
-  entry.dialog = dialogBuilder;
   dialogHelper = dialogBuilder.open(title);
-  entry.dialog = dialogHelper;
-  runDialogMap.set(dialogKey, entry);
+  runWorkspaceState.dialog = dialogHelper;
 
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
     ?.promise;

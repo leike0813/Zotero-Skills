@@ -22,6 +22,7 @@ import {
   stopSkillRunnerModelCacheAutoRefresh,
 } from "./providers/skillrunner/modelCache";
 import {
+  reconcileSkillRunnerBackendTaskLedgerOnce,
   startSkillRunnerTaskReconciler,
   stopSkillRunnerTaskReconciler,
 } from "./modules/skillRunnerTaskReconciler";
@@ -44,6 +45,40 @@ import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConst
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
+
+async function reconcileSkillRunnerBackendsOnStartup() {
+  try {
+    const loaded = await loadBackendsRegistry();
+    if (loaded.fatalError) {
+      return;
+    }
+    for (const backend of loaded.backends) {
+      if (String(backend.type || "").trim() !== "skillrunner") {
+        continue;
+      }
+      if (String(backend.id || "").trim() === MANAGED_LOCAL_BACKEND_ID) {
+        continue;
+      }
+      await reconcileSkillRunnerBackendTaskLedgerOnce({
+        backend,
+        source: "startup",
+        emitFailureToast: true,
+      });
+    }
+  } catch {
+    // keep startup reconcile fully background/non-blocking
+  }
+}
+
+let startupSkillRunnerBackendReconcileRunner: () => Promise<void> =
+  reconcileSkillRunnerBackendsOnStartup;
+
+export function setSkillRunnerStartupBackendReconcileRunnerForTests(
+  runner?: () => Promise<void>,
+) {
+  startupSkillRunnerBackendReconcileRunner =
+    runner || reconcileSkillRunnerBackendsOnStartup;
+}
 
 async function delayMs(ms: number) {
   const runtime = globalThis as {
@@ -134,6 +169,7 @@ async function onStartup() {
   await rescanWorkflowRegistry();
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
+  void startupSkillRunnerBackendReconcileRunner();
   resetLocalRuntimeAutoStartSessionState();
   await runManagedRuntimeStartupPreflightProbe();
   startManagedLocalRuntimeAutoEnsureLoop();

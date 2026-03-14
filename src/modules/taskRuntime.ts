@@ -133,6 +133,37 @@ export function clearFinishedWorkflowTasks() {
   }
 }
 
+export function removeWorkflowTasksByBackendAndRequestIds(args: {
+  backendId: string;
+  requestIds: string[];
+}) {
+  const backendId = String(args.backendId || "").trim();
+  const requestIdSet = new Set(
+    (Array.isArray(args.requestIds) ? args.requestIds : [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+  );
+  if (!backendId || requestIdSet.size === 0) {
+    return 0;
+  }
+  let removed = 0;
+  for (const [id, record] of taskRecords.entries()) {
+    if (String(record.backendId || "").trim() !== backendId) {
+      continue;
+    }
+    const requestId = String(record.requestId || "").trim();
+    if (!requestId || !requestIdSet.has(requestId)) {
+      continue;
+    }
+    taskRecords.delete(id);
+    removed += 1;
+  }
+  if (removed > 0) {
+    emitTasksChanged();
+  }
+  return removed;
+}
+
 export function subscribeWorkflowTasks(listener: TaskListener) {
   listeners.add(listener);
   return () => {

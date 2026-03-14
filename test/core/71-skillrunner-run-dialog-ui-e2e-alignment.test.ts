@@ -9,6 +9,8 @@ async function readProjectFile(relativePath: string) {
 describe("skillrunner run dialog ui e2e alignment", function () {
   it("uses static dom scaffold for conversation cards and textarea composer", async function () {
     const html = await readProjectFile("addon/content/dashboard/run-dialog.html");
+    assert.include(html, 'id="workspace-groups"');
+    assert.include(html, 'id="workspace-empty"');
     assert.include(html, 'id="chat-panel"');
     assert.include(html, 'id="prompt-card"');
     assert.include(html, 'id="auth-card"');
@@ -54,6 +56,18 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "responseValue: opt.value");
     assert.include(js, "kind: \"auth_method\"");
     assert.include(js, "submission:");
+  });
+
+  it("renders workspace grouping actions and compact finished task tabs", async function () {
+    const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    assert.include(js, 'sendAction("select-task"');
+    assert.include(js, 'sendAction("toggle-group-collapse"');
+    assert.include(js, 'sendAction("toggle-finished-collapse"');
+    assert.include(js, 'isCompact ? " compact" : ""');
+    assert.include(js, "workspaceLabels().completedTasksTitle");
+    assert.include(js, "workspaceLabels().waitingRequestId");
+    assert.include(js, "task-tab-workflow");
+    assert.include(js, "task.workflowLabel");
   });
 
   it("falls back to localized confirm options when kind=confirm and options are missing", async function () {

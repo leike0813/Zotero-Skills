@@ -46,6 +46,7 @@ type DashboardRow = {
   id: string;
   workflowId: string;
   workflowLabel: string;
+  backendLabel: string;
   taskName: string;
   state: string;
   stateSemantics: {
@@ -196,11 +197,45 @@ function isTerminalWorkflowTaskState(state: string) {
 }
 
 function mapTaskRow(task: WorkflowTaskRecord): DashboardRow {
+  return mapTaskRowWithMeta(task);
+}
+
+function mapTaskRowWithMeta(
+  task: WorkflowTaskRecord,
+  options?: {
+    backendMetaById?: Map<
+      string,
+      {
+        type?: string;
+        displayName?: string;
+      }
+    >;
+  },
+): DashboardRow {
   const normalizedState = normalizeStatus(task.state, "running");
+  const backendId = String(task.backendId || "").trim();
+  const backendMeta = backendId
+    ? options?.backendMetaById?.get(backendId)
+    : undefined;
+  const backendType =
+    String(task.backendType || "").trim() ||
+    String(backendMeta?.type || "").trim();
+  const backendDisplayName = backendId
+    ? resolveBackendDisplayName(
+        backendId,
+        String(backendMeta?.displayName || "").trim() || undefined,
+      )
+    : "";
+  const backendLabel = backendDisplayName
+    ? backendType
+      ? `${backendDisplayName} (${backendType})`
+      : backendDisplayName
+    : backendType || "-";
   return {
     id: task.id,
     workflowId: task.workflowId,
     workflowLabel: task.workflowLabel,
+    backendLabel,
     taskName: task.taskName,
     state: normalizedState,
     stateSemantics: {
@@ -321,8 +356,28 @@ function buildDashboardSnapshot(args: {
   });
   args.state.selectedTabKey = selectedTabKey;
 
+  const backendMetaById = new Map<
+    string,
+    {
+      type?: string;
+      displayName?: string;
+    }
+  >(
+    args.backends.map((entry) => [
+      String(entry.id || "").trim(),
+      {
+        type: String(entry.type || "").trim() || undefined,
+        displayName: String(entry.displayName || "").trim() || undefined,
+      },
+    ]),
+  );
+
   const runningRows = args.active
-    .map((entry) => mapTaskRow(entry))
+    .map((entry) =>
+      mapTaskRowWithMeta(entry, {
+        backendMetaById,
+      }),
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const labels = {
@@ -337,6 +392,7 @@ function buildDashboardSnapshot(args: {
     summaryCanceled: localize("task-dashboard-summary-canceled", "Canceled"),
     colTask: localize("task-manager-column-task", "Task"),
     colWorkflow: localize("task-manager-column-workflow", "Workflow"),
+    colBackend: localize("task-dashboard-col-backend", "Backend"),
     colStatus: localize("task-manager-column-status", "Status"),
     colRequestId: localize("task-dashboard-col-request-id", "Request ID"),
     colJobId: localize("task-dashboard-col-job-id", "Job ID"),
@@ -412,7 +468,11 @@ function buildDashboardSnapshot(args: {
     backendId: selectedBackend.id,
     history: args.history,
     active: args.active,
-  }).map((entry) => mapTaskRow(entry));
+  }).map((entry) =>
+    mapTaskRowWithMeta(entry, {
+      backendMetaById,
+    }),
+  );
 
   const backendView: DashboardSnapshot["backendView"] = {
     backendId: selectedBackend.id,

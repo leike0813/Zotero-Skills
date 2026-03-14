@@ -284,6 +284,34 @@
         rows: snapshot.runningRows || [],
         labels,
         emptyText: labels.noRunning,
+        columns: [
+          labels.colTask,
+          labels.colWorkflow,
+          labels.colBackend || "Backend",
+          labels.colStatus,
+          labels.colUpdatedAt,
+        ],
+        renderRow: (tr, row) => {
+          const taskCell = document.createElement("td");
+          taskCell.textContent = row.taskName || "-";
+          tr.appendChild(taskCell);
+
+          const workflowCell = document.createElement("td");
+          workflowCell.textContent = row.workflowLabel || "-";
+          tr.appendChild(workflowCell);
+
+          const backendCell = document.createElement("td");
+          backendCell.textContent = row.backendLabel || "-";
+          tr.appendChild(backendCell);
+
+          const statusCell = document.createElement("td");
+          statusCell.appendChild(renderStatusBadge(row.state, row.stateLabel));
+          tr.appendChild(statusCell);
+
+          const updatedCell = document.createElement("td");
+          updatedCell.textContent = formatTime(row.updatedAt);
+          tr.appendChild(updatedCell);
+        },
       }),
     );
     main.appendChild(section);

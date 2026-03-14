@@ -15,6 +15,7 @@ import {
   resetSkillRunnerLocalDeployDebugSession,
 } from "./skillRunnerLocalDeployDebugStore";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
+import { reconcileSkillRunnerBackendTaskLedgerOnce } from "./skillRunnerTaskReconciler";
 import {
   MANAGED_LOCAL_BACKEND_ID,
   normalizeManagedLocalBackendId,
@@ -147,6 +148,31 @@ let localRuntimeToastEmitter: (payload: LocalRuntimeToastPayload) => void = (
   });
 };
 
+type LocalRuntimePostUpTaskReconcileArgs = {
+  backendId: string;
+  displayName?: string;
+  baseUrl: string;
+  source: "local-runtime-up";
+};
+
+let localRuntimePostUpTaskReconcileRunner: (
+  args: LocalRuntimePostUpTaskReconcileArgs,
+) => Promise<void> = async (args) => {
+  await reconcileSkillRunnerBackendTaskLedgerOnce({
+    backend: {
+      id: args.backendId,
+      displayName: args.displayName,
+      type: "skillrunner",
+      baseUrl: args.baseUrl,
+      auth: {
+        kind: "none",
+      },
+    },
+    source: args.source,
+    emitFailureToast: true,
+  });
+};
+
 function notifyManagedLocalRuntimeStateChanged() {
   for (const listener of Array.from(managedLocalRuntimeStateChangeListeners)) {
     try {
@@ -207,6 +233,39 @@ export function setLocalRuntimeToastEmitterForTests(
 export function resetLocalRuntimeToastStateForTests() {
   localRuntimeToastDedup.clear();
   setLocalRuntimeToastEmitterForTests();
+}
+
+export function setManagedLocalRuntimePostUpTaskReconcileRunnerForTests(
+  runner?: (args: LocalRuntimePostUpTaskReconcileArgs) => Promise<void>,
+) {
+  localRuntimePostUpTaskReconcileRunner =
+    runner ||
+    (async (args) => {
+      await reconcileSkillRunnerBackendTaskLedgerOnce({
+        backend: {
+          id: args.backendId,
+          displayName: args.displayName,
+          type: "skillrunner",
+          baseUrl: args.baseUrl,
+          auth: {
+            kind: "none",
+          },
+        },
+        source: args.source,
+        emitFailureToast: true,
+      });
+    });
+}
+
+function triggerManagedLocalRuntimePostUpTaskReconcile(state: ManagedLocalRuntimeState) {
+  const backendId = normalizeString(state.managedBackendId) || MANAGED_PROFILE_ID;
+  const baseUrl = resolveManagedBaseUrl(state);
+  void localRuntimePostUpTaskReconcileRunner({
+    backendId,
+    displayName: undefined,
+    baseUrl,
+    source: "local-runtime-up",
+  });
 }
 
 export function resetManagedRuntimeAsyncTriggerForTests() {
@@ -1957,6 +2016,7 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
           };
         }
         const finalEndpoint = resolveRuntimeEndpoint(nextState);
+        triggerManagedLocalRuntimePostUpTaskReconcile(nextState);
         emitLocalRuntimeToast("runtime-up");
         return {
           ok: true,
@@ -3197,6 +3257,7 @@ export async function ensureManagedLocalRuntimeForBackend(
     }
     const finalEndpoint = resolveRuntimeEndpoint(state);
     if (didRunUp) {
+      triggerManagedLocalRuntimePostUpTaskReconcile(state);
       emitLocalRuntimeToast("runtime-up");
     }
     return {

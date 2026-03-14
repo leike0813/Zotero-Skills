@@ -7,94 +7,101 @@
     <link rel="stylesheet" href="./run-dialog.css" />
   </head>
   <body>
-    <div id="run-root" class="run-root">
-      <section class="card">
-        <div class="header-row">
-          <div>
-            <h1 id="run-title" class="title">Run Details</h1>
-            <div id="run-subtitle" class="subtitle"></div>
+    <div id="run-root" class="workspace-root">
+      <aside class="workspace-sidebar">
+        <div id="workspace-empty" class="workspace-empty hidden">No SkillRunner tasks.</div>
+        <div id="workspace-groups" class="workspace-groups"></div>
+      </aside>
+
+      <main class="workspace-main">
+        <section class="card">
+          <div class="header-row">
+            <div>
+              <h1 id="run-title" class="title">Run Details</h1>
+              <div id="run-subtitle" class="subtitle"></div>
+            </div>
+            <button id="cancel-run-btn" class="btn" type="button">Cancel Run</button>
           </div>
-          <button id="cancel-run-btn" class="btn" type="button">Cancel Run</button>
-        </div>
-        <div class="meta-grid">
-          <div><strong id="meta-label-status">Status</strong> <span id="run-status">-</span></div>
-          <div><strong id="meta-label-engine">Engine</strong> <span id="run-engine">-</span></div>
-          <div><strong id="meta-label-model">Model</strong> <span id="run-model">-</span></div>
-          <div><strong id="meta-label-pending-id">Pending Interaction ID</strong> <span id="pending-id">-</span></div>
-          <div><strong id="meta-label-updated-at">Updated At</strong> <span id="run-updated-at">-</span></div>
-          <div><strong id="meta-label-pending-owner">Pending Owner</strong> <span id="run-pending-owner">-</span></div>
-        </div>
-      </section>
-
-      <section class="card conversation-card">
-        <div id="chat-panel" class="chat-panel"></div>
-
-        <div id="thinking-card" class="thinking-card hidden" role="status" aria-live="polite">
-          <div class="thinking-dots" aria-hidden="true">
-            <span></span><span></span><span></span>
+          <div class="meta-grid">
+            <div><strong id="meta-label-status">Status</strong> <span id="run-status">-</span></div>
+            <div><strong id="meta-label-engine">Engine</strong> <span id="run-engine">-</span></div>
+            <div><strong id="meta-label-model">Model</strong> <span id="run-model">-</span></div>
+            <div><strong id="meta-label-pending-id">Pending Interaction ID</strong> <span id="pending-id">-</span></div>
+            <div><strong id="meta-label-updated-at">Updated At</strong> <span id="run-updated-at">-</span></div>
+            <div><strong id="meta-label-pending-owner">Pending Owner</strong> <span id="run-pending-owner">-</span></div>
           </div>
-          <div>
-            <div id="thinking-title" class="thinking-title">Agent is thinking</div>
-            <div id="thinking-desc" class="thinking-desc">Running inference and preparing the next response...</div>
-          </div>
-        </div>
+        </section>
 
-        <div id="final-summary-card" class="prompt-card hidden" role="status" aria-live="polite">
-          <div id="final-summary-title" class="section-title">Final Summary</div>
-          <div id="final-summary-text"></div>
-        </div>
+        <section class="card conversation-card">
+          <div id="chat-panel" class="chat-panel"></div>
 
-        <div id="prompt-card" class="prompt-card hidden">
-          <div id="prompt-card-title" class="section-title">Pending Input Request</div>
-          <div id="prompt-card-text"></div>
-          <div id="prompt-card-hint" class="prompt-list hidden"></div>
-          <div class="prompt-meta">
-            <span><span id="prompt-meta-id-label">interaction_id:</span> <code id="prompt-card-id">-</code></span>
-            <span><span id="prompt-meta-kind-label">kind:</span> <code id="prompt-card-kind">-</code></span>
-          </div>
-          <div id="prompt-card-required" class="prompt-list hidden"></div>
-          <div id="prompt-card-actions" class="action-button-group hidden"></div>
-        </div>
-
-        <div id="auth-card" class="prompt-card hidden">
-          <div id="auth-card-title" class="section-title">Authentication Required</div>
-          <div id="auth-card-text"></div>
-          <div id="auth-card-hint" class="prompt-list hidden"></div>
-          <div class="prompt-meta">
-            <span><span id="auth-meta-session-label">auth_session_id:</span> <code id="auth-card-id">-</code></span>
-            <span><span id="auth-meta-engine-label">engine:</span> <code id="auth-card-engine">-</code></span>
-            <span><span id="auth-meta-provider-label">provider:</span> <code id="auth-card-provider">-</code></span>
-          </div>
-          <div id="auth-card-actions" class="action-button-group hidden"></div>
-          <div id="auth-card-link" class="prompt-list hidden"></div>
-          <div id="auth-card-code" class="prompt-list hidden"></div>
-          <div id="auth-card-error" class="prompt-list hidden"></div>
-
-          <div id="auth-import-panel" class="prompt-list hidden">
-            <div id="auth-import-hint" class="import-hint"></div>
-            <div id="auth-import-risk" class="prompt-list hidden import-risk"></div>
-            <div id="auth-import-files" class="action-button-group"></div>
-            <div class="import-actions">
-              <button id="auth-import-submit" class="btn btn-primary" type="button">Import and Continue</button>
+          <div id="thinking-card" class="thinking-card hidden" role="status" aria-live="polite">
+            <div class="thinking-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <div>
+              <div id="thinking-title" class="thinking-title">Agent is thinking</div>
+              <div id="thinking-desc" class="thinking-desc">Running inference and preparing the next response...</div>
             </div>
           </div>
-        </div>
 
-        <form id="reply-form" class="reply-box">
-          <input type="hidden" id="interaction-id" value="" />
-          <input type="hidden" id="auth-session-id" value="" />
-          <input type="hidden" id="auth-reply-mode" value="" />
-          <input type="hidden" id="auth-input-kind" value="" />
-          <div id="reply-composer">
-            <textarea id="reply-text" rows="3" placeholder="Reply to agent..." disabled></textarea>
-            <div class="reply-actions">
-              <button id="reply-submit" class="btn btn-primary" type="submit" disabled>Send Reply</button>
-              <span id="reply-shortcut-hint" class="muted">Ctrl+Enter / Cmd+Enter to send</span>
+          <div id="final-summary-card" class="prompt-card hidden" role="status" aria-live="polite">
+            <div id="final-summary-title" class="section-title">Final Summary</div>
+            <div id="final-summary-text"></div>
+          </div>
+
+          <div id="prompt-card" class="prompt-card hidden">
+            <div id="prompt-card-title" class="section-title">Pending Input Request</div>
+            <div id="prompt-card-text"></div>
+            <div id="prompt-card-hint" class="prompt-list hidden"></div>
+            <div class="prompt-meta">
+              <span><span id="prompt-meta-id-label">interaction_id:</span> <code id="prompt-card-id">-</code></span>
+              <span><span id="prompt-meta-kind-label">kind:</span> <code id="prompt-card-kind">-</code></span>
+            </div>
+            <div id="prompt-card-required" class="prompt-list hidden"></div>
+            <div id="prompt-card-actions" class="action-button-group hidden"></div>
+          </div>
+
+          <div id="auth-card" class="prompt-card hidden">
+            <div id="auth-card-title" class="section-title">Authentication Required</div>
+            <div id="auth-card-text"></div>
+            <div id="auth-card-hint" class="prompt-list hidden"></div>
+            <div class="prompt-meta">
+              <span><span id="auth-meta-session-label">auth_session_id:</span> <code id="auth-card-id">-</code></span>
+              <span><span id="auth-meta-engine-label">engine:</span> <code id="auth-card-engine">-</code></span>
+              <span><span id="auth-meta-provider-label">provider:</span> <code id="auth-card-provider">-</code></span>
+            </div>
+            <div id="auth-card-actions" class="action-button-group hidden"></div>
+            <div id="auth-card-link" class="prompt-list hidden"></div>
+            <div id="auth-card-code" class="prompt-list hidden"></div>
+            <div id="auth-card-error" class="prompt-list hidden"></div>
+
+            <div id="auth-import-panel" class="prompt-list hidden">
+              <div id="auth-import-hint" class="import-hint"></div>
+              <div id="auth-import-risk" class="prompt-list hidden import-risk"></div>
+              <div id="auth-import-files" class="action-button-group"></div>
+              <div class="import-actions">
+                <button id="auth-import-submit" class="btn btn-primary" type="button">Import and Continue</button>
+              </div>
             </div>
           </div>
-          <div id="reply-error" class="prompt-list hidden"></div>
-        </form>
-      </section>
+
+          <form id="reply-form" class="reply-box">
+            <input type="hidden" id="interaction-id" value="" />
+            <input type="hidden" id="auth-session-id" value="" />
+            <input type="hidden" id="auth-reply-mode" value="" />
+            <input type="hidden" id="auth-input-kind" value="" />
+            <div id="reply-composer">
+              <textarea id="reply-text" rows="3" placeholder="Reply to agent..." disabled></textarea>
+              <div class="reply-actions">
+                <button id="reply-submit" class="btn btn-primary" type="submit" disabled>Send Reply</button>
+                <span id="reply-shortcut-hint" class="muted">Ctrl+Enter / Cmd+Enter to send</span>
+              </div>
+            </div>
+            <div id="reply-error" class="prompt-list hidden"></div>
+          </form>
+        </section>
+      </main>
     </div>
 
     <script src="./chat_thinking_core.js"></script>

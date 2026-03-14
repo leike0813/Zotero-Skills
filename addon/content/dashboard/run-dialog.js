@@ -1,6 +1,8 @@
 (function () {
   const state = {
     snapshot: null,
+    workspace: null,
+    workspaceLabels: null,
     chatModel: null,
     renderedChatOrder: [],
     renderedChatKeys: new Set(),
@@ -73,6 +75,8 @@
   const metaPendingIdLabelEl = document.getElementById("meta-label-pending-id");
   const metaUpdatedAtLabelEl = document.getElementById("meta-label-updated-at");
   const metaPendingOwnerLabelEl = document.getElementById("meta-label-pending-owner");
+  const workspaceGroupsEl = document.getElementById("workspace-groups");
+  const workspaceEmptyEl = document.getElementById("workspace-empty");
 
   function sendAction(action, payload) {
     const msg = { type: "run-dialog:action", action, payload: payload || {} };
@@ -90,6 +94,12 @@
   function labels() {
     return state.snapshot && state.snapshot.labels && typeof state.snapshot.labels === "object"
       ? state.snapshot.labels
+      : {};
+  }
+
+  function workspaceLabels() {
+    return state.workspaceLabels && typeof state.workspaceLabels === "object"
+      ? state.workspaceLabels
       : {};
   }
 
@@ -844,9 +854,144 @@
     setReplyEnabled(false);
   }
 
+  function renderWorkspaceTask(task, isSelected, isCompact) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `task-tab${isCompact ? " compact" : ""}${isSelected ? " active" : ""}`;
+    button.disabled = task.selectable !== true;
+    button.title = task.selectable === true
+      ? ""
+      : (safeText(workspaceLabels().waitingRequestId) || "Waiting for requestId");
+    const title = document.createElement("div");
+    title.className = "task-tab-title";
+    title.textContent = safeText(task.title) || safeText(workspaceLabels().waitingRequestId) || "Waiting for requestId";
+    const workflow = document.createElement("div");
+    workflow.className = "task-tab-workflow";
+    workflow.textContent = safeText(task.workflowLabel).trim() || "-";
+    const meta = document.createElement("div");
+    meta.className = "task-tab-meta";
+    const status = document.createElement("span");
+    status.textContent = safeText(task.stateLabel) || safeText(task.status) || "-";
+    const time = document.createElement("span");
+    time.textContent = safeText(task.updatedAt) || "-";
+    meta.appendChild(status);
+    meta.appendChild(time);
+    button.appendChild(title);
+    button.appendChild(workflow);
+    button.appendChild(meta);
+    if (task.selectable === true && safeText(task.key)) {
+      button.addEventListener("click", function () {
+        sendAction("select-task", {
+          taskKey: task.key,
+        });
+      });
+    }
+    return button;
+  }
+
+  function renderWorkspace() {
+    const workspace = state.workspace && typeof state.workspace === "object"
+      ? state.workspace
+      : { selectedTaskKey: "", groups: [] };
+    const groups = Array.isArray(workspace.groups) ? workspace.groups : [];
+    const selectedTaskKey = safeText(workspace.selectedTaskKey).trim();
+    workspaceGroupsEl.textContent = "";
+    const showEmpty = groups.length === 0;
+    workspaceEmptyEl.textContent = safeText(workspaceLabels().emptyTasks) || "No SkillRunner tasks.";
+    workspaceEmptyEl.classList.toggle("hidden", !showEmpty);
+    if (showEmpty) {
+      return;
+    }
+    groups.forEach(function (group) {
+      if (!group || typeof group !== "object") return;
+      const groupBox = document.createElement("section");
+      groupBox.className = "workspace-group";
+      const groupHeader = document.createElement("button");
+      groupHeader.type = "button";
+      groupHeader.className = "workspace-group-header";
+      groupHeader.textContent = safeText(group.backendDisplayName) || safeText(group.backendId) || "-";
+      groupHeader.addEventListener("click", function () {
+        sendAction("toggle-group-collapse", {
+          backendId: safeText(group.backendId),
+        });
+      });
+      groupBox.appendChild(groupHeader);
+
+      const groupBody = document.createElement("div");
+      groupBody.className = "workspace-group-body";
+      if (group.collapsed === true) {
+        groupBody.classList.add("hidden");
+      }
+
+      const activeTasks = Array.isArray(group.activeTasks) ? group.activeTasks : [];
+      activeTasks.forEach(function (task) {
+        groupBody.appendChild(
+          renderWorkspaceTask(task, safeText(task.key) === selectedTaskKey, false),
+        );
+      });
+
+      const finishedTasks = Array.isArray(group.finishedTasks) ? group.finishedTasks : [];
+      if (finishedTasks.length > 0) {
+        const finishedBox = document.createElement("section");
+        finishedBox.className = "workspace-finished";
+        const finishedHeader = document.createElement("button");
+        finishedHeader.type = "button";
+        finishedHeader.className = "workspace-finished-header";
+        finishedHeader.textContent = safeText(workspaceLabels().completedTasksTitle) || "Completed Tasks";
+        finishedHeader.addEventListener("click", function () {
+          sendAction("toggle-finished-collapse", {
+            backendId: safeText(group.backendId),
+          });
+        });
+        const finishedBody = document.createElement("div");
+        finishedBody.className = "workspace-finished-body";
+        if (group.finishedCollapsed !== false) {
+          finishedBody.classList.add("hidden");
+        }
+        finishedTasks.forEach(function (task) {
+          finishedBody.appendChild(
+            renderWorkspaceTask(task, safeText(task.key) === selectedTaskKey, true),
+          );
+        });
+        finishedBox.appendChild(finishedHeader);
+        finishedBox.appendChild(finishedBody);
+        groupBody.appendChild(finishedBox);
+      }
+
+      groupBox.appendChild(groupBody);
+      workspaceGroupsEl.appendChild(groupBox);
+    });
+  }
+
   function applySnapshot(snapshot) {
-    state.snapshot = snapshot && typeof snapshot === "object" ? snapshot : null;
-    if (!state.snapshot) return;
+    const envelope = snapshot && typeof snapshot === "object" ? snapshot : null;
+    state.workspace = envelope && envelope.workspace && typeof envelope.workspace === "object"
+      ? envelope.workspace
+      : null;
+    state.workspaceLabels = envelope && envelope.labels && typeof envelope.labels === "object"
+      ? envelope.labels
+      : null;
+    state.snapshot = envelope && envelope.session && typeof envelope.session === "object"
+      ? envelope.session
+      : null;
+    renderWorkspace();
+    if (!state.snapshot) {
+      document.title = "Run Details";
+      titleEl.textContent = "Run Details";
+      subtitleEl.textContent = "";
+      statusEl.textContent = "-";
+      runEngineEl.textContent = "-";
+      runModelEl.textContent = "-";
+      pendingIdEl.textContent = "-";
+      updatedAtEl.textContent = "-";
+      pendingOwnerEl.textContent = "-";
+      cancelBtnEl.disabled = true;
+      clearPromptCard();
+      clearAuthCard();
+      clearFinalSummary();
+      renderChatEmpty();
+      return;
+    }
     const semantics = resolveStatusSemantics(state.snapshot);
     const l = labels();
     document.title = safeText(state.snapshot.title) || "Run Details";

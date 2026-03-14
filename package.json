@@ -24,6 +24,7 @@
     "start": "tsx scripts/run-zotero-start-with-mock.ts start:raw",
     "start:raw": "zotero-plugin serve",
     "build": "zotero-plugin build && tsc --noEmit",
+    "check:localization-governance": "tsx scripts/check-localization-governance.ts",
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",

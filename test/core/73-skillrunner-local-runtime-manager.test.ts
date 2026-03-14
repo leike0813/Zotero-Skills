@@ -1068,6 +1068,100 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(toasts[0].kind, "runtime-down");
   });
 
+  it("uses zh fallback text for runtime-down toast when localization is unavailable", async function () {
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        runtimeState: "running",
+        ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async (args: { command: string }) =>
+            args.command === "status"
+              ? makeCtlResult({
+                  ok: true,
+                  details: {
+                    status: "stopped",
+                  },
+                })
+              : makeCtlResult({ ok: true }),
+        }) as any,
+    );
+    const runtime = globalThis as { addon?: unknown };
+    const previousAddon = runtime.addon;
+    const previousLocale = (Zotero as { locale?: unknown }).locale;
+    runtime.addon = undefined;
+    (Zotero as { locale?: unknown }).locale = "zh-CN";
+    const toasts: Array<{ kind: string; text: string; type: string }> = [];
+    setLocalRuntimeToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    try {
+      const result = await stopLocalRuntime();
+      assert.isTrue(result.ok);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].kind, "runtime-down");
+      assert.equal(toasts[0].text, "本地后端已停止。");
+    } finally {
+      runtime.addon = previousAddon;
+      (Zotero as { locale?: unknown }).locale = previousLocale;
+    }
+  });
+
+  it("uses default english fallback text for runtime-down toast when locale is non-zh", async function () {
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        runtimeState: "running",
+        ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async (args: { command: string }) =>
+            args.command === "status"
+              ? makeCtlResult({
+                  ok: true,
+                  details: {
+                    status: "stopped",
+                  },
+                })
+              : makeCtlResult({ ok: true }),
+        }) as any,
+    );
+    const runtime = globalThis as { addon?: unknown };
+    const previousAddon = runtime.addon;
+    const previousLocale = (Zotero as { locale?: unknown }).locale;
+    runtime.addon = undefined;
+    (Zotero as { locale?: unknown }).locale = "en-US";
+    const toasts: Array<{ kind: string; text: string; type: string }> = [];
+    setLocalRuntimeToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    try {
+      const result = await stopLocalRuntime();
+      assert.isTrue(result.ok);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].kind, "runtime-down");
+      assert.equal(toasts[0].text, "Local backend stopped.");
+    } finally {
+      runtime.addon = previousAddon;
+      (Zotero as { locale?: unknown }).locale = previousLocale;
+    }
+  });
+
   it("emits abnormal-stop toast when heartbeat fails and status probe reports stopped", async function () {
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,

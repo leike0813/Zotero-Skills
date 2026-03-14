@@ -134,6 +134,13 @@ describe("task dashboard snapshot", function () {
     assert.isNotEmpty(displayName);
   });
 
+  it("maps legacy managed local backend id to the same localized display name", function () {
+    const canonical = resolveBackendDisplayName("local-skillrunner-backend");
+    const legacy = resolveBackendDisplayName("skillrunner-local");
+    assert.equal(legacy, canonical);
+    assert.notEqual(legacy, "skillrunner-local");
+  });
+
   it("prefers configured displayName for non-managed backend ids", function () {
     const displayName = resolveBackendDisplayName(
       "backend-generic-http-local",

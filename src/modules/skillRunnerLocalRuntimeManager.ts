@@ -15,11 +15,11 @@ import {
   resetSkillRunnerLocalDeployDebugSession,
 } from "./skillRunnerLocalDeployDebugStore";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
-import { getString } from "../utils/locale";
 import {
   MANAGED_LOCAL_BACKEND_ID,
   normalizeManagedLocalBackendId,
 } from "./skillRunnerLocalRuntimeConstants";
+import { resolveManagedLocalRuntimeToastText } from "../utils/localizationGovernance";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -181,34 +181,7 @@ function emitLocalRuntimeToast(kind: LocalRuntimeToastKind) {
     return;
   }
   localRuntimeToastDedup.set(kind, now);
-  let text = "";
-  const safeGetString = (key: string) => {
-    try {
-      const runtime = globalThis as { addon?: unknown };
-      if (!runtime.addon) {
-        return "";
-      }
-      return String(getString(key as any) || "").trim();
-    } catch {
-      return "";
-    }
-  };
-  if (kind === "runtime-up") {
-    text = safeGetString("skillrunner-local-runtime-toast-up");
-  } else if (kind === "runtime-down") {
-    text = safeGetString("skillrunner-local-runtime-toast-down");
-  } else {
-    text = safeGetString("skillrunner-local-runtime-toast-abnormal-stop");
-  }
-  if (!text || /skillrunner-local-runtime-toast-/.test(text)) {
-    if (kind === "runtime-up") {
-      text = "Local backend started";
-    } else if (kind === "runtime-down") {
-      text = "Local backend stopped";
-    } else {
-      text = "Local backend stopped unexpectedly";
-    }
-  }
+  const text = resolveManagedLocalRuntimeToastText(kind);
   try {
     localRuntimeToastEmitter({
       kind,

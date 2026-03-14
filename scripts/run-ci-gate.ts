@@ -23,18 +23,30 @@ function getSuiteCommand(gate: GateName) {
   return "test:lite";
 }
 
+async function runNpmScript(scriptName: string) {
+  const child = spawnNpm(["run", scriptName]);
+  return await new Promise<number>((resolve) => {
+    child.on("exit", (code) => {
+      resolve(typeof code === "number" ? code : 1);
+    });
+  });
+}
+
 async function main() {
   const gate = normalizeGateName(process.argv[2] || "pr");
   const suiteCommand = getSuiteCommand(gate);
   console.log(
     `[ci-gate] gate=${gate} suite=${suiteCommand} blocking=true start=${new Date().toISOString()}`,
   );
-  const child = spawnNpm(["run", suiteCommand]);
-  const exitCode = await new Promise<number>((resolve) => {
-    child.on("exit", (code) => {
-      resolve(typeof code === "number" ? code : 1);
-    });
-  });
+  const governanceCode = await runNpmScript("check:localization-governance");
+  if (governanceCode !== 0) {
+    console.error(
+      `[ci-gate] gate=${gate} result=failed stage=check-localization-governance exitCode=${governanceCode} blocking=true`,
+    );
+    process.exit(governanceCode);
+    return;
+  }
+  const exitCode = await runNpmScript(suiteCommand);
   if (exitCode !== 0) {
     console.error(
       `[ci-gate] gate=${gate} result=failed exitCode=${exitCode} blocking=true`,

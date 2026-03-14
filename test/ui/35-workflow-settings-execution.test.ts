@@ -8,13 +8,13 @@ import {
   upsertSkillRunnerModelCacheEntry,
 } from "../../src/providers/skillrunner/modelCache";
 import {
-  clearRunOnceWorkflowOverrides,
+  buildWorkflowSettingsUiDescriptor,
   clearWorkflowSettings,
-  resetRunOnceOverridesForSettingsOpen,
   resolveWorkflowExecutionContext,
-  setRunOnceWorkflowOverrides,
+  resetRunOnceOverridesForSettingsOpen,
   updateWorkflowSettings,
 } from "../../src/modules/workflowSettings";
+import { loadBackendsRegistry } from "../../src/backends/registry";
 import { executeBuildRequests } from "../../src/workflows/runtime";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import {
@@ -71,14 +71,10 @@ describe("workflow settings execution", function () {
     );
     Zotero.Prefs.clear(workflowSettingsPrefKey, true);
     clearSkillRunnerModelCache();
-    clearRunOnceWorkflowOverrides("literature-digest");
-    clearRunOnceWorkflowOverrides("reference-matching");
   });
 
   afterEach(function () {
     clearSkillRunnerModelCache();
-    clearRunOnceWorkflowOverrides("literature-digest");
-    clearRunOnceWorkflowOverrides("reference-matching");
     clearWorkflowSettings("literature-digest");
     clearWorkflowSettings("reference-matching");
     if (typeof prevBackendsConfigPref === "undefined") {
@@ -112,7 +108,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.backend.id, "skillrunner-alt");
     assert.equal(context.providerId, "skillrunner");
@@ -158,7 +153,7 @@ describe("workflow settings execution", function () {
     assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
-  it("consumes run-once overrides exactly once", async function () {
+  it("applies per-submit execution overrides without mutating persisted settings", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-local",
       workflowParams: { language: "zh-CN" },
@@ -168,13 +163,72 @@ describe("workflow settings execution", function () {
         no_cache: false,
       },
     });
-    setRunOnceWorkflowOverrides("literature-digest", {
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const overridden = await resolveWorkflowExecutionContext({
+      workflow: workflow!,
+      executionOptionsOverride: {
+        backendId: "skillrunner-alt",
+        workflowParams: { language: "en-US" },
+        providerOptions: {
+          engine: "gemini",
+          model: "gemini-2.5-flash",
+          no_cache: true,
+        },
+      },
+    });
+    assert.equal(overridden.backend.id, "skillrunner-alt");
+    assert.equal(overridden.workflowParams.language, "en-US");
+    assert.equal(overridden.providerOptions.engine, "gemini");
+    assert.equal(overridden.providerOptions.model, "gemini-2.5-flash");
+    assert.equal(overridden.providerOptions.no_cache, true);
+
+    const persisted = await resolveWorkflowExecutionContext({ workflow: workflow! });
+    assert.equal(persisted.backend.id, "skillrunner-local");
+    assert.equal(persisted.workflowParams.language, "zh-CN");
+    assert.equal(persisted.providerOptions.engine, "gemini");
+    assert.equal(persisted.providerOptions.model, "");
+    assert.equal(persisted.providerOptions.no_cache, false);
+  });
+
+  it("enforces interactive-mode runtime options for interactive workflows", async function () {
+    updateWorkflowSettings("literature-explainer", {
       backendId: "skillrunner-alt",
-      workflowParams: { language: "en-US" },
       providerOptions: {
         engine: "gemini",
-        model: "gemini-2.5-flash",
         no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 900,
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-explainer",
+    );
+    assert.isOk(workflow);
+
+    const context = await resolveWorkflowExecutionContext({
+      workflow: workflow!,
+    });
+    assert.isUndefined(context.providerOptions.no_cache);
+    assert.equal(context.providerOptions.interactive_auto_reply, true);
+    assert.equal(context.providerOptions.hard_timeout_seconds, 900);
+  });
+
+  it("enforces auto-mode runtime options for auto workflows", async function () {
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-alt",
+      providerOptions: {
+        engine: "gemini",
+        no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 1200,
       },
     });
 
@@ -184,25 +238,12 @@ describe("workflow settings execution", function () {
     );
     assert.isOk(workflow);
 
-    const first = await resolveWorkflowExecutionContext({
+    const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: true,
     });
-    assert.equal(first.backend.id, "skillrunner-alt");
-    assert.equal(first.workflowParams.language, "en-US");
-    assert.equal(first.providerOptions.engine, "gemini");
-    assert.equal(first.providerOptions.model, "gemini-2.5-flash");
-    assert.equal(first.providerOptions.no_cache, true);
-
-    const second = await resolveWorkflowExecutionContext({
-      workflow: workflow!,
-      consumeRunOnce: true,
-    });
-    assert.equal(second.backend.id, "skillrunner-local");
-    assert.equal(second.workflowParams.language, "zh-CN");
-    assert.equal(second.providerOptions.engine, "gemini");
-    assert.equal(second.providerOptions.model, "");
-    assert.equal(second.providerOptions.no_cache, false);
+    assert.equal(context.providerOptions.no_cache, true);
+    assert.isUndefined(context.providerOptions.interactive_auto_reply);
+    assert.equal(context.providerOptions.hard_timeout_seconds, 1200);
   });
 
   it("normalizes opencode model_provider + model into provider/model payload", async function () {
@@ -242,7 +283,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.providerOptions.engine, "opencode");
     assert.equal(context.providerOptions.model_provider, "openai");
@@ -283,14 +323,13 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.providerOptions.engine, "opencode");
     assert.equal(context.providerOptions.model_provider, "openai");
     assert.equal(context.providerOptions.model, "openai/gpt-5");
   });
 
-  it("resets run-once defaults to persisted snapshot when settings page opens", async function () {
+  it("returns persisted snapshot when settings page opens", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-local",
       workflowParams: { language: "zh-CN" },
@@ -298,15 +337,6 @@ describe("workflow settings execution", function () {
         engine: "gemini",
         model: "",
         no_cache: false,
-      },
-    });
-    setRunOnceWorkflowOverrides("literature-digest", {
-      backendId: "skillrunner-alt",
-      workflowParams: { language: "en-US" },
-      providerOptions: {
-        engine: "gemini",
-        model: "gemini-2.5-flash",
-        no_cache: true,
       },
     });
 
@@ -324,7 +354,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: true,
     });
     assert.equal(context.backend.id, "skillrunner-local");
     assert.equal(context.workflowParams.language, "zh-CN");
@@ -332,7 +361,52 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.no_cache, false);
   });
 
-  it("uses latest persisted values for run-once defaults after persistent update", function () {
+  it("filters profile options by workflow provider in settings descriptor", async function () {
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const registry = await loadBackendsRegistry();
+    assert.isUndefined(registry.fatalError);
+
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      candidateBackends: registry.backends,
+    });
+
+    const profileIds = descriptor.profiles.map((entry) => entry.id).sort();
+    assert.deepEqual(profileIds, ["skillrunner-alt", "skillrunner-local"].sort());
+    assert.isFalse(profileIds.includes("generic-http-local"));
+  });
+
+  it("drops incompatible persisted backendId when provider mismatches", async function () {
+    updateWorkflowSettings("literature-digest", {
+      backendId: "generic-http-local",
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const registry = await loadBackendsRegistry();
+    assert.isUndefined(registry.fatalError);
+
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      candidateBackends: registry.backends,
+    });
+
+    assert.equal(descriptor.selectedProfile, "");
+    assert.isFalse(
+      descriptor.profiles.some((entry) => entry.id === "generic-http-local"),
+    );
+  });
+
+  it("uses latest persisted values for settings defaults after persistent update", function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-local",
       workflowParams: { language: "zh-CN" },
@@ -340,15 +414,6 @@ describe("workflow settings execution", function () {
         engine: "gemini",
         model: "",
         no_cache: false,
-      },
-    });
-    setRunOnceWorkflowOverrides("literature-digest", {
-      backendId: "skillrunner-alt",
-      workflowParams: { language: "en-US" },
-      providerOptions: {
-        engine: "gemini",
-        model: "gemini-2.5-flash",
-        no_cache: true,
       },
     });
     const first = resetRunOnceOverridesForSettingsOpen("literature-digest");
@@ -361,15 +426,6 @@ describe("workflow settings execution", function () {
         engine: "gemini",
         model: "gemini-2.5-flash",
         no_cache: true,
-      },
-    });
-    setRunOnceWorkflowOverrides("literature-digest", {
-      backendId: "skillrunner-local",
-      workflowParams: { language: "zh-CN" },
-      providerOptions: {
-        engine: "gemini",
-        model: "",
-        no_cache: false,
       },
     });
     const second = resetRunOnceOverridesForSettingsOpen("literature-digest");
@@ -410,7 +466,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.providerId, "pass-through");
     assert.equal(context.backend.type, "pass-through");
@@ -455,7 +510,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.workflowParams.data_source, "bbt-json");
     assert.equal(context.workflowParams.bbt_port, 24119);
@@ -478,7 +532,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(context.workflowParams.data_source, "bbt-json");
     assert.equal(context.workflowParams.bbt_port, 23119);
@@ -501,7 +554,6 @@ describe("workflow settings execution", function () {
 
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(
       context.workflowParams.citekey_template,
@@ -542,7 +594,6 @@ describe("workflow settings execution", function () {
     });
     const fallbackContext = await resolveWorkflowExecutionContext({
       workflow: workflow!,
-      consumeRunOnce: false,
     });
     assert.equal(
       fallbackContext.workflowParams.citekey_template,

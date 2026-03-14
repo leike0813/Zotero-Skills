@@ -8,7 +8,6 @@ import { registerSelectionSampleMenu } from "./modules/selectionSample";
 import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
 import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
 import { openBackendManagerDialog } from "./modules/backendManager";
-import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { openLogViewerDialog } from "./modules/logViewerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
@@ -29,7 +28,10 @@ import {
 import {
   deployAndConfigureLocalSkillRunner,
   getManagedLocalRuntimeStateSnapshot,
-  resetLocalRuntimeAutoStartSessionState,
+  hydrateLocalRuntimeAutoStartSessionStateFromPersistedState,
+  isLocalRuntimeAutoStartPaused,
+  planLocalRuntimeOneclick,
+  previewLocalRuntimeUninstall,
   releaseManagedLocalRuntimeLeaseOnShutdown,
   runManagedRuntimeStartupPreflightProbe,
   startManagedLocalRuntimeAutoEnsureLoop,
@@ -170,8 +172,10 @@ async function onStartup() {
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
   void startupSkillRunnerBackendReconcileRunner();
-  resetLocalRuntimeAutoStartSessionState();
-  await runManagedRuntimeStartupPreflightProbe();
+  hydrateLocalRuntimeAutoStartSessionStateFromPersistedState();
+  if (!isLocalRuntimeAutoStartPaused()) {
+    await runManagedRuntimeStartupPreflightProbe();
+  }
   startManagedLocalRuntimeAutoEnsureLoop();
 
   BasicExampleFactory.registerPrefs();
@@ -332,9 +336,10 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       });
       break;
     case "openWorkflowSettings":
-      await openWorkflowSettingsDialog({
-        window: data.window,
-        workflowId: typeof data.workflowId === "string" ? data.workflowId : undefined,
+      await openTaskManagerDialog({
+        initialTabKey: "workflow-options",
+        initialWorkflowId:
+          typeof data.workflowId === "string" ? data.workflowId : undefined,
       });
       break;
     case "openTaskManager":
@@ -354,6 +359,19 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "deploySkillRunnerLocalRuntime":
       return deployAndConfigureLocalSkillRunner({
         version: typeof data.version === "string" ? data.version : undefined,
+        forcedBranch:
+          data.forcedBranch === "deploy" || data.forcedBranch === "start"
+            ? data.forcedBranch
+            : undefined,
+      });
+    case "planSkillRunnerLocalRuntimeOneclick":
+      return planLocalRuntimeOneclick({
+        version: typeof data.version === "string" ? data.version : undefined,
+      });
+    case "previewSkillRunnerLocalRuntimeUninstall":
+      return previewLocalRuntimeUninstall({
+        clearData: data.clearData === true,
+        clearAgentHome: data.clearAgentHome === true,
       });
     case "stateSkillRunnerLocalRuntime":
       return getManagedLocalRuntimeStateSnapshot();

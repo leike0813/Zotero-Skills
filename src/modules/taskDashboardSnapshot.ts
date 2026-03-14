@@ -116,8 +116,8 @@ export function normalizeDashboardTabKey(args: {
   backends: BackendInstance[];
 }) {
   const requested = String(args.requestedTabKey || "").trim();
-  if (requested === "home") {
-    return "home";
+  if (requested === "home" || requested === "workflow-options") {
+    return requested;
   }
   if (requested.startsWith("backend:")) {
     const backendId = requested.slice("backend:".length);
@@ -127,4 +127,3 @@ export function normalizeDashboardTabKey(args: {
   }
   return "home";
 }
-

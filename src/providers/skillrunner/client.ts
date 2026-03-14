@@ -47,6 +47,39 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function toBooleanOption(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function toPositiveIntegerOption(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return undefined;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function normalizeExecutionMode(value: unknown): "auto" | "interactive" {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "interactive" ? "interactive" : "auto";
+}
+
 function normalizeUploadRelativePath(value: unknown) {
   return String(value || "")
     .trim()
@@ -677,11 +710,35 @@ export class SkillRunnerClient {
     )
       ? { ...request.runtime_options }
       : {};
+    const executionMode = normalizeExecutionMode(runtimeOptions.execution_mode);
+    runtimeOptions.execution_mode = executionMode;
+    if (executionMode === "interactive") {
+      delete runtimeOptions.no_cache;
+    } else {
+      delete runtimeOptions.interactive_auto_reply;
+    }
     if (
-      providerOptions.no_cache === true ||
-      String(providerOptions.no_cache || "").toLowerCase() === "true"
+      executionMode === "auto" &&
+      (providerOptions.no_cache === true ||
+        String(providerOptions.no_cache || "").toLowerCase() === "true")
     ) {
       runtimeOptions.no_cache = true;
+    }
+    if (executionMode === "interactive") {
+      const interactiveAutoReply = toBooleanOption(
+        providerOptions.interactive_auto_reply,
+      );
+      if (typeof interactiveAutoReply === "boolean") {
+        runtimeOptions.interactive_auto_reply = interactiveAutoReply;
+      }
+    }
+    const hardTimeoutSeconds = toPositiveIntegerOption(
+      providerOptions.hard_timeout_seconds,
+    );
+    if (typeof hardTimeoutSeconds === "number") {
+      runtimeOptions.hard_timeout_seconds = hardTimeoutSeconds;
+    } else {
+      delete runtimeOptions.hard_timeout_seconds;
     }
     const fetchType = request.fetch_type === "result" ? "result" : "bundle";
     const uploadFiles = resolveUploadEntriesFromRequest(request);

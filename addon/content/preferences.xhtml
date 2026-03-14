@@ -52,6 +52,66 @@
     .zs-autostart-icon.is-red {
       color: #dc2626;
     }
+    #zotero-prefpane-__addonRef__-skillrunner-local-progress-row {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    #zotero-prefpane-__addonRef__-skillrunner-local-progress-row.is-visible {
+      display: flex;
+    }
+    .custom-progress-container {
+      width: 220px;
+      min-width: 220px;
+      height: 6px;
+      background-color: var(--fill-quaternary, rgba(128, 128, 128, 0.2));
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 1px;
+      margin-bottom: 0px;
+    }
+    .custom-progress-bar {
+      height: 100%;
+      background-color: var(--fill-accent-primary, #0b6efd);
+      width: 0%;
+      transition: width 0.2s ease-out;
+    }
+
+    #zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-dialog {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    #zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-dialog.is-visible {
+      display: flex;
+    }
+    .zs-uninstall-options-panel {
+      min-width: 360px;
+      max-width: 460px;
+      background: #fff;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .zs-uninstall-options-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .zs-uninstall-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
   </html:style>
   <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
   <label><html:h3 data-l10n-id="pref-section-plugin"></html:h3></label>
@@ -134,10 +194,58 @@
     ></button>
   </hbox>
   <description data-l10n-id="pref-skillrunner-local-help"></description>
+  <html:div id="zotero-prefpane-__addonRef__-skillrunner-local-progress-row">
+    <html:div class="custom-progress-container">
+      <html:div
+        id="zotero-prefpane-__addonRef__-skillrunner-local-progressmeter"
+        class="custom-progress-bar"
+      ></html:div>
+    </html:div>
+    <html:span
+      id="zotero-prefpane-__addonRef__-skillrunner-local-progress-text"
+    ></html:span>
+  </html:div>
   <description
     id="zotero-prefpane-__addonRef__-skillrunner-local-status-text"
     data-l10n-id="pref-skillrunner-local-status-idle"
   ></description>
+  <hbox
+    id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-dialog"
+  >
+    <vbox class="zs-uninstall-options-panel">
+      <html:strong
+        data-l10n-id="pref-skillrunner-local-uninstall-options-title"
+      ></html:strong>
+      <html:label class="zs-uninstall-option">
+        <html:input
+          id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-option-clear-data"
+          type="checkbox"
+        ></html:input>
+        <html:span
+          data-l10n-id="pref-skillrunner-local-uninstall-option-clear-data"
+        ></html:span>
+      </html:label>
+      <html:label class="zs-uninstall-option">
+        <html:input
+          id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-option-clear-agent-home"
+          type="checkbox"
+        ></html:input>
+        <html:span
+          data-l10n-id="pref-skillrunner-local-uninstall-option-clear-agent-home"
+        ></html:span>
+      </html:label>
+      <hbox class="zs-uninstall-options-actions">
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-cancel"
+          data-l10n-id="pref-skillrunner-local-uninstall-options-cancel"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-confirm"
+          data-l10n-id="pref-skillrunner-local-uninstall-options-confirm"
+        ></button>
+      </hbox>
+    </vbox>
+  </hbox>
 
   <label><html:h3 data-l10n-id="pref-section-about"></html:h3></label>
   <hbox align="center">

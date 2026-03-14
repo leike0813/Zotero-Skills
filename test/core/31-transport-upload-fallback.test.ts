@@ -168,7 +168,7 @@ describe("transport: upload fallback without FormData", function () {
     );
   });
 
-  it("merges request runtime_options.execution_mode with provider no_cache", async function () {
+  it("omits no_cache for interactive execution and keeps interactive options", async function () {
     let capturedCreateBody: unknown;
     const client = new SkillRunnerClient({
       baseUrl: "http://127.0.0.1:8030",
@@ -220,6 +220,8 @@ describe("transport: upload fallback without FormData", function () {
       {
         engine: "gemini",
         no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 900,
       },
     );
 
@@ -227,7 +229,76 @@ describe("transport: upload fallback without FormData", function () {
       (capturedCreateBody as { runtime_options?: unknown })?.runtime_options,
       {
         execution_mode: "interactive",
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 900,
+      },
+      `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
+    );
+  });
+
+  it("keeps no_cache for auto execution and drops interactive_auto_reply", async function () {
+    let capturedCreateBody: unknown;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          capturedCreateBody = JSON.parse(String(init?.body || "{}"));
+          return createJsonResponse({ request_id: "req-auto-options" });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options")) {
+          return createJsonResponse({
+            request_id: "req-auto-options",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options/result")) {
+          return createJsonResponse({
+            request_id: "req-auto-options",
+            result: {
+              status: "success",
+              data: {},
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        runtime_options: {
+          execution_mode: "auto",
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
         no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: "1200",
+      },
+    );
+
+    assert.deepEqual(
+      (capturedCreateBody as { runtime_options?: unknown })?.runtime_options,
+      {
+        execution_mode: "auto",
+        no_cache: true,
+        hard_timeout_seconds: 1200,
       },
       `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
     );

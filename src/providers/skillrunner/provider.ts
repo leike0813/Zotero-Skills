@@ -41,6 +41,37 @@ function normalizeNoCache(value: unknown) {
   return false;
 }
 
+function normalizeBooleanOption(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function normalizePositiveInteger(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return undefined;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
 export class SkillRunnerProvider implements Provider {
   readonly id = "skillrunner";
 
@@ -93,6 +124,19 @@ export class SkillRunnerProvider implements Provider {
         title: "Bypass Cache",
         description: "When true, force backend execution without cache.",
         default: false,
+      },
+      interactive_auto_reply: {
+        type: "boolean" as const,
+        title: "Auto Reply",
+        description:
+          "Interactive mode only. Automatically continue after waiting timeout.",
+        default: false,
+      },
+      hard_timeout_seconds: {
+        type: "number" as const,
+        title: "Job Timeout",
+        description:
+          "Optional positive integer timeout in seconds. Empty means backend default.",
       },
     };
   }
@@ -150,6 +194,8 @@ export class SkillRunnerProvider implements Provider {
     const rawModelProvider = source.model_provider;
     const rawModel = source.model;
     const rawNoCache = source.no_cache;
+    const rawInteractiveAutoReply = source.interactive_auto_reply;
+    const rawHardTimeoutSeconds = source.hard_timeout_seconds;
     const normalizedEngine =
       typeof rawEngine === "string" && rawEngine.trim()
         ? rawEngine.trim()
@@ -222,12 +268,20 @@ export class SkillRunnerProvider implements Provider {
     }
 
     const normalizedNoCache = normalizeNoCache(rawNoCache);
+    const normalizedInteractiveAutoReply = normalizeBooleanOption(
+      rawInteractiveAutoReply,
+    );
+    const normalizedHardTimeout = normalizePositiveInteger(rawHardTimeoutSeconds);
     if (typeof rawNoCache === "boolean") {
       return {
         engine: normalizedEngine,
         model_provider: normalizedModelProvider,
         model: normalizedModel,
         no_cache: normalizedNoCache,
+        interactive_auto_reply: normalizedInteractiveAutoReply,
+        ...(typeof normalizedHardTimeout === "number"
+          ? { hard_timeout_seconds: normalizedHardTimeout }
+          : {}),
       };
     }
     if (typeof rawNoCache === "string") {
@@ -236,6 +290,10 @@ export class SkillRunnerProvider implements Provider {
         model_provider: normalizedModelProvider,
         model: normalizedModel,
         no_cache: normalizedNoCache,
+        interactive_auto_reply: normalizedInteractiveAutoReply,
+        ...(typeof normalizedHardTimeout === "number"
+          ? { hard_timeout_seconds: normalizedHardTimeout }
+          : {}),
       };
     }
     return {
@@ -243,6 +301,10 @@ export class SkillRunnerProvider implements Provider {
       model_provider: normalizedModelProvider,
       model: normalizedModel,
       no_cache: normalizedNoCache,
+      interactive_auto_reply: normalizedInteractiveAutoReply,
+      ...(typeof normalizedHardTimeout === "number"
+        ? { hard_timeout_seconds: normalizedHardTimeout }
+        : {}),
     };
   }
 

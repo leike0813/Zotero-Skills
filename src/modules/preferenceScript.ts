@@ -65,6 +65,30 @@ function bindPrefEvents() {
   const localRuntimeStatusText = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-status-text`,
   ) as HTMLElement | null;
+  const localRuntimeUninstallOptionsDialog = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-dialog`,
+  ) as HTMLElement | null;
+  const localRuntimeUninstallOptionClearData = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-option-clear-data`,
+  ) as HTMLInputElement | null;
+  const localRuntimeUninstallOptionClearAgentHome = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-option-clear-agent-home`,
+  ) as HTMLInputElement | null;
+  const localRuntimeUninstallOptionsConfirmButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-confirm`,
+  ) as XUL.Button | null;
+  const localRuntimeUninstallOptionsCancelButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-cancel`,
+  ) as XUL.Button | null;
+  const localRuntimeProgressRow = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-progress-row`,
+  ) as HTMLElement | null;
+  const localRuntimeProgressmeter = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-progressmeter`,
+  ) as (HTMLElement & { value?: string | number }) | null;
+  const localRuntimeProgressText = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-progress-text`,
+  ) as HTMLElement | null;
 
   const runtimeActionButtons = [
     localRuntimeDeployButton,
@@ -105,6 +129,87 @@ function bindPrefEvents() {
       return;
     }
     localRuntimeStatusText.textContent = text;
+  };
+
+  const setProgressVisible = (visible: boolean) => {
+    if (!localRuntimeProgressRow) {
+      return;
+    }
+    if (visible) {
+      localRuntimeProgressRow.classList.add("is-visible");
+      return;
+    }
+    localRuntimeProgressRow.classList.remove("is-visible");
+  };
+
+  const getProgressStageLabel = (stage: string, fallbackLabel: string) => {
+    const normalized = String(stage || "").trim().toLowerCase();
+    const labelKeyByStage: Record<string, string> = {
+      "deploy-release-assets-probe": "pref-skillrunner-local-progress-deploy-step-1",
+      "deploy-release-download-checksum":
+        "pref-skillrunner-local-progress-deploy-step-2",
+      "deploy-release-extract": "pref-skillrunner-local-progress-deploy-step-3",
+      "deploy-bootstrap": "pref-skillrunner-local-progress-deploy-step-4",
+      "deploy-post-bootstrap": "pref-skillrunner-local-progress-deploy-step-5",
+      "uninstall-down": "pref-skillrunner-local-progress-uninstall-step-down",
+      "uninstall-profile":
+        "pref-skillrunner-local-progress-uninstall-step-profile",
+    };
+    if (normalized.startsWith("uninstall-delete-")) {
+      return getString("pref-skillrunner-local-progress-uninstall-step-delete" as any);
+    }
+    const key = labelKeyByStage[normalized];
+    if (key) {
+      return getString(key as any);
+    }
+    return String(fallbackLabel || "").trim();
+  };
+
+  const updateLocalRuntimeProgressFromDetails = (
+    details: Record<string, unknown> | null,
+  ) => {
+    const progress = (details?.actionProgress || null) as
+      | {
+          action?: unknown;
+          current?: unknown;
+          total?: unknown;
+          percent?: unknown;
+          stage?: unknown;
+          label?: unknown;
+        }
+      | null;
+    if (!progress || !progress.action) {
+      setProgressVisible(false);
+      if (localRuntimeProgressmeter) {
+        localRuntimeProgressmeter.style.width = "0%";
+      }
+      if (localRuntimeProgressText) {
+        localRuntimeProgressText.textContent = "";
+      }
+      return;
+    }
+    const percentRaw = Number(progress.percent || 0);
+    const percent = Number.isFinite(percentRaw)
+      ? Math.max(0, Math.min(100, Math.floor(percentRaw)))
+      : 0;
+    const current = Number(progress.current || 0);
+    const total = Number(progress.total || 0);
+    const stageLabel = getProgressStageLabel(
+      String(progress.stage || ""),
+      String(progress.label || ""),
+    );
+    const actionLabel =
+      String(progress.action || "").trim().toLowerCase() === "uninstall"
+        ? getString("pref-skillrunner-local-progress-uninstall-title" as any)
+        : getString("pref-skillrunner-local-progress-deploy-title" as any);
+    if (localRuntimeProgressmeter) {
+      localRuntimeProgressmeter.style.width = String(percent) + "%";
+    }
+    if (localRuntimeProgressText) {
+      localRuntimeProgressText.textContent =
+        `${actionLabel} ${current}/${total} · ${stageLabel}`.trim();
+    }
+    setProgressVisible(true);
   };
 
   const formatLocalRuntimeStatusMessage = (result: unknown) => {
@@ -184,6 +289,7 @@ function bindPrefEvents() {
           : getString("pref-skillrunner-local-auto-start-off" as any),
       );
     }
+    updateLocalRuntimeProgressFromDetails(details);
     return details;
   };
 
@@ -230,6 +336,7 @@ function bindPrefEvents() {
         },
       });
       applyRuntimeButtonGate(null);
+      updateLocalRuntimeProgressFromDetails(null);
       return null;
     }
   };
@@ -285,6 +392,240 @@ function bindPrefEvents() {
     return addon.hooks.onPrefsEvent("openSkillRunnerLocalDeployDebugConsole", {
       window: addon.data.prefs?.window,
     });
+  };
+
+  const confirmWithWindow = (message: string) => {
+    const hostWindow = addon.data.prefs?.window as
+      | (Window & { confirm?: (text: string) => boolean })
+      | undefined;
+    if (typeof hostWindow?.confirm === "function") {
+      return hostWindow.confirm(message);
+    }
+    return true;
+  };
+
+  const confirmDeployForPlan = (planDetails: Record<string, unknown>) => {
+    const layout = (planDetails.installLayout || {}) as {
+      paths?: Array<{ path?: unknown; purpose?: unknown }>;
+    };
+    const pathLines = Array.isArray(layout.paths)
+      ? layout.paths
+          .map((entry) => {
+            const path = String(entry.path || "").trim();
+            const purpose = String(entry.purpose || "").trim();
+            if (!path) {
+              return "";
+            }
+            return `- ${path}${purpose ? ` (${purpose})` : ""}`;
+          })
+          .filter(Boolean)
+      : [];
+    const message = [
+      getString("pref-skillrunner-local-deploy-confirm-message" as any),
+      "",
+      getString("pref-skillrunner-local-deploy-confirm-layout-title" as any),
+      ...pathLines,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return confirmWithWindow(message);
+  };
+
+  const hideUninstallOptionsDialog = () => {
+    if (!localRuntimeUninstallOptionsDialog) {
+      return;
+    }
+    localRuntimeUninstallOptionsDialog.classList.remove("is-visible");
+  };
+
+  const showUninstallOptionsDialog = () => {
+    if (
+      !localRuntimeUninstallOptionsDialog ||
+      !localRuntimeUninstallOptionClearData ||
+      !localRuntimeUninstallOptionClearAgentHome ||
+      !localRuntimeUninstallOptionsConfirmButton ||
+      !localRuntimeUninstallOptionsCancelButton
+    ) {
+      const clearData = confirmWithWindow(
+        getString("pref-skillrunner-local-uninstall-option-clear-data" as any),
+      );
+      const clearAgentHome = confirmWithWindow(
+        getString("pref-skillrunner-local-uninstall-option-clear-agent-home" as any),
+      );
+      return Promise.resolve({
+        clearData,
+        clearAgentHome,
+      });
+    }
+    localRuntimeUninstallOptionClearData.checked = false;
+    localRuntimeUninstallOptionClearAgentHome.checked = false;
+    localRuntimeUninstallOptionsDialog.classList.add("is-visible");
+    return new Promise<{
+      clearData: boolean;
+      clearAgentHome: boolean;
+    } | null>((resolve) => {
+      const removeListener = (
+        target: XUL.Button,
+        listener: (event?: unknown) => void,
+      ) => {
+        const typed = target as unknown as {
+          removeEventListener?: (type: string, listener: (event?: unknown) => void) => void;
+        };
+        if (typeof typed.removeEventListener === "function") {
+          typed.removeEventListener("command", listener);
+        }
+      };
+      const cleanup = () => {
+        removeListener(localRuntimeUninstallOptionsConfirmButton, onConfirm);
+        removeListener(localRuntimeUninstallOptionsCancelButton, onCancel);
+        hideUninstallOptionsDialog();
+      };
+      const onConfirm = () => {
+        const result = {
+          clearData: localRuntimeUninstallOptionClearData.checked === true,
+          clearAgentHome: localRuntimeUninstallOptionClearAgentHome.checked === true,
+        };
+        cleanup();
+        resolve(result);
+      };
+      const onCancel = () => {
+        cleanup();
+        resolve(null);
+      };
+      localRuntimeUninstallOptionsConfirmButton.addEventListener("command", onConfirm);
+      localRuntimeUninstallOptionsCancelButton.addEventListener("command", onCancel);
+    });
+  };
+
+  const confirmUninstallPreview = (previewDetails: Record<string, unknown>) => {
+    const removableTargets = Array.isArray(previewDetails.removableTargets)
+      ? (previewDetails.removableTargets as Array<{ path?: unknown; purpose?: unknown }>)
+      : [];
+    const preservedTargets = Array.isArray(previewDetails.preservedTargets)
+      ? (previewDetails.preservedTargets as Array<{ path?: unknown; purpose?: unknown }>)
+      : [];
+    const removableLines = removableTargets
+      .map((entry) => {
+        const path = String(entry.path || "").trim();
+        const purpose = String(entry.purpose || "").trim();
+        if (!path) {
+          return "";
+        }
+        return `- ${path}${purpose ? ` (${purpose})` : ""}`;
+      })
+      .filter(Boolean);
+    const preservedLines = preservedTargets
+      .map((entry) => {
+        const path = String(entry.path || "").trim();
+        const purpose = String(entry.purpose || "").trim();
+        if (!path) {
+          return "";
+        }
+        return `- ${path}${purpose ? ` (${purpose})` : ""}`;
+      })
+      .filter(Boolean);
+    const message = [
+      getString("pref-skillrunner-local-uninstall-final-confirm-message" as any),
+      "",
+      getString("pref-skillrunner-local-uninstall-final-confirm-remove-title" as any),
+      ...removableLines,
+      "",
+      getString("pref-skillrunner-local-uninstall-final-confirm-preserve-title" as any),
+      ...preservedLines,
+    ]
+      .filter((line) => typeof line === "string")
+      .join("\n");
+    return confirmWithWindow(message);
+  };
+
+  const runLocalRuntimeOneclick = async () => {
+    setRuntimeActionButtonsDisabled(true);
+    setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
+    try {
+      const planResponse = (await addon.hooks.onPrefsEvent(
+        "planSkillRunnerLocalRuntimeOneclick",
+        {
+          window: addon.data.prefs?.window,
+        },
+      )) as { ok?: unknown; message?: unknown; details?: Record<string, unknown> };
+      if (planResponse.ok !== true) {
+        setLocalRuntimeStatusText(formatLocalRuntimeStatusMessage(planResponse));
+        await refreshLocalRuntimeStateSummary();
+        return;
+      }
+      const plannedAction = String(planResponse.details?.plannedAction || "")
+        .trim()
+        .toLowerCase();
+      if (plannedAction === "deploy") {
+        const confirmed = confirmDeployForPlan(planResponse.details || {});
+        if (!confirmed) {
+          setLocalRuntimeStatusText(
+            getString("pref-skillrunner-local-status-cancelled" as any),
+          );
+          await refreshLocalRuntimeStateSummary();
+          return;
+        }
+      }
+      const response = await addon.hooks.onPrefsEvent("deploySkillRunnerLocalRuntime", {
+        window: addon.data.prefs?.window,
+        forcedBranch: plannedAction === "start" ? "start" : "deploy",
+      });
+      setLocalRuntimeStatusText(formatLocalRuntimeStatusMessage(response));
+      await refreshLocalRuntimeStateSummary();
+    } catch (error) {
+      setLocalRuntimeStatusText(
+        `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
+      );
+      await refreshLocalRuntimeStateSummary();
+    }
+  };
+
+  const runLocalRuntimeUninstall = async () => {
+    setRuntimeActionButtonsDisabled(true);
+    setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
+    try {
+      const options = await showUninstallOptionsDialog();
+      if (!options) {
+        setLocalRuntimeStatusText(
+          getString("pref-skillrunner-local-status-cancelled" as any),
+        );
+        await refreshLocalRuntimeStateSummary();
+        return;
+      }
+      const preview = (await addon.hooks.onPrefsEvent(
+        "previewSkillRunnerLocalRuntimeUninstall",
+        {
+          window: addon.data.prefs?.window,
+          clearData: options.clearData,
+          clearAgentHome: options.clearAgentHome,
+        },
+      )) as { ok?: unknown; message?: unknown; details?: Record<string, unknown> };
+      if (preview.ok !== true) {
+        setLocalRuntimeStatusText(formatLocalRuntimeStatusMessage(preview));
+        await refreshLocalRuntimeStateSummary();
+        return;
+      }
+      const confirmed = confirmUninstallPreview(preview.details || {});
+      if (!confirmed) {
+        setLocalRuntimeStatusText(
+          getString("pref-skillrunner-local-status-cancelled" as any),
+        );
+        await refreshLocalRuntimeStateSummary();
+        return;
+      }
+      const response = await addon.hooks.onPrefsEvent("uninstallSkillRunnerLocalRuntime", {
+        window: addon.data.prefs?.window,
+        clearData: options.clearData,
+        clearAgentHome: options.clearAgentHome,
+      });
+      setLocalRuntimeStatusText(formatLocalRuntimeStatusMessage(response));
+      await refreshLocalRuntimeStateSummary();
+    } catch (error) {
+      setLocalRuntimeStatusText(
+        `${getString("pref-skillrunner-local-status-failed-prefix" as any)} ${String(error)}`,
+      );
+      await refreshLocalRuntimeStateSummary();
+    }
   };
 
   if (workflowDirInput) {
@@ -349,7 +690,7 @@ function bindPrefEvents() {
 
   if (localRuntimeDeployButton) {
     localRuntimeDeployButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("deploySkillRunnerLocalRuntime");
+      void runLocalRuntimeOneclick();
     });
   }
 
@@ -361,7 +702,7 @@ function bindPrefEvents() {
 
   if (localRuntimeUninstallButton) {
     localRuntimeUninstallButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("uninstallSkillRunnerLocalRuntime");
+      void runLocalRuntimeUninstall();
     });
   }
 

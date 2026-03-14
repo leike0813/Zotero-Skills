@@ -4,6 +4,13 @@ import { runWorkflowPreparationSeam } from "./workflowExecution/preparationSeam"
 import { runWorkflowDuplicateGuardSeam } from "./workflowExecution/duplicateGuardSeam";
 import { runWorkflowExecutionSeam } from "./workflowExecution/runSeam";
 import { runWorkflowApplySeam } from "./workflowExecution/applySeam";
+import type { WorkflowExecutionOptions } from "./workflowSettingsDomain";
+import {
+  isWorkflowConfigurable,
+  updateWorkflowSettings,
+} from "./workflowSettings";
+import { openWorkflowSettingsWebDialog } from "./workflowSettingsWebDialog";
+import { loadBackendsRegistry } from "../backends/registry";
 import {
   emitWorkflowFinishSummary,
   emitWorkflowJobToasts,
@@ -15,15 +22,53 @@ import { shouldShowWorkflowNotifications } from "./workflowExecution/feedbackPol
 export async function executeWorkflowFromCurrentSelection(args: {
   win: _ZoteroTypes.MainWindow;
   workflow: LoadedWorkflow;
+  requireSettingsGate?: boolean;
+  executionOptionsOverride?: WorkflowExecutionOptions;
 }) {
   const messageFormatter = createLocalizedMessageFormatter();
   const showWorkflowNotifications = shouldShowWorkflowNotifications(
     args.workflow.manifest,
   );
+  let executionOptionsOverride = args.executionOptionsOverride;
+  if (args.requireSettingsGate === true && !executionOptionsOverride) {
+    const loadedBackends = await loadBackendsRegistry();
+    const candidateBackends = loadedBackends.fatalError
+      ? []
+      : loadedBackends.backends;
+    const configurable = await isWorkflowConfigurable({
+      workflow: args.workflow,
+      candidateBackends,
+    });
+    if (configurable) {
+      const dialogResult = await openWorkflowSettingsWebDialog({
+        workflow: args.workflow,
+        ownerWindow: args.win,
+        candidateBackends,
+      });
+      if (dialogResult.status !== "confirmed") {
+        appendRuntimeLog({
+          level: "info",
+          scope: "workflow-trigger",
+          workflowId: args.workflow.manifest.id,
+          stage: "settings-gate-canceled",
+          message: "workflow trigger canceled by settings gate",
+        });
+        return;
+      }
+      executionOptionsOverride = dialogResult.executionOptions;
+      if (dialogResult.persist) {
+        updateWorkflowSettings(
+          args.workflow.manifest.id,
+          dialogResult.executionOptions,
+        );
+      }
+    }
+  }
   const preparation = await runWorkflowPreparationSeam({
     win: args.win,
     workflow: args.workflow,
     messageFormatter,
+    executionOptionsOverride,
   });
   if (preparation.status !== "ready") {
     return;

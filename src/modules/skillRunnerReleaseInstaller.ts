@@ -27,6 +27,10 @@ export type ReleaseInstallerArgs = {
   version: string;
   installRoot: string;
   repo: string;
+  onProgress?: (progress: {
+    stage: "download-checksum-complete" | "extract-complete";
+    details?: Record<string, unknown>;
+  }) => void;
   runCommand: (args: {
     command: string;
     args: string[];
@@ -352,6 +356,16 @@ export async function installSkillRunnerRelease(
         actualSha256,
       });
     }
+    args.onProgress?.({
+      stage: "download-checksum-complete",
+      details: {
+        artifactFile,
+        checksumFile,
+        artifactBytes: downloadedArtifact.byteLength,
+        expectedSha256,
+        actualSha256,
+      },
+    });
 
     const extractResult = await args.runCommand({
       command: "tar",
@@ -377,6 +391,15 @@ export async function installSkillRunnerRelease(
         },
       });
     }
+    args.onProgress?.({
+      stage: "extract-complete",
+      details: {
+        installDir,
+        ctlPath,
+        serverDir,
+        command: ["tar", ...extractCommand],
+      },
+    });
 
     const [installDirExists, ctlPathExists, serverDirExists] = await Promise.all([
       pathExists(installDir),

@@ -93,7 +93,6 @@ export type ManagedLocalRuntimeState = {
   lastRuntimeStatusAt?: string;
   lastDeployError?: string;
   lastRuntimeError?: string;
-  // Deprecated: persisted compatibility field only, no longer used as runtime control source.
   autoStartPaused?: boolean;
   updatedAt?: string;
 };
@@ -104,6 +103,15 @@ export type SkillRunnerLocalRuntimeActionResult = {
   stage: string;
   conflict?: boolean;
   details?: Record<string, unknown>;
+};
+
+type LocalRuntimeActionProgress = {
+  action: "deploy" | "uninstall";
+  current: number;
+  total: number;
+  percent: number;
+  stage: string;
+  label: string;
 };
 
 type LeaseHttpResult = {
@@ -119,6 +127,8 @@ type AutoEnsureTickResult = {
   message: string;
 };
 
+type OneclickPlannedAction = "start" | "deploy";
+
 type EnsureManagedLocalRuntimeOptions = {
   ignoreAutoStartPaused?: boolean;
   backgroundInFlightAction?: string;
@@ -129,6 +139,7 @@ type ManagedLocalRuntimeStateChangeListener = () => void;
 const managedLocalRuntimeStateChangeListeners = new Set<ManagedLocalRuntimeStateChangeListener>();
 let pendingAutoEnsureTickTimer: ReturnType<typeof setTimeout> | undefined;
 let suppressAutoEnsureTriggerForTests = false;
+let actionProgressState: LocalRuntimeActionProgress | null = null;
 type LocalRuntimeToastKind =
   | "runtime-up"
   | "runtime-down"
@@ -198,6 +209,79 @@ export function emitManagedLocalRuntimeStateChangedForTests() {
 
 export function resetManagedLocalRuntimeStateChangeListenersForTests() {
   managedLocalRuntimeStateChangeListeners.clear();
+}
+
+function cloneActionProgress(
+  progress: LocalRuntimeActionProgress | null,
+): LocalRuntimeActionProgress | null {
+  if (!progress) {
+    return null;
+  }
+  return {
+    ...progress,
+  };
+}
+
+function setActionProgress(progress: {
+  action: "deploy" | "uninstall";
+  current: number;
+  total: number;
+  stage: string;
+  label: string;
+}) {
+  const total = Math.max(1, Math.floor(progress.total || 1));
+  const current = Math.max(0, Math.min(total, Math.floor(progress.current || 0)));
+  actionProgressState = {
+    action: progress.action,
+    current,
+    total,
+    percent: Math.floor((current / total) * 100),
+    stage: normalizeString(progress.stage) || "unknown",
+    label: normalizeString(progress.label) || "",
+  };
+  notifyManagedLocalRuntimeStateChanged();
+}
+
+function clearActionProgress() {
+  if (!actionProgressState) {
+    return;
+  }
+  actionProgressState = null;
+  notifyManagedLocalRuntimeStateChanged();
+}
+
+function resolveDeployProgressLabel(stage: string) {
+  const normalized = normalizeString(stage).toLowerCase();
+  if (normalized === "deploy-release-assets-probe") {
+    return "Release probe";
+  }
+  if (normalized === "deploy-release-download-checksum") {
+    return "Download and checksum";
+  }
+  if (normalized === "deploy-release-extract") {
+    return "Extract release package";
+  }
+  if (normalized === "deploy-bootstrap") {
+    return "Bootstrap runtime";
+  }
+  if (normalized === "deploy-post-bootstrap") {
+    return "Finalize deploy";
+  }
+  return "Deploy";
+}
+
+function resolveUninstallProgressLabel(stage: string) {
+  const normalized = normalizeString(stage).toLowerCase();
+  if (normalized === "uninstall-down") {
+    return "Stop runtime";
+  }
+  if (normalized.startsWith("uninstall-delete-")) {
+    return "Delete runtime directory";
+  }
+  if (normalized === "uninstall-profile") {
+    return "Remove managed profile";
+  }
+  return "Uninstall";
 }
 
 function emitLocalRuntimeToast(kind: LocalRuntimeToastKind) {
@@ -272,12 +356,14 @@ export function resetManagedRuntimeAsyncTriggerForTests() {
   if (!pendingAutoEnsureTickTimer) {
     runtimeActionInFlight = "";
     backgroundInFlightAction = "";
+    actionProgressState = null;
     return;
   }
   clearTimeout(pendingAutoEnsureTickTimer);
   pendingAutoEnsureTickTimer = undefined;
   runtimeActionInFlight = "";
   backgroundInFlightAction = "";
+  actionProgressState = null;
 }
 
 export function setSuppressManagedRuntimeAutoEnsureTriggerForTests(
@@ -287,21 +373,55 @@ export function setSuppressManagedRuntimeAutoEnsureTriggerForTests(
 }
 
 export function resetLocalRuntimeAutoStartSessionState() {
-  const next = false;
+  setAutoStartEnabledInSession(false, { persist: false });
+}
+
+function setPersistedAutoStartPaused(
+  paused: boolean,
+  state?: ManagedLocalRuntimeState,
+) {
+  const current = normalizeState(state || readManagedLocalRuntimeState());
+  if (current.autoStartPaused === paused) {
+    return;
+  }
+  writeManagedLocalRuntimeState({
+    ...current,
+    autoStartPaused: paused,
+  });
+}
+
+function setAutoStartEnabledInSession(
+  enabled: boolean,
+  options?: {
+    persist?: boolean;
+    state?: ManagedLocalRuntimeState;
+  },
+) {
+  const next = enabled === true;
   const changed = autoStartEnabledInSession !== next;
   autoStartEnabledInSession = next;
+  const shouldPersist = options?.persist !== false;
+  if (shouldPersist) {
+    setPersistedAutoStartPaused(!next, options?.state);
+    return;
+  }
   if (changed) {
     notifyManagedLocalRuntimeStateChanged();
   }
 }
 
-function setAutoStartEnabledInSession(enabled: boolean) {
-  const next = enabled === true;
+export function hydrateLocalRuntimeAutoStartSessionStateFromPersistedState() {
+  const state = readManagedLocalRuntimeState();
+  const persistedPaused = normalizeAutoStartPaused(state.autoStartPaused);
+  const next = persistedPaused === false;
   const changed = autoStartEnabledInSession !== next;
   autoStartEnabledInSession = next;
   if (changed) {
     notifyManagedLocalRuntimeStateChanged();
   }
+  return {
+    autoStartPaused: !next,
+  };
 }
 
 function normalizeString(value: unknown) {
@@ -359,6 +479,61 @@ function resolveDefaultInstallRoot() {
     return joinPath(home, ".local", "share", "skill-runner", "releases");
   }
   return "";
+}
+
+function resolveManagedLocalRootFromInstallRoot(installRoot: string) {
+  const normalizedInstallRoot = normalizeString(installRoot);
+  if (!normalizedInstallRoot) {
+    return "";
+  }
+  return getParentPath(normalizedInstallRoot);
+}
+
+function buildManagedInstallLayoutDetails(args?: { installRoot?: string }) {
+  const installRoot = normalizeString(args?.installRoot) || resolveDefaultInstallRoot();
+  const localRoot = resolveManagedLocalRootFromInstallRoot(installRoot);
+  const releasesPath = normalizeString(installRoot) || joinPath(localRoot, "releases");
+  const dataPath = joinPath(localRoot, "data");
+  const agentHomePath = joinPath(localRoot, "agent-cache", "agent-home");
+  const npmCachePath = joinPath(localRoot, "agent-cache", "npm");
+  const uvCachePath = joinPath(localRoot, "agent-cache", "uv_cache");
+  const uvVenvPath = joinPath(localRoot, "agent-cache", "uv_venv");
+  return {
+    localRoot,
+    installRoot: releasesPath,
+    paths: [
+      {
+        id: "releases",
+        path: releasesPath,
+        purpose: "skill runner release artifacts",
+      },
+      {
+        id: "data",
+        path: dataPath,
+        purpose: "runtime data and reports",
+      },
+      {
+        id: "agent-home",
+        path: agentHomePath,
+        purpose: "agent home settings",
+      },
+      {
+        id: "npm-cache",
+        path: npmCachePath,
+        purpose: "npm cache",
+      },
+      {
+        id: "uv-cache",
+        path: uvCachePath,
+        purpose: "uv cache",
+      },
+      {
+        id: "uv-venv",
+        path: uvVenvPath,
+        purpose: "uv virtual environment cache",
+      },
+    ],
+  };
 }
 
 function nowIso() {
@@ -538,6 +713,10 @@ function isAutoStartPaused() {
   return autoStartEnabledInSession !== true;
 }
 
+export function isLocalRuntimeAutoStartPaused() {
+  return isAutoStartPaused();
+}
+
 async function sleepMs(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
 }
@@ -580,10 +759,272 @@ async function pathExists(pathValue: string) {
   }
 }
 
-async function removePathRecursive(pathValue: string) {
+type RemovePathRecursiveDiagnostics = {
+  retries: number;
+  longPathFallbackAttempted: boolean;
+  lastErrorCode: string;
+  lastErrorMessage: string;
+};
+
+type RemovePathRecursiveError = Error & {
+  deleteDiagnostics?: RemovePathRecursiveDiagnostics;
+};
+
+const RETRIABLE_DELETE_ERROR_CODES = new Set([
+  "EPERM",
+  "EBUSY",
+  "ENOTEMPTY",
+  "ENAMETOOLONG",
+]);
+
+function getDeleteErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  const typed = error as { code?: unknown; errno?: unknown };
+  const codeText = normalizeString(typed.code || typed.errno);
+  return codeText.toUpperCase();
+}
+
+function getDeleteErrorMessage(error: unknown) {
+  return normalizeString(
+    error && typeof error === "object" && "message" in error
+      ? (error as { message?: unknown }).message
+      : error,
+  );
+}
+
+function isRetriableDeleteError(error: unknown) {
+  const code = getDeleteErrorCode(error);
+  if (code && RETRIABLE_DELETE_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const message = getDeleteErrorMessage(error).toLowerCase();
+  return (
+    message.includes("directory not empty") ||
+    message.includes("path too long") ||
+    message.includes("filename or extension is too long") ||
+    message.includes("resource busy") ||
+    message.includes("access is denied") ||
+    message.includes("operation not permitted")
+  );
+}
+
+function toWindowsExtendedPath(pathValue: string) {
   const normalized = normalizeString(pathValue);
+  if (!normalized || !detectWindows()) {
+    return "";
+  }
+  if (normalized.startsWith("\\\\?\\")) {
+    return normalized;
+  }
+  if (normalized.startsWith("\\\\")) {
+    return `\\\\?\\UNC\\${normalized.slice(2)}`;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(normalized)) {
+    return `\\\\?\\${normalized.replace(/\//g, "\\")}`;
+  }
+  return "";
+}
+
+function toPowerShellSingleQuotedLiteral(raw: string) {
+  const normalized = String(raw || "");
+  return `'${normalized.replace(/'/g, "''")}'`;
+}
+
+async function removePathRecursiveWithNodeFs(pathValue: string) {
+  const fs = await dynamicImport("fs/promises");
+  await fs.rm(pathValue, {
+    recursive: true,
+    force: true,
+  });
+}
+
+type SubprocessInvocationResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+};
+
+function isExecutableNotFoundMessage(message: string) {
+  const normalized = normalizeString(message).toLowerCase();
+  return (
+    normalized.includes("executable not found") ||
+    normalized.includes("could not be found") ||
+    normalized.includes("is not recognized")
+  );
+}
+
+function normalizeWindowsPathCandidate(pathValue: string) {
+  const normalized = normalizeString(pathValue).replace(/^"+|"+$/g, "");
+  return normalized;
+}
+
+function getWindowsShellCommandCandidates(command: string) {
+  const normalizedCommand = normalizeString(command);
+  if (!detectWindows() || !normalizedCommand) {
+    return [normalizedCommand].filter(Boolean);
+  }
+  if (
+    normalizedCommand.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(normalizedCommand) ||
+    /[\\/]/.test(normalizedCommand)
+  ) {
+    return [normalizedCommand];
+  }
+  const lower = normalizedCommand.toLowerCase();
+  const systemRoot =
+    readProcessEnv("SystemRoot") ||
+    readProcessEnv("WINDIR") ||
+    "C:\\Windows";
+  const comspec = normalizeWindowsPathCandidate(
+    readProcessEnv("ComSpec") || readProcessEnv("COMSPEC"),
+  );
+  const candidates: string[] = [normalizedCommand];
+  if (lower === "cmd" || lower === "cmd.exe") {
+    candidates.push(
+      comspec,
+      `${systemRoot}\\System32\\cmd.exe`,
+      `${systemRoot}\\Sysnative\\cmd.exe`,
+    );
+  } else if (lower === "powershell" || lower === "powershell.exe") {
+    candidates.push(
+      `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+      `${systemRoot}\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe`,
+    );
+  }
+  return Array.from(
+    new Set(candidates.map((entry) => normalizeString(entry)).filter(Boolean)),
+  );
+}
+
+async function runSubprocessCommand(args: {
+  command: string;
+  argv: string[];
+}): Promise<SubprocessInvocationResult> {
+  const runtime = globalThis as {
+    Zotero?: {
+      Utilities?: {
+        Internal?: {
+          subprocess?: (command: string, args?: string[]) => Promise<string>;
+        };
+      };
+    };
+  };
+  const subprocess = runtime.Zotero?.Utilities?.Internal?.subprocess;
+  if (typeof subprocess !== "function") {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "subprocess is unavailable in current context",
+    };
+  }
+  const candidates = getWindowsShellCommandCandidates(args.command);
+  let lastError = "";
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    try {
+      const stdout = await subprocess(candidate, args.argv);
+      return {
+        ok: true,
+        stdout: normalizeString(stdout),
+        stderr: "",
+      };
+    } catch (error) {
+      const message = getDeleteErrorMessage(error) || "subprocess invocation failed";
+      lastError = message;
+      const canRetryWithNextCandidate =
+        i < candidates.length - 1 && isExecutableNotFoundMessage(message);
+      if (canRetryWithNextCandidate) {
+        continue;
+      }
+      break;
+    }
+  }
+  return {
+    ok: false,
+    stdout: "",
+    stderr: lastError || "subprocess invocation failed",
+  };
+}
+
+async function removePathRecursiveWithWindowsShellFallback(args: {
+  normalizedPath: string;
+  extendedPath: string;
+  diagnostics: RemovePathRecursiveDiagnostics;
+}) {
+  const targets: Array<{ path: string; longPath: boolean }> = [];
+  if (args.normalizedPath) {
+    targets.push({
+      path: args.normalizedPath,
+      longPath: false,
+    });
+  }
+  if (args.extendedPath) {
+    targets.push({
+      path: args.extendedPath,
+      longPath: true,
+    });
+  }
+  let lastError = "";
+  for (const target of targets) {
+    if (target.longPath) {
+      args.diagnostics.longPathFallbackAttempted = true;
+    }
+    const psScript = [
+      "$ErrorActionPreference='Stop'",
+      `$p=${toPowerShellSingleQuotedLiteral(target.path)}`,
+      "if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop }",
+      "exit 0",
+    ].join("; ");
+    const psResult = await runSubprocessCommand({
+      command: "powershell.exe",
+      argv: [
+        "-NoLogo",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        psScript,
+      ],
+    });
+    if (psResult.ok && !(await pathExists(args.normalizedPath))) {
+      return;
+    }
+    if (!psResult.ok) {
+      lastError = psResult.stderr || lastError;
+    }
+    const cmdResult = await runSubprocessCommand({
+      command: "cmd.exe",
+      argv: ["/d", "/s", "/c", `if exist "${target.path}" rd /s /q "${target.path}"`],
+    });
+    if (cmdResult.ok && !(await pathExists(args.normalizedPath))) {
+      return;
+    }
+    if (!cmdResult.ok) {
+      lastError = cmdResult.stderr || lastError;
+    }
+  }
+  const error = new Error(
+    normalizeString(lastError) || "windows shell fallback failed to delete path",
+  ) as RemovePathRecursiveError;
+  error.deleteDiagnostics = args.diagnostics;
+  throw error;
+}
+
+async function removePathRecursive(pathValue: string): Promise<RemovePathRecursiveDiagnostics> {
+  const normalized = normalizeString(pathValue);
+  const diagnostics: RemovePathRecursiveDiagnostics = {
+    retries: 0,
+    longPathFallbackAttempted: false,
+    lastErrorCode: "",
+    lastErrorMessage: "",
+  };
   if (!normalized) {
-    return;
+    return diagnostics;
   }
   const runtime = globalThis as {
     IOUtils?: {
@@ -593,18 +1034,123 @@ async function removePathRecursive(pathValue: string) {
       ) => Promise<void>;
     };
   };
+  const maxRetries = detectWindows() ? 3 : 0;
+  const runWithRetry = async (operation: () => Promise<void>) => {
+    let attempt = 0;
+    while (true) {
+      try {
+        await operation();
+        return;
+      } catch (error) {
+        diagnostics.lastErrorCode = getDeleteErrorCode(error);
+        diagnostics.lastErrorMessage =
+          getDeleteErrorMessage(error) || "unknown error";
+        const shouldRetry =
+          detectWindows() &&
+          attempt < maxRetries &&
+          isRetriableDeleteError(error);
+        if (!shouldRetry) {
+          throw error;
+        }
+        attempt += 1;
+        diagnostics.retries += 1;
+        await sleepMs(Math.max(40, attempt * 120));
+      }
+    }
+  };
+
   if (typeof runtime.IOUtils?.remove === "function") {
-    await runtime.IOUtils.remove(normalized, {
-      ignoreAbsent: true,
-      recursive: true,
-    });
-    return;
+    try {
+      await runWithRetry(async () => {
+        await runtime.IOUtils?.remove?.(normalized, {
+          ignoreAbsent: true,
+          recursive: true,
+        });
+      });
+      return diagnostics;
+    } catch {
+      // continue with node fs fallback
+    }
   }
-  const fs = await dynamicImport("fs/promises");
-  await fs.rm(normalized, {
-    recursive: true,
-    force: true,
-  });
+  const extendedPath = toWindowsExtendedPath(normalized);
+  if (detectWindows()) {
+    try {
+      await runWithRetry(async () => {
+        await removePathRecursiveWithWindowsShellFallback({
+          normalizedPath: normalized,
+          extendedPath,
+          diagnostics,
+        });
+      });
+      return diagnostics;
+    } catch (error) {
+      diagnostics.lastErrorCode = getDeleteErrorCode(error) || "SHELL_DELETE_FAILED";
+      diagnostics.lastErrorMessage =
+        getDeleteErrorMessage(error) || diagnostics.lastErrorMessage;
+      const wrapped = new Error(
+        diagnostics.lastErrorMessage || "failed to remove path recursively",
+      ) as RemovePathRecursiveError;
+      wrapped.deleteDiagnostics = diagnostics;
+      throw wrapped;
+    }
+  }
+  try {
+    await runWithRetry(async () => {
+      await removePathRecursiveWithNodeFs(normalized);
+    });
+    return diagnostics;
+  } catch {
+    // continue with Windows extended path fallback
+  }
+  if (extendedPath) {
+    diagnostics.longPathFallbackAttempted = true;
+    try {
+      await runWithRetry(async () => {
+        await removePathRecursiveWithNodeFs(extendedPath);
+      });
+      return diagnostics;
+    } catch (error) {
+      diagnostics.lastErrorCode = getDeleteErrorCode(error);
+      diagnostics.lastErrorMessage =
+        getDeleteErrorMessage(error) || diagnostics.lastErrorMessage;
+      const wrapped = new Error(
+        diagnostics.lastErrorMessage || "failed to remove path recursively",
+      ) as RemovePathRecursiveError;
+      wrapped.deleteDiagnostics = diagnostics;
+      throw wrapped;
+    }
+  }
+  const wrapped = new Error(
+    diagnostics.lastErrorMessage || "failed to remove path recursively",
+  ) as RemovePathRecursiveError;
+  wrapped.deleteDiagnostics = diagnostics;
+  throw wrapped;
+}
+
+function formatManagedDeleteFailureMessage(args: {
+  targetId: string;
+  targetPath: string;
+  reason: string;
+  diagnostics?: RemovePathRecursiveDiagnostics;
+}) {
+  const normalizedReason = normalizeString(args.reason) || "unknown error";
+  const diagnostics = args.diagnostics;
+  const parts = [normalizedReason];
+  if (diagnostics) {
+    parts.push(`code=${diagnostics.lastErrorCode || "unknown"}`);
+    parts.push(`retries=${diagnostics.retries}`);
+    parts.push(
+      `long_path_fallback=${diagnostics.longPathFallbackAttempted ? "yes" : "no"}`,
+    );
+  }
+  const isNpmTarget =
+    args.targetId === "npm-cache" || /agent-cache[\\/]+npm/i.test(args.targetPath);
+  if (isNpmTarget) {
+    parts.push(
+      "hint=possible Windows long-path or file-lock issue under npm cache",
+    );
+  }
+  return parts.join("; ");
 }
 
 function normalizeBootstrapReport(
@@ -845,7 +1391,6 @@ export function readManagedLocalRuntimeState() {
 
 function writeManagedLocalRuntimeState(state: ManagedLocalRuntimeState) {
   const normalized = normalizeState(state);
-  delete normalized.autoStartPaused;
   normalized.updatedAt = nowIso();
   setPref(STATE_PREF_KEY, JSON.stringify(normalized));
   notifyManagedLocalRuntimeStateChanged();
@@ -900,6 +1445,10 @@ export function setSkillRunnerReleaseInstallerForTests(
       version: string;
       installRoot: string;
       repo: string;
+      onProgress?: (progress: {
+        stage: "download-checksum-complete" | "extract-complete";
+        details?: Record<string, unknown>;
+      }) => void;
       runCommand: (args: {
         command: string;
         args: string[];
@@ -1850,9 +2399,16 @@ export async function runManagedRuntimeAutoEnsureTickForTests() {
 
 export async function runManagedRuntimeStartupPreflightProbe(): Promise<SkillRunnerLocalRuntimeActionResult> {
   return withRuntimeControlLock(async () => {
-    setAutoStartEnabledInSession(false);
+    if (isAutoStartPaused()) {
+      return {
+        ok: true,
+        stage: "startup-preflight-skip-paused",
+        message: "startup preflight skipped because auto-start is disabled",
+      };
+    }
     const state = readManagedLocalRuntimeState();
     if (!hasRuntimeInfo(state)) {
+      setAutoStartEnabledInSession(false);
       return {
         ok: true,
         stage: "startup-preflight-skip-no-runtime-info",
@@ -1861,6 +2417,7 @@ export async function runManagedRuntimeStartupPreflightProbe(): Promise<SkillRun
     }
     const ctlPath = normalizeString(state.ctlPath);
     if (!ctlPath) {
+      setAutoStartEnabledInSession(false);
       return {
         ok: false,
         stage: "startup-preflight-missing-ctl",
@@ -1895,6 +2452,82 @@ export async function runManagedRuntimeStartupPreflightProbe(): Promise<SkillRun
   });
 }
 
+export async function planLocalRuntimeOneclick(args?: {
+  version?: string;
+}): Promise<SkillRunnerLocalRuntimeActionResult> {
+  return withRuntimeControlLock(async () => {
+    const version = normalizeString(args?.version) || getConfiguredVersionTag();
+    setConfiguredVersionTag(version);
+    const installLayout = buildManagedInstallLayoutDetails();
+    const state = readManagedLocalRuntimeState();
+    if (!hasRuntimeInfo(state)) {
+      setAutoStartEnabledInSession(false);
+      return {
+        ok: true,
+        stage: "oneclick-plan-deploy",
+        message: "one-click plan selects deploy because runtime info is missing",
+        details: {
+          plannedAction: "deploy",
+          reason: "no-runtime-info",
+          version,
+          installLayout,
+        },
+      };
+    }
+    const ctlPath = normalizeString(state.ctlPath);
+    if (!ctlPath) {
+      setAutoStartEnabledInSession(false);
+      return {
+        ok: true,
+        stage: "oneclick-plan-deploy",
+        message: "one-click plan selects deploy because ctl path is missing",
+        details: {
+          plannedAction: "deploy",
+          reason: "missing-ctl",
+          version,
+          installLayout,
+        },
+      };
+    }
+    const endpoint = resolveRuntimeEndpoint(state);
+    const bridge = getCtlBridge();
+    const preflight = await bridge.runCtlCommand({
+      ctlPath,
+      command: "preflight",
+      host: endpoint.host,
+      port: endpoint.requestedPort,
+      portFallbackSpan: endpoint.portFallbackSpan,
+    });
+    if (preflight.ok) {
+      setAutoStartEnabledInSession(true);
+      return {
+        ok: true,
+        stage: "oneclick-plan-start",
+        message: "one-click plan selects start",
+        details: {
+          plannedAction: "start",
+          version,
+          preflight: preflight.details,
+        },
+      };
+    }
+    setAutoStartEnabledInSession(false);
+    return {
+      ok: true,
+      stage: "oneclick-plan-deploy",
+      message: "one-click plan selects deploy after preflight failure",
+      details: {
+        plannedAction: "deploy",
+        reason: "preflight-failed",
+        version,
+        preflight: preflight.details,
+        preflightMessage: preflight.message,
+        installLayout,
+      },
+    };
+  });
+}
+
 export function startManagedLocalRuntimeAutoEnsureLoop() {
   if (autoEnsureTimer) {
     return;
@@ -1915,10 +2548,16 @@ export function stopManagedLocalRuntimeAutoEnsureLoop() {
 
 export async function deployAndConfigureLocalSkillRunner(args?: {
   version?: string;
+  forcedBranch?: "start" | "deploy";
 }): Promise<SkillRunnerLocalRuntimeActionResult> {
   return withRuntimeActionMutex("oneclick-deploy-start", async () => {
     const bridge = getCtlBridge();
     const version = normalizeString(args?.version) || getConfiguredVersionTag();
+    const forcedBranch = normalizeString(args?.forcedBranch).toLowerCase() as
+      | OneclickPlannedAction
+      | "";
+    const forceDeploy = forcedBranch === "deploy";
+    const forceStart = forcedBranch === "start";
     resetSkillRunnerLocalDeployDebugSession({
       version,
       trigger: "deploy",
@@ -1926,7 +2565,8 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
     const installRoot = resolveDefaultInstallRoot();
     setConfiguredVersionTag(version);
     const stateBeforeOneClick = readManagedLocalRuntimeState();
-    if (hasRuntimeInfo(stateBeforeOneClick)) {
+    try {
+      if (!forceDeploy && hasRuntimeInfo(stateBeforeOneClick)) {
       const ctlPath = normalizeString(stateBeforeOneClick.ctlPath);
       const endpoint = resolveRuntimeEndpoint(stateBeforeOneClick);
       const preflight = await bridge.runCtlCommand({
@@ -2034,6 +2674,16 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
         };
       }
       setAutoStartEnabledInSession(false);
+      if (forceStart) {
+        return {
+          ok: false,
+          stage: "oneclick-preflight",
+          message: normalizeString(preflight.message) || "one-click preflight failed",
+          details: {
+            preflight: preflight.details,
+          },
+        };
+      }
       appendLocalRuntimeLog({
         level: "warn",
         operation: "oneclick-preflight",
@@ -2044,10 +2694,24 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
           details: preflight.details,
         },
       });
-    } else {
-      setAutoStartEnabledInSession(false);
-    }
-    const releaseProbe = await probeReleaseAssets(version);
+      } else {
+        if (forceStart) {
+          return {
+            ok: false,
+            stage: "oneclick-start-missing-runtime",
+            message: "forced start requested but runtime info is missing",
+          };
+        }
+        setAutoStartEnabledInSession(false);
+      }
+      setActionProgress({
+        action: "deploy",
+        current: 1,
+        total: 5,
+        stage: "deploy-release-assets-probe",
+        label: resolveDeployProgressLabel("deploy-release-assets-probe"),
+      });
+      const releaseProbe = await probeReleaseAssets(version);
   appendLocalRuntimeLog({
     level:
       !releaseProbe.checked || releaseProbe.ok ? "info" : "warn",
@@ -2076,10 +2740,31 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
       },
     };
   }
-    const install = await releaseInstaller({
+      const install = await releaseInstaller({
       version,
       installRoot,
       repo: DEFAULT_SKILL_RUNNER_RELEASE_REPO,
+      onProgress: (progress) => {
+        if (progress.stage === "download-checksum-complete") {
+          setActionProgress({
+            action: "deploy",
+            current: 2,
+            total: 5,
+            stage: "deploy-release-download-checksum",
+            label: resolveDeployProgressLabel("deploy-release-download-checksum"),
+          });
+          return;
+        }
+        if (progress.stage === "extract-complete") {
+          setActionProgress({
+            action: "deploy",
+            current: 3,
+            total: 5,
+            stage: "deploy-release-extract",
+            label: resolveDeployProgressLabel("deploy-release-extract"),
+          });
+        }
+      },
       runCommand: (commandArgs) => bridge.runSystemCommand(commandArgs),
       keepTempOnSuccess: false,
       keepTempOnFailure: true,
@@ -2139,6 +2824,13 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
         },
       };
     }
+      setActionProgress({
+        action: "deploy",
+        current: 4,
+        total: 5,
+        stage: "deploy-bootstrap",
+        label: resolveDeployProgressLabel("deploy-bootstrap"),
+      });
     const ctlBootstrap = await bridge.runCtlCommand({
       ctlPath,
       command: "bootstrap",
@@ -2241,8 +2933,12 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
     });
 
     const finalBaseUrl = resolveManagedBaseUrl(stagedState);
+    const profileEnsureState: ManagedLocalRuntimeState = {
+      ...stagedState,
+      managedBackendId: MANAGED_PROFILE_ID,
+    };
     const profileResult = await ensureManagedProfileConfigured(
-      previousState,
+      profileEnsureState,
       finalBaseUrl,
     );
     if (!profileResult.ok) {
@@ -2324,10 +3020,17 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
             ? install.details.extractProof
             : undefined,
           tempDir: install.tempDir,
-          ...bootstrapReport.summary,
-        },
-      };
-    }
+        ...bootstrapReport.summary,
+      },
+    };
+  }
+      setActionProgress({
+        action: "deploy",
+        current: 5,
+        total: 5,
+        stage: "deploy-post-bootstrap",
+        label: resolveDeployProgressLabel("deploy-post-bootstrap"),
+      });
     const postPreflightState = applyRuntimeEndpointFromDetails(
       nextState,
       postDeployPreflight.details,
@@ -2387,6 +3090,9 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
         ...bootstrapReport.summary,
       },
     };
+    } finally {
+      clearActionProgress();
+    }
   });
 }
 
@@ -2528,6 +3234,7 @@ export function getManagedLocalRuntimeStateSnapshot(): SkillRunnerLocalRuntimeAc
       hasRuntimeInfo: runtimeInfoReady,
       inFlightAction,
       monitoringState,
+      actionProgress: cloneActionProgress(actionProgressState),
       deployedAt: state.deployedAt || "",
       lastRuntimeStatusAt: state.lastRuntimeStatusAt || "",
       lastDeployError: state.lastDeployError || "",
@@ -2700,8 +3407,10 @@ function resolveManagedLocalRoot(args?: { state?: ManagedLocalRuntimeState }) {
 }
 
 type ManagedUninstallDeleteTarget = {
+  id: string;
   path: string;
   preserve: boolean;
+  purpose: string;
 };
 
 function buildManagedUninstallDeleteTargets(args: {
@@ -2716,26 +3425,118 @@ function buildManagedUninstallDeleteTargets(args: {
   const dataPath = joinPath(args.localRoot, "data");
   const agentHomePath = joinPath(args.localRoot, "agent-cache", "agent-home");
   const targets: ManagedUninstallDeleteTarget[] = [
-    { path: releasesPath, preserve: false },
-    { path: npmCachePath, preserve: false },
-    { path: uvCachePath, preserve: false },
-    { path: uvVenvPath, preserve: false },
-    { path: dataPath, preserve: !args.clearData },
-    { path: agentHomePath, preserve: !args.clearAgentHome },
+    {
+      id: "releases",
+      path: releasesPath,
+      preserve: false,
+      purpose: "skill runner release artifacts",
+    },
+    {
+      id: "npm-cache",
+      path: npmCachePath,
+      preserve: false,
+      purpose: "npm cache",
+    },
+    {
+      id: "uv-cache",
+      path: uvCachePath,
+      preserve: false,
+      purpose: "uv cache",
+    },
+    {
+      id: "uv-venv",
+      path: uvVenvPath,
+      preserve: false,
+      purpose: "uv virtual environment cache",
+    },
+    {
+      id: "data",
+      path: dataPath,
+      preserve: !args.clearData,
+      purpose: "runtime data and reports",
+    },
+    {
+      id: "agent-home",
+      path: agentHomePath,
+      preserve: !args.clearAgentHome,
+      purpose: "agent home settings",
+    },
   ];
   if (args.clearData && args.clearAgentHome && !isFsRootPath(args.localRoot)) {
     targets.push({
+      id: "local-root",
       path: args.localRoot,
       preserve: false,
+      purpose: "managed local runtime root",
     });
   }
   return targets;
+}
+
+export async function previewLocalRuntimeUninstall(args?: {
+  clearData?: boolean;
+  clearAgentHome?: boolean;
+}): Promise<SkillRunnerLocalRuntimeActionResult> {
+  const stateBeforeUninstall = readManagedLocalRuntimeState();
+  const localRootResolution = resolveManagedLocalRoot({
+    state: stateBeforeUninstall,
+  });
+  if (!localRootResolution.ok) {
+    return {
+      ok: false,
+      stage: "uninstall-local-root",
+      message: localRootResolution.reason,
+      details: localRootResolution.details,
+    };
+  }
+  const clearData = args?.clearData === true;
+  const clearAgentHome = args?.clearAgentHome === true;
+  const localRoot = localRootResolution.localRoot;
+  const targets = buildManagedUninstallDeleteTargets({
+    localRoot,
+    clearData,
+    clearAgentHome,
+  });
+  const removableTargets = targets.filter((target) => !target.preserve);
+  const preservedTargets = targets.filter((target) => target.preserve);
+  const ctlPath = normalizeString(stateBeforeUninstall.ctlPath);
+  const canInvokeDown = !!ctlPath && (await pathExists(ctlPath));
+  const totalSteps = removableTargets.length + (canInvokeDown ? 1 : 0) + 1;
+  return {
+    ok: true,
+    stage: "uninstall-preview",
+    message: "managed local runtime uninstall preview generated",
+    details: {
+      clearData,
+      clearAgentHome,
+      localRoot,
+      canInvokeDown,
+      totalSteps,
+      removableTargets: removableTargets.map((target) => ({
+        id: target.id,
+        path: target.path,
+        purpose: target.purpose,
+      })),
+      preservedTargets: preservedTargets.map((target) => ({
+        id: target.id,
+        path: target.path,
+        purpose: target.purpose,
+      })),
+    },
+  };
 }
 
 async function deleteManagedLocalRuntimePaths(args: {
   localRoot: string;
   clearData: boolean;
   clearAgentHome: boolean;
+  onTargetProcessed?: (target: {
+    id: string;
+    path: string;
+    purpose: string;
+    ok: boolean;
+    error?: string;
+  }) => void;
 }) {
   const targets = buildManagedUninstallDeleteTargets(args);
   const removedPaths: string[] = [];
@@ -2748,13 +3549,32 @@ async function deleteManagedLocalRuntimePaths(args: {
       continue;
     }
     try {
-      await removePathRecursive(target.path);
+      const diagnostics = await removePathRecursive(target.path);
       const afterExists = await pathExists(target.path);
       if (afterExists) {
+        const failureMessage = formatManagedDeleteFailureMessage({
+          targetId: target.id,
+          targetPath: target.path,
+          reason: "path still exists after deletion attempt",
+          diagnostics,
+        });
         failedPaths.push(target.path);
-        failedPathErrors[target.path] = "path still exists after deletion attempt";
+        failedPathErrors[target.path] = failureMessage;
+        args.onTargetProcessed?.({
+          id: target.id,
+          path: target.path,
+          purpose: target.purpose,
+          ok: false,
+          error: failureMessage,
+        });
       } else {
         removedPaths.push(target.path);
+        args.onTargetProcessed?.({
+          id: target.id,
+          path: target.path,
+          purpose: target.purpose,
+          ok: true,
+        });
       }
     } catch (error) {
       const message = normalizeString(
@@ -2762,8 +3582,34 @@ async function deleteManagedLocalRuntimePaths(args: {
           ? (error as { message?: unknown }).message
           : error,
       );
+      const diagnostics = (
+        error &&
+        typeof error === "object" &&
+        "deleteDiagnostics" in (error as Record<string, unknown>)
+          ? (error as { deleteDiagnostics?: RemovePathRecursiveDiagnostics })
+              .deleteDiagnostics
+          : undefined
+      ) || {
+        retries: 0,
+        longPathFallbackAttempted: false,
+        lastErrorCode: getDeleteErrorCode(error),
+        lastErrorMessage: message,
+      };
+      const failureMessage = formatManagedDeleteFailureMessage({
+        targetId: target.id,
+        targetPath: target.path,
+        reason: message || "unknown error",
+        diagnostics,
+      });
       failedPaths.push(target.path);
-      failedPathErrors[target.path] = message || "unknown error";
+      failedPathErrors[target.path] = failureMessage;
+      args.onTargetProcessed?.({
+        id: target.id,
+        path: target.path,
+        purpose: target.purpose,
+        ok: false,
+        error: failureMessage,
+      });
     }
   }
   return {
@@ -2885,121 +3731,306 @@ export async function uninstallLocalRuntime(args?: {
   clearAgentHome?: boolean;
 }): Promise<SkillRunnerLocalRuntimeActionResult> {
   return withRuntimeActionMutex("uninstall", async () => {
-    const stateBeforeUninstall = readManagedLocalRuntimeState();
-    const ctlPath = normalizeString(stateBeforeUninstall.ctlPath);
-    const clearData = args?.clearData === true;
-    const clearAgentHome = args?.clearAgentHome === true;
-    setAutoStartEnabledInSession(false);
-    clearManagedLocalRuntimeState();
-    const localRootResolution = resolveManagedLocalRoot({
-      state: stateBeforeUninstall,
+    const version = getConfiguredVersionTag();
+    resetSkillRunnerLocalDeployDebugSession({
+      version,
+      trigger: "uninstall",
     });
-    if (!localRootResolution.ok) {
-      return {
-        ok: false,
-        stage: "uninstall-local-root",
-        message: localRootResolution.reason,
-        details: localRootResolution.details,
-      };
-    }
-    const localRoot = localRootResolution.localRoot;
-    clearStatusReconcileTimer();
-    clearHeartbeatTimer();
-    const bridge = getCtlBridge();
-    const downResultDetails: Record<string, unknown> = {
-      invoked: false,
-      ok: true,
-      exitCode: 0,
-      message: "ctl path unavailable; skip down and continue uninstall cleanup",
-      command: "",
-      args: [],
-      details: {},
-    };
-    let downInvokedAndSucceeded = false;
-    const canInvokeDown = !!ctlPath && (await pathExists(ctlPath));
-    if (canInvokeDown) {
-      const downResult = await bridge.runCtlCommand({
-        ctlPath,
-        command: "down",
-        mode: "local",
+    try {
+      const stateBeforeUninstall = readManagedLocalRuntimeState();
+      const ctlPath = normalizeString(stateBeforeUninstall.ctlPath);
+      const clearData = args?.clearData === true;
+      const clearAgentHome = args?.clearAgentHome === true;
+      appendLocalRuntimeLog({
+        level: "info",
+        operation: "uninstall-start",
+        stage: "uninstall-start",
+        message: "managed local runtime uninstall started",
+        details: {
+          version,
+          clearData,
+          clearAgentHome,
+          managedBackendId: normalizeString(stateBeforeUninstall.managedBackendId),
+          installDir: normalizeString(stateBeforeUninstall.installDir),
+          ctlPath,
+        },
       });
-      downResultDetails.invoked = true;
-      downResultDetails.ok = downResult.ok;
-      downResultDetails.exitCode = downResult.exitCode;
-      downResultDetails.message = downResult.message;
-      downResultDetails.command = downResult.command;
-      downResultDetails.args = downResult.args;
-      downResultDetails.details = downResult.details || {};
-      if (!downResult.ok) {
+      setAutoStartEnabledInSession(false);
+      clearManagedLocalRuntimeState();
+      const localRootResolution = resolveManagedLocalRoot({
+        state: stateBeforeUninstall,
+      });
+      if (!localRootResolution.ok) {
+        appendLocalRuntimeLog({
+          level: "warn",
+          operation: "uninstall-local-root",
+          stage: "uninstall-local-root",
+          message: "failed to resolve managed local root for uninstall",
+          details: localRootResolution.details,
+        });
         return {
           ok: false,
-          stage: "uninstall-down",
-          message: normalizeString(downResult.message) || "managed local runtime stop failed",
+          stage: "uninstall-local-root",
+          message: localRootResolution.reason,
+          details: localRootResolution.details,
+        };
+      }
+      const localRoot = localRootResolution.localRoot;
+      const targets = buildManagedUninstallDeleteTargets({
+        localRoot,
+        clearData,
+        clearAgentHome,
+      });
+      const removableTargets = targets.filter((target) => !target.preserve);
+      const canInvokeDown = !!ctlPath && (await pathExists(ctlPath));
+      appendLocalRuntimeLog({
+        level: "info",
+        operation: "uninstall-plan",
+        stage: "uninstall-plan",
+        message: "prepared uninstall target plan",
+        details: {
+          localRoot,
+          clearData,
+          clearAgentHome,
+          canInvokeDown,
+          removableTargets: removableTargets.map((target) => ({
+            id: target.id,
+            path: target.path,
+            purpose: target.purpose,
+          })),
+        },
+      });
+      const totalSteps = removableTargets.length + (canInvokeDown ? 1 : 0) + 1;
+      let progressStep = 0;
+      setActionProgress({
+        action: "uninstall",
+        current: 0,
+        total: totalSteps,
+        stage: "uninstall-start",
+        label: resolveUninstallProgressLabel("uninstall-start"),
+      });
+      const advanceUninstallProgress = (stage: string) => {
+        progressStep = Math.min(totalSteps, progressStep + 1);
+        setActionProgress({
+          action: "uninstall",
+          current: progressStep,
+          total: totalSteps,
+          stage,
+          label: resolveUninstallProgressLabel(stage),
+        });
+      };
+
+      clearStatusReconcileTimer();
+      clearHeartbeatTimer();
+      const bridge = getCtlBridge();
+      const downResultDetails: Record<string, unknown> = {
+        invoked: false,
+        ok: true,
+        exitCode: 0,
+        message: "ctl path unavailable; skip down and continue uninstall cleanup",
+        command: "",
+        args: [],
+        details: {},
+      };
+      let downInvokedAndSucceeded = false;
+      if (canInvokeDown) {
+        appendLocalRuntimeLog({
+          level: "info",
+          operation: "uninstall-down",
+          stage: "uninstall-down-start",
+          message: "invoking ctl down before uninstall delete steps",
+        });
+        const downResult = await bridge.runCtlCommand({
+          ctlPath,
+          command: "down",
+          mode: "local",
+        });
+        downResultDetails.invoked = true;
+        downResultDetails.ok = downResult.ok;
+        downResultDetails.exitCode = downResult.exitCode;
+        downResultDetails.message = downResult.message;
+        downResultDetails.command = downResult.command;
+        downResultDetails.args = downResult.args;
+        downResultDetails.details = downResult.details || {};
+        if (!downResult.ok) {
+          appendLocalRuntimeLog({
+            level: "warn",
+            operation: "uninstall-down",
+            stage: "uninstall-down-failed",
+            message: normalizeString(downResult.message) || "managed local runtime stop failed",
+            details: {
+              localRoot,
+              down_result: downResultDetails,
+            },
+          });
+          return {
+            ok: false,
+            stage: "uninstall-down",
+            message: normalizeString(downResult.message) || "managed local runtime stop failed",
+            details: {
+              localRoot,
+              down_result: downResultDetails,
+            },
+          };
+        }
+        appendLocalRuntimeLog({
+          level: "info",
+          operation: "uninstall-down",
+          stage: "uninstall-down-complete",
+          message: "ctl down completed before uninstall delete steps",
           details: {
             localRoot,
             down_result: downResultDetails,
           },
-        };
+        });
+        downInvokedAndSucceeded = true;
+        advanceUninstallProgress("uninstall-down");
+      } else {
+        appendLocalRuntimeLog({
+          level: "info",
+          operation: "uninstall-down",
+          stage: "uninstall-down-skipped",
+          message: "ctl down skipped because ctl path is unavailable",
+          details: {
+            localRoot,
+            down_result: downResultDetails,
+          },
+        });
       }
-      downInvokedAndSucceeded = true;
-    }
-    const deleteResult = await deleteManagedLocalRuntimePaths({
-      localRoot,
-      clearData,
-      clearAgentHome,
-    });
-    if (deleteResult.failedPaths.length > 0) {
-      return {
-        ok: false,
-        stage: "uninstall-delete",
-        message: "failed to delete one or more managed runtime paths",
-        details: {
-          localRoot,
-          clearData,
-          clearAgentHome,
-          down_result: downResultDetails,
-          removed_paths: deleteResult.removedPaths,
-          failed_paths: deleteResult.failedPaths,
-          preserved_paths: deleteResult.preservedPaths,
-          failed_path_errors: deleteResult.failedPathErrors,
-        },
-      };
-    }
-    const removeProfileResult = await removeManagedProfileIfPresent();
-    if (!removeProfileResult.ok) {
-      return {
-        ok: false,
-        stage: "uninstall-configure-profile",
-        message: removeProfileResult.message || "failed to remove managed profile after uninstall",
-        details: {
-          localRoot,
-          clearData,
-          clearAgentHome,
-          down_result: downResultDetails,
-          removed_paths: deleteResult.removedPaths,
-          failed_paths: deleteResult.failedPaths,
-          preserved_paths: deleteResult.preservedPaths,
-          failed_path_errors: deleteResult.failedPathErrors,
-        },
-      };
-    }
-    if (downInvokedAndSucceeded) {
-      emitLocalRuntimeToast("runtime-down");
-    }
-    return {
-      ok: true,
-      stage: "uninstall-complete",
-      message: "managed local runtime uninstalled and profile removed",
-      details: {
+      const deleteResult = await deleteManagedLocalRuntimePaths({
         localRoot,
         clearData,
         clearAgentHome,
-        down_result: downResultDetails,
-        removed_paths: deleteResult.removedPaths,
-        failed_paths: deleteResult.failedPaths,
-        preserved_paths: deleteResult.preservedPaths,
-      },
-    };
+        onTargetProcessed: (target) => {
+          advanceUninstallProgress(`uninstall-delete-${target.id}`);
+          appendLocalRuntimeLog({
+            level: target.ok ? "info" : "warn",
+            operation: "uninstall-delete-target",
+            stage: `uninstall-delete-${target.id}`,
+            message: target.ok
+              ? `deleted uninstall target: ${target.id}`
+              : `failed to delete uninstall target: ${target.id}`,
+            details: {
+              targetId: target.id,
+              targetPath: target.path,
+              targetPurpose: target.purpose,
+              ok: target.ok,
+              error: target.error,
+            },
+          });
+        },
+      });
+      if (deleteResult.failedPaths.length > 0) {
+        appendLocalRuntimeLog({
+          level: "warn",
+          operation: "uninstall-delete",
+          stage: "uninstall-delete-failed",
+          message: "failed to delete one or more managed runtime paths",
+          details: {
+            localRoot,
+            clearData,
+            clearAgentHome,
+            down_result: downResultDetails,
+            removed_paths: deleteResult.removedPaths,
+            failed_paths: deleteResult.failedPaths,
+            preserved_paths: deleteResult.preservedPaths,
+            failed_path_errors: deleteResult.failedPathErrors,
+          },
+        });
+        return {
+          ok: false,
+          stage: "uninstall-delete",
+          message: "failed to delete one or more managed runtime paths",
+          details: {
+            localRoot,
+            clearData,
+            clearAgentHome,
+            down_result: downResultDetails,
+            removed_paths: deleteResult.removedPaths,
+            failed_paths: deleteResult.failedPaths,
+            preserved_paths: deleteResult.preservedPaths,
+            failed_path_errors: deleteResult.failedPathErrors,
+          },
+        };
+      }
+      const removeProfileResult = await removeManagedProfileIfPresent();
+      if (!removeProfileResult.ok) {
+        appendLocalRuntimeLog({
+          level: "warn",
+          operation: "uninstall-profile",
+          stage: "uninstall-configure-profile-failed",
+          message:
+            removeProfileResult.message ||
+            "failed to remove managed profile after uninstall",
+          details: {
+            localRoot,
+            clearData,
+            clearAgentHome,
+            down_result: downResultDetails,
+            removed_paths: deleteResult.removedPaths,
+            failed_paths: deleteResult.failedPaths,
+            preserved_paths: deleteResult.preservedPaths,
+            failed_path_errors: deleteResult.failedPathErrors,
+          },
+        });
+        return {
+          ok: false,
+          stage: "uninstall-configure-profile",
+          message: removeProfileResult.message || "failed to remove managed profile after uninstall",
+          details: {
+            localRoot,
+            clearData,
+            clearAgentHome,
+            down_result: downResultDetails,
+            removed_paths: deleteResult.removedPaths,
+            failed_paths: deleteResult.failedPaths,
+            preserved_paths: deleteResult.preservedPaths,
+            failed_path_errors: deleteResult.failedPathErrors,
+          },
+        };
+      }
+      advanceUninstallProgress("uninstall-profile");
+      appendLocalRuntimeLog({
+        level: "info",
+        operation: "uninstall-profile",
+        stage: "uninstall-profile-complete",
+        message: "managed profile removed after uninstall",
+      });
+      if (downInvokedAndSucceeded) {
+        emitLocalRuntimeToast("runtime-down");
+      }
+      appendLocalRuntimeLog({
+        level: "info",
+        operation: "uninstall-complete",
+        stage: "uninstall-complete",
+        message: "managed local runtime uninstalled and profile removed",
+        details: {
+          localRoot,
+          clearData,
+          clearAgentHome,
+          down_result: downResultDetails,
+          removed_paths: deleteResult.removedPaths,
+          failed_paths: deleteResult.failedPaths,
+          preserved_paths: deleteResult.preservedPaths,
+        },
+      });
+      return {
+        ok: true,
+        stage: "uninstall-complete",
+        message: "managed local runtime uninstalled and profile removed",
+        details: {
+          localRoot,
+          clearData,
+          clearAgentHome,
+          down_result: downResultDetails,
+          removed_paths: deleteResult.removedPaths,
+          failed_paths: deleteResult.failedPaths,
+          preserved_paths: deleteResult.preservedPaths,
+        },
+      };
+    } finally {
+      clearActionProgress();
+    }
   });
 }
 

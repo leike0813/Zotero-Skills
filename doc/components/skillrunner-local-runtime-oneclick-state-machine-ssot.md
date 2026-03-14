@@ -210,6 +210,53 @@ sequenceDiagram
     end
 ```
 
+### One-Click Deploy Confirm (Plan Then Execute)
+
+```mermaid
+sequenceDiagram
+    participant UI as Preferences UI
+    participant SM as Runtime Manager
+    participant User as User
+
+    UI->>SM: plan one-click
+    alt plannedAction=start
+      UI->>SM: execute one-click (forcedBranch=start)
+      SM-->>UI: start result
+    else plannedAction=deploy
+      UI->>User: deploy confirm (install layout)
+      alt confirm
+        UI->>SM: execute one-click (forcedBranch=deploy)
+        SM-->>UI: deploy result
+      else cancel
+        UI-->>User: cancel without execution
+      end
+    end
+```
+
+### Uninstall Two-Step Confirm and Progress
+
+```mermaid
+sequenceDiagram
+    participant UI as Preferences UI
+    participant User as User
+    participant SM as Runtime Manager
+
+    UI->>User: step1 options (clear data / clear agent-home)
+    alt cancel
+      UI-->>User: stop uninstall
+    else continue
+      UI->>SM: preview uninstall(options)
+      SM-->>UI: removable/preserved targets + totalSteps
+      UI->>User: step2 final confirm (dynamic directory list)
+      alt confirm
+        UI->>SM: uninstall execute
+        SM-->>UI: actionProgress updates
+      else cancel
+        UI-->>User: stop uninstall
+      end
+    end
+```
+
 ## Invariants
 
 1. Action Mutex
@@ -219,8 +266,9 @@ sequenceDiagram
 - The contract must use `lease acquire` only; `require` is invalid terminology.
 
 3. Startup Policy
-- Auto-start defaults to disabled on startup.
-- Startup runs preflight only when runtime info exists.
+- Startup must hydrate auto-start switch from persisted `autoStartPaused`.
+- Missing persisted flag defaults to paused (auto-start disabled).
+- Startup preflight runs only when hydrated auto-start is enabled.
 - No runtime info on startup means no runtime action.
 
 4. Auto-Start Toggle Policy
@@ -229,6 +277,7 @@ sequenceDiagram
 - Without runtime info, auto-start stays disabled.
 - Applies to both manual and automatic paths.
 - Manual `stop` always disables auto-start immediately.
+- All auto-start toggle mutations must be persisted to runtime state.
 
 5. Monitoring Lifecycle
 - Monitoring starts only after `up_ok`.
@@ -253,6 +302,11 @@ sequenceDiagram
 
 9. Script Existence Rule
 - With runtime info present, missing `skill-runnerctl` must raise visible error.
+
+10. Interactive Confirm and Progress Rule
+- one-click SHALL only show deploy confirmation when planned action is deploy.
+- uninstall SHALL execute only after options + final confirm.
+- runtime snapshot SHALL expose `details.actionProgress` during deploy/uninstall in-flight.
 
 ## Guard Interface Draft
 

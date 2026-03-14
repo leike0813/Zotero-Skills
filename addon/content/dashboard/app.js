@@ -284,6 +284,14 @@
         rows: snapshot.runningRows || [],
         labels,
         emptyText: labels.noRunning,
+        onRowClick: (row) => {
+          sendAction("open-running-task", {
+            taskId: row.id,
+            backendId: row.backendId || "",
+            backendType: row.backendType || "",
+            requestId: row.requestId || "",
+          });
+        },
         columns: [
           labels.colTask,
           labels.colWorkflow,
@@ -463,13 +471,378 @@
     );
   }
 
+  function cloneRecord(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+    return JSON.parse(JSON.stringify(raw));
+  }
+
+  function isPositiveIntegerField(entry) {
+    if (!entry || typeof entry !== "object") {
+      return false;
+    }
+    const key = String(entry.key || "").trim().toLowerCase();
+    if (!key) {
+      return false;
+    }
+    if (key === "hard_timeout_seconds") {
+      return true;
+    }
+    return key.includes("timeout");
+  }
+
+  function validateNumberFieldValue(args) {
+    const raw = String(args.rawValue == null ? "" : args.rawValue).trim();
+    if (!raw) {
+      return { ok: true, remove: true };
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      return {
+        ok: false,
+        message:
+          args.labels.workflowSettingsNumberInvalid ||
+          "Please enter a valid number.",
+      };
+    }
+    if (isPositiveIntegerField(args.entry)) {
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        return {
+          ok: false,
+          message:
+            args.labels.workflowSettingsPositiveIntegerRequired ||
+            "Please enter a positive integer.",
+        };
+      }
+    }
+    return { ok: true, value: parsed };
+  }
+
+  function renderWorkflowField(args) {
+    const row = el("div", "workflow-settings-field");
+    const label = el(
+      "label",
+      "workflow-settings-field-label",
+      args.entry.title || args.entry.key,
+    );
+    row.appendChild(label);
+    if (args.entry.description) {
+      row.appendChild(
+        el("div", "workflow-settings-field-desc", args.entry.description),
+      );
+    }
+    const currentValue = Object.prototype.hasOwnProperty.call(
+      args.values,
+      args.entry.key,
+    )
+      ? args.values[args.entry.key]
+      : args.entry.defaultValue;
+    let control;
+    const enumValues = Array.isArray(args.entry.enumValues)
+      ? args.entry.enumValues
+      : [];
+    if (args.entry.type === "boolean") {
+      const line = el("label", "workflow-settings-field-checkbox");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = currentValue === true;
+      checkbox.addEventListener("change", function () {
+        args.values[args.entry.key] = checkbox.checked;
+        args.onChange({
+          changedKey: args.entry.key,
+        });
+      });
+      line.appendChild(checkbox);
+      line.appendChild(
+        el("span", "", args.entry.title || args.entry.key),
+      );
+      row.appendChild(line);
+      return row;
+    }
+    if (enumValues.length > 0 && args.entry.allowCustom !== true) {
+      const options = enumValues.map(function(val) { return { value: String(val), label: String(val) }; });
+      const currentValueStr = String(currentValue == null ? enumValues[0] || "" : currentValue);
+      const customSelect = window.createCustomSelect(options, currentValueStr, function (newValue) {
+        args.values[args.entry.key] = newValue;
+        args.onChange({
+          changedKey: args.entry.key,
+        });
+      });
+      control = customSelect.element;
+      control.classList.add("workflow-settings-field-control");
+    } else {
+      control = document.createElement("input");
+      control.type = "text";
+      if (args.entry.type === "number") {
+        control.setAttribute(
+          "inputmode",
+          isPositiveIntegerField(args.entry) ? "numeric" : "decimal",
+        );
+      }
+      control.value = String(currentValue == null ? "" : currentValue);
+      control.className = "workflow-settings-field-control";
+      if (args.entry.type === "number") {
+        control.classList.add("numeric");
+      }
+    }
+    const errorNode = el("div", "workflow-settings-field-error");
+    const setFieldError = function (message) {
+      if (message) {
+        control.classList.add("invalid");
+        errorNode.textContent = message;
+        if (!errorNode.parentNode) {
+          row.appendChild(errorNode);
+        }
+      } else {
+        control.classList.remove("invalid");
+        if (errorNode.parentNode) {
+          errorNode.parentNode.removeChild(errorNode);
+        }
+      }
+    };
+    control.addEventListener("change", function () {
+      if (args.entry.type === "number") {
+        const validation = validateNumberFieldValue({
+          entry: args.entry,
+          rawValue: control.value,
+          labels: args.labels || {},
+        });
+        if (!validation.ok) {
+          setFieldError(validation.message);
+          return;
+        }
+        setFieldError("");
+        if (validation.remove) {
+          delete args.values[args.entry.key];
+        } else {
+          args.values[args.entry.key] = validation.value;
+        }
+      } else {
+        setFieldError("");
+        args.values[args.entry.key] = control.value;
+      }
+      args.onChange({
+        changedKey: args.entry.key,
+      });
+    });
+    row.appendChild(control);
+    return row;
+  }
+
+  function renderWorkflowSettingsSection(args) {
+    const card = el("section", "workflow-settings-card");
+    card.appendChild(el("h3", "workflow-settings-card-title", args.title));
+    if (!Array.isArray(args.entries) || args.entries.length === 0) {
+      card.appendChild(
+        el("div", "workflow-settings-empty", args.emptyText),
+      );
+      return card;
+    }
+    args.entries.forEach(function (entry) {
+      card.appendChild(
+        renderWorkflowField({
+          entry,
+          values: args.values,
+          onChange: function (changeMeta) {
+            args.onChange({
+              changedSection: args.changedSection,
+              changedKey:
+                changeMeta && typeof changeMeta.changedKey === "string"
+                  ? changeMeta.changedKey
+                  : "",
+            });
+          },
+          labels: args.labels,
+        }),
+      );
+    });
+    return card;
+  }
+
+  function renderWorkflowOptions(main, snapshot) {
+    const labels = snapshot.labels || {};
+    const view = snapshot.workflowOptionsView || {};
+    main.appendChild(
+      el(
+        "h2",
+        "page-title",
+        labels.tabWorkflowOptions || "Workflow Options",
+      ),
+    );
+    const workflows = Array.isArray(view.workflows) ? view.workflows : [];
+    if (workflows.length === 0) {
+      main.appendChild(
+        el(
+          "div",
+          "empty",
+          labels.workflowSettingsNoConfigurable ||
+            "No configurable workflows.",
+        ),
+      );
+      return;
+    }
+    const tabs = el("div", "workflow-subtabs");
+    workflows.forEach(function (workflow) {
+      const btn = el(
+        "button",
+        "workflow-subtab-btn",
+        workflow.workflowLabel || workflow.workflowId,
+      );
+      if (workflow.workflowId === view.selectedWorkflowId) {
+        btn.classList.add("active");
+      }
+      btn.addEventListener("click", function () {
+        sendAction("select-workflow-settings-workflow", {
+          workflowId: workflow.workflowId,
+        });
+      });
+      tabs.appendChild(btn);
+    });
+    main.appendChild(tabs);
+
+    const descriptor = view.selectedDescriptor;
+    if (!descriptor) {
+      return;
+    }
+    const shell = el("div", "workflow-settings-shell");
+    const banner = el("div", "workflow-settings-banner");
+    const meta = el("div", "workflow-settings-meta");
+    meta.appendChild(
+      el(
+        "div",
+        "",
+        `${labels.workflowSettingsWorkflowLabel || "Workflow"}: ${descriptor.workflowLabel}`,
+      ),
+    );
+    meta.appendChild(
+      el(
+        "div",
+        "",
+        `${labels.workflowSettingsProviderLabel || "Provider"}: ${descriptor.providerId}`,
+      ),
+    );
+
+    const draft = {
+      backendId: String(descriptor.selectedProfile || "").trim(),
+      workflowParams: cloneRecord(descriptor.workflowParams),
+      providerOptions: cloneRecord(descriptor.providerOptions),
+    };
+    const emitDraft = function (changeMeta) {
+      const meta =
+        changeMeta && typeof changeMeta === "object" ? changeMeta : {};
+      sendAction("workflow-settings-draft", {
+        workflowId: view.selectedWorkflowId,
+        executionOptions: draft,
+        changedSection:
+          typeof meta.changedSection === "string" ? meta.changedSection : "",
+        changedKey: typeof meta.changedKey === "string" ? meta.changedKey : "",
+      });
+    };
+
+    if (descriptor.requiresBackendProfile) {
+      const profileWrap = el("div", "workflow-settings-banner-profile");
+      profileWrap.appendChild(
+        el(
+          "div",
+          "workflow-settings-banner-profile-label",
+          labels.workflowSettingsProfileLabel || "Profile",
+        ),
+      );
+      if (descriptor.profileEditable) {
+        const options = (descriptor.profiles || []).map(function(entry) { return { value: entry.id, label: entry.label }; });
+        const customSelect = window.createCustomSelect(options, String(draft.backendId || ""), function(newValue) {
+          draft.backendId = String(newValue || "").trim();
+          emitDraft({
+            changedSection: "backend",
+            changedKey: "backendId",
+          });
+        });
+        const selectWrap = customSelect.element;
+        selectWrap.classList.add("workflow-settings-banner-profile-select");
+        profileWrap.appendChild(selectWrap);
+      } else if (descriptor.profileMissing) {
+        profileWrap.appendChild(
+          el(
+            "div",
+            "workflow-settings-error",
+            labels.workflowSettingsBlockedNoProfile ||
+              "No backend profile available. Please configure one first.",
+          ),
+        );
+      } else {
+        const fixed = (descriptor.profiles || []).find(function (entry) {
+          return String(entry.id || "").trim() === String(descriptor.selectedProfile || "").trim();
+        });
+        profileWrap.appendChild(
+          el(
+            "div",
+            "workflow-settings-empty",
+            fixed ? fixed.label : "-",
+          ),
+        );
+      }
+      banner.appendChild(profileWrap);
+    }
+    banner.appendChild(meta);
+    shell.appendChild(banner);
+
+    const sectionsGrid = el("div", "workflow-settings-sections-grid");
+    sectionsGrid.appendChild(
+      renderWorkflowSettingsSection({
+        title:
+          labels.workflowSettingsWorkflowParamsTitle ||
+          "Workflow Parameters",
+        emptyText:
+          labels.workflowSettingsNoWorkflowParams ||
+          "This workflow has no configurable parameters.",
+        entries: descriptor.workflowSchemaEntries || [],
+        values: draft.workflowParams,
+        onChange: emitDraft,
+        changedSection: "workflowParams",
+        labels: labels,
+      }),
+    );
+    sectionsGrid.appendChild(
+      renderWorkflowSettingsSection({
+        title:
+          labels.workflowSettingsProviderOptionsTitle ||
+          "Provider Runtime Options",
+        emptyText:
+          labels.workflowSettingsNoProviderOptions ||
+          "This provider has no configurable runtime options.",
+        entries: descriptor.providerSchemaEntries || [],
+        values: draft.providerOptions,
+        onChange: emitDraft,
+        changedSection: "providerOptions",
+        labels: labels,
+      }),
+    );
+    shell.appendChild(sectionsGrid);
+    main.appendChild(shell);
+  }
+
   function render() {
     const app = document.getElementById("app");
     if (!app) {
       return;
     }
-    clearNode(app);
     const snapshot = state.snapshot;
+    const shouldRestoreWorkflowOptionsScroll = Boolean(
+      snapshot && snapshot.selectedTabKey === "workflow-options",
+    );
+    let previousMainScrollTop = 0;
+    if (shouldRestoreWorkflowOptionsScroll) {
+      const existingMain = app.querySelector(".main");
+      if (
+        existingMain &&
+        typeof existingMain.scrollTop === "number" &&
+        Number.isFinite(existingMain.scrollTop)
+      ) {
+        previousMainScrollTop = existingMain.scrollTop;
+      }
+    }
+    clearNode(app);
     if (!snapshot) {
       const loading = el("div", "main");
       loading.appendChild(el("div", "empty", "Loading dashboard..."));
@@ -499,13 +872,32 @@
         });
         sidebar.appendChild(btn);
       }
+      const workflowOptionsTab = tabs.find(
+        (tab) => tab.key === "workflow-options",
+      );
+      if (workflowOptionsTab) {
+        const btn = el(
+          "button",
+          "tab-btn",
+          workflowOptionsTab.label || workflowOptionsTab.key,
+        );
+        if (workflowOptionsTab.key === snapshot.selectedTabKey) {
+          btn.classList.add("active");
+        }
+        btn.addEventListener("click", function () {
+          sendAction("select-tab", {
+            tabKey: workflowOptionsTab.key,
+          });
+        });
+        sidebar.appendChild(btn);
+      }
       const divider = el("div", "tab-divider");
       sidebar.appendChild(divider);
       sidebar.appendChild(
         el("h3", "sidebar-title", snapshot.labels.tabBackends || "Backends"),
       );
       tabs
-        .filter((tab) => tab.key !== "home")
+        .filter((tab) => tab.key !== "home" && tab.key !== "workflow-options")
         .forEach(function (tab) {
         const btn = el("button", "tab-btn", tab.label || tab.key);
         if (tab.key === snapshot.selectedTabKey) {
@@ -529,6 +921,8 @@
     if (snapshot.selectedTabKey === "home") {
       main.appendChild(el("h2", "page-title", snapshot.title));
       renderSummary(main, snapshot);
+    } else if (snapshot.selectedTabKey === "workflow-options") {
+      renderWorkflowOptions(main, snapshot);
     } else if (snapshot.backendView && snapshot.backendView.backendType === "skillrunner") {
       main.classList.add("skillrunner-fill");
       renderSkillRunnerBackend(main, snapshot);
@@ -536,6 +930,9 @@
       renderGenericBackend(main, snapshot);
     }
     app.appendChild(main);
+    if (shouldRestoreWorkflowOptionsScroll && previousMainScrollTop > 0) {
+      main.scrollTop = previousMainScrollTop;
+    }
   }
 
   window.addEventListener("message", function (event) {

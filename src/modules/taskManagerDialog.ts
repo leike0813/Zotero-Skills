@@ -17,6 +17,7 @@ import {
   normalizeDashboardBackends,
   normalizeDashboardTabKey,
 } from "./taskDashboardSnapshot";
+import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import {
   listActiveWorkflowTasks,
   subscribeWorkflowTasks,
@@ -29,6 +30,12 @@ import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientF
 import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
 import { openLogViewerDialogWithArgs } from "./logViewerDialog";
 import {
+  buildWorkflowSettingsUiDescriptor,
+  updateWorkflowSettings,
+  type WorkflowSettingsUiDescriptor,
+} from "./workflowSettings";
+import type { WorkflowExecutionOptions } from "./workflowSettingsDomain";
+import {
   isTerminal,
   isWaiting,
   normalizeStatus,
@@ -40,12 +47,19 @@ type DashboardState = {
   selectedTabKey: string;
   selectedLogTaskByBackendId: Map<string, string>;
   selectedLogEntryByBackendId: Map<string, string>;
+  selectedWorkflowOptionsWorkflowId: string;
+  workflowSettingsDraftById: Map<string, WorkflowExecutionOptions>;
+  workflowSettingsSaveStateById: Map<string, "idle" | "saving" | "saved" | "error">;
+  workflowSettingsSaveErrorById: Map<string, string>;
+  workflowSettingsSaveTimerById: Map<string, number>;
 };
 
 type DashboardRow = {
   id: string;
   workflowId: string;
   workflowLabel: string;
+  backendId: string;
+  backendType: string;
   backendLabel: string;
   taskName: string;
   state: string;
@@ -96,6 +110,17 @@ type DashboardSnapshot = {
   };
   runningRows: DashboardRow[];
   backendLoadError?: string;
+  workflowOptionsView?: {
+    workflows: Array<{
+      workflowId: string;
+      workflowLabel: string;
+      providerId: string;
+    }>;
+    selectedWorkflowId: string;
+    selectedDescriptor?: WorkflowSettingsUiDescriptor;
+    saveState: "idle" | "saving" | "saved" | "error";
+    saveError?: string;
+  };
   backendView?: {
     backendId: string;
     backendType: string;
@@ -127,6 +152,9 @@ function resolveDashboardPageUrl() {
 }
 
 let taskManagerDialog: DialogHelper | undefined;
+let externalSelectTab:
+  | ((args: { tabKey?: string; workflowId?: string }) => void)
+  | undefined;
 
 function localize(
   key: string,
@@ -160,6 +188,38 @@ function compactError(error: unknown) {
     return "unknown error";
   }
   return text.length > 220 ? `${text.slice(0, 220)}...` : text;
+}
+
+function normalizeDraftChangedSection(raw: unknown) {
+  const section = String(raw || "").trim();
+  if (
+    section === "backend" ||
+    section === "workflowParams" ||
+    section === "providerOptions"
+  ) {
+    return section;
+  }
+  return "";
+}
+
+function normalizeDraftChangedKey(raw: unknown) {
+  return String(raw || "").trim();
+}
+
+function isWorkflowSettingsStructuralRefreshChange(args: {
+  changedSection: string;
+  changedKey: string;
+}) {
+  if (args.changedSection === "backend" && args.changedKey === "backendId") {
+    return true;
+  }
+  if (
+    args.changedSection === "providerOptions" &&
+    (args.changedKey === "engine" || args.changedKey === "model_provider")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isSkillRunnerBackend(backend: BackendInstance) {
@@ -235,6 +295,8 @@ function mapTaskRowWithMeta(
     id: task.id,
     workflowId: task.workflowId,
     workflowLabel: task.workflowLabel,
+    backendId,
+    backendType,
     backendLabel,
     taskName: task.taskName,
     state: normalizedState,
@@ -343,7 +405,88 @@ function resolveDashboardFrameWindow(frame: Element | null) {
   return candidate.contentWindow || null;
 }
 
-function buildDashboardSnapshot(args: {
+function clearWorkflowSettingsSaveTimer(state: DashboardState, workflowId: string) {
+  if (!taskManagerDialog?.window) {
+    return;
+  }
+  const keys = Array.from(state.workflowSettingsSaveTimerById.keys()).filter(
+    (key) => key === workflowId || key.startsWith(`${workflowId}:`),
+  );
+  for (const key of keys) {
+    const timer = state.workflowSettingsSaveTimerById.get(key);
+    if (timer) {
+      taskManagerDialog.window.clearTimeout(timer);
+    }
+    state.workflowSettingsSaveTimerById.delete(key);
+  }
+}
+
+async function buildWorkflowOptionsView(args: {
+  state: DashboardState;
+  backends: BackendInstance[];
+}) {
+  const loaded = getLoadedWorkflowEntries();
+  if (loaded.length === 0) {
+    return {
+      workflows: [],
+      selectedWorkflowId: "",
+      saveState: "idle" as const,
+    };
+  }
+  const baseDescriptors = await Promise.all(
+    loaded.map(async (workflow) => ({
+      workflow,
+      descriptor: await buildWorkflowSettingsUiDescriptor({
+        workflow,
+        candidateBackends: args.backends,
+      }),
+    })),
+  );
+  const configurable = baseDescriptors.filter(
+    (entry) => entry.descriptor.hasConfigurableSettings,
+  );
+  if (configurable.length === 0) {
+    return {
+      workflows: [],
+      selectedWorkflowId: "",
+      saveState: "idle" as const,
+    };
+  }
+  const selectedWorkflowId = configurable.some(
+    (entry) => entry.workflow.manifest.id === args.state.selectedWorkflowOptionsWorkflowId,
+  )
+    ? args.state.selectedWorkflowOptionsWorkflowId
+    : configurable[0].workflow.manifest.id;
+  args.state.selectedWorkflowOptionsWorkflowId = selectedWorkflowId;
+  const selectedWorkflow = configurable.find(
+    (entry) => entry.workflow.manifest.id === selectedWorkflowId,
+  )?.workflow;
+  const selectedDescriptor = selectedWorkflow
+    ? await buildWorkflowSettingsUiDescriptor({
+        workflow: selectedWorkflow,
+        candidateBackends: args.backends,
+        draft: args.state.workflowSettingsDraftById.get(selectedWorkflowId),
+      })
+    : undefined;
+  const saveState =
+    args.state.workflowSettingsSaveStateById.get(selectedWorkflowId) || "idle";
+  const saveError = args.state.workflowSettingsSaveErrorById.get(
+    selectedWorkflowId,
+  );
+  return {
+    workflows: configurable.map((entry) => ({
+      workflowId: entry.workflow.manifest.id,
+      workflowLabel: entry.workflow.manifest.label,
+      providerId: entry.descriptor.providerId,
+    })),
+    selectedWorkflowId,
+    selectedDescriptor,
+    saveState,
+    saveError: saveError || undefined,
+  };
+}
+
+async function buildDashboardSnapshot(args: {
   state: DashboardState;
   backends: BackendInstance[];
   history: TaskDashboardHistoryRecord[];
@@ -383,6 +526,10 @@ function buildDashboardSnapshot(args: {
   const labels = {
     home: localize("task-dashboard-tab-home", "Dashboard Home"),
     tabHome: localize("task-dashboard-tab-home", "Dashboard Home"),
+    tabWorkflowOptions: localize(
+      "task-dashboard-tab-workflow-options",
+      "Workflow Options",
+    ),
     tabBackends: localize("task-dashboard-tab-backends", "Backends"),
     runningTitle: localize("task-dashboard-running-title", "Active Tasks"),
     summaryTotal: localize("task-dashboard-summary-total", "Total"),
@@ -425,12 +572,72 @@ function buildDashboardSnapshot(args: {
       "task-dashboard-generic-logs-open-diagnostics",
       "Diagnostic Export",
     ),
+    workflowSettingsNoConfigurable: localize(
+      "task-dashboard-workflow-settings-empty",
+      "No configurable workflows.",
+    ),
+    workflowSettingsWorkflowLabel: localize(
+      "workflow-settings-workflow-label",
+      "Workflow",
+    ),
+    workflowSettingsProviderLabel: localize(
+      "workflow-settings-provider-label",
+      "Provider",
+    ),
+    workflowSettingsProfileLabel: localize(
+      "workflow-settings-profile-label",
+      "Profile",
+    ),
+    workflowSettingsWorkflowParamsTitle: localize(
+      "workflow-settings-persisted-workflow-params-title",
+      "Workflow Parameters",
+    ),
+    workflowSettingsProviderOptionsTitle: localize(
+      "workflow-settings-persisted-provider-options-title",
+      "Provider Runtime Options",
+    ),
+    workflowSettingsNoWorkflowParams: localize(
+      "workflow-settings-no-workflow-params",
+      "This workflow has no configurable parameters.",
+    ),
+    workflowSettingsNoProviderOptions: localize(
+      "workflow-settings-no-provider-options",
+      "This provider has no configurable runtime options.",
+    ),
+    workflowSettingsBlockedNoProfile: localize(
+      "workflow-settings-submit-blocked-no-profile",
+      "No backend profile available. Please configure one first.",
+    ),
+    workflowSettingsNumberInvalid: localize(
+      "workflow-settings-number-invalid",
+      "Please enter a valid number.",
+    ),
+    workflowSettingsPositiveIntegerRequired: localize(
+      "workflow-settings-positive-integer-required",
+      "Please enter a positive integer.",
+    ),
+    workflowSettingsSaving: localize(
+      "workflow-settings-dashboard-saving",
+      "Saving...",
+    ),
+    workflowSettingsSaved: localize(
+      "workflow-settings-dashboard-saved",
+      "Saved",
+    ),
+    workflowSettingsSaveError: localize(
+      "workflow-settings-dashboard-save-error",
+      "Save failed",
+    ),
   };
 
   const tabs = [
     {
       key: "home",
       label: labels.home,
+    },
+    {
+      key: "workflow-options",
+      label: labels.tabWorkflowOptions,
     },
     ...args.backends.map((backend) => ({
       key: toBackendTabKey(backend.id),
@@ -459,6 +666,14 @@ function buildDashboardSnapshot(args: {
     runningRows,
     backendLoadError: args.state.backendLoadError,
   };
+
+  if (selectedTabKey === "workflow-options") {
+    snapshot.workflowOptionsView = await buildWorkflowOptionsView({
+      state: args.state,
+      backends: args.backends,
+    });
+    return snapshot;
+  }
 
   if (!selectedBackend) {
     return snapshot;
@@ -555,17 +770,32 @@ function normalizeFilteredActive() {
   );
 }
 
-export async function openTaskManagerDialog() {
+export async function openTaskManagerDialog(args?: {
+  initialTabKey?: string;
+  initialWorkflowId?: string;
+}) {
   if (isWindowAlive(taskManagerDialog?.window)) {
+    if (externalSelectTab) {
+      externalSelectTab({
+        tabKey: args?.initialTabKey,
+        workflowId: args?.initialWorkflowId,
+      });
+    }
     taskManagerDialog?.window?.focus();
     return;
   }
 
   const state: DashboardState = {
     backends: [],
-    selectedTabKey: "home",
+    selectedTabKey: String(args?.initialTabKey || "home").trim() || "home",
     selectedLogTaskByBackendId: new Map(),
     selectedLogEntryByBackendId: new Map(),
+    selectedWorkflowOptionsWorkflowId:
+      String(args?.initialWorkflowId || "").trim(),
+    workflowSettingsDraftById: new Map(),
+    workflowSettingsSaveStateById: new Map(),
+    workflowSettingsSaveErrorById: new Map(),
+    workflowSettingsSaveTimerById: new Map(),
   };
 
   cleanupTaskDashboardHistory();
@@ -575,7 +805,9 @@ export async function openTaskManagerDialog() {
   let frameWindow: Window | null = null;
   let removeMessageListener: (() => void) | undefined;
 
-  const pushSnapshot = (messageType: "dashboard:init" | "dashboard:snapshot") => {
+  const pushSnapshot = async (
+    messageType: "dashboard:init" | "dashboard:snapshot",
+  ) => {
     if (!frameWindow) {
       return;
     }
@@ -589,7 +821,7 @@ export async function openTaskManagerDialog() {
     });
     state.backends = backends;
 
-    const snapshot = buildDashboardSnapshot({
+    const snapshot = await buildDashboardSnapshot({
       state,
       backends,
       history,
@@ -605,8 +837,36 @@ export async function openTaskManagerDialog() {
     );
   };
 
-  const refresh = () => {
-    pushSnapshot("dashboard:snapshot");
+  let refreshChain: Promise<void> = Promise.resolve();
+  type RefreshReason =
+    | "init"
+    | "user-action"
+    | "periodic"
+    | "task-update"
+    | "backend-load"
+    | "save-state";
+  const shouldSkipRefresh = (reason: RefreshReason) => {
+    if (state.selectedTabKey !== "workflow-options") {
+      return false;
+    }
+    return reason === "periodic" || reason === "task-update";
+  };
+  const enqueueRefresh = (
+    messageType: "dashboard:init" | "dashboard:snapshot",
+  ) => {
+    refreshChain = refreshChain
+      .catch(() => undefined)
+      .then(async () => {
+        await pushSnapshot(messageType);
+      });
+    return refreshChain;
+  };
+
+  const refresh = (reason: RefreshReason = "user-action") => {
+    if (shouldSkipRefresh(reason)) {
+      return;
+    }
+    void enqueueRefresh("dashboard:snapshot");
   };
 
   const handleAction = async (envelope: DashboardActionEnvelope) => {
@@ -616,12 +876,117 @@ export async function openTaskManagerDialog() {
       return;
     }
     if (action === "ready") {
-      pushSnapshot("dashboard:init");
+      void enqueueRefresh("dashboard:init");
       return;
     }
     if (action === "select-tab") {
       state.selectedTabKey = String(payload.tabKey || "home").trim() || "home";
-      refresh();
+      refresh("user-action");
+      return;
+    }
+    if (action === "select-workflow-settings-workflow") {
+      state.selectedWorkflowOptionsWorkflowId = String(
+        payload.workflowId || "",
+      ).trim();
+      refresh("user-action");
+      return;
+    }
+    if (action === "workflow-settings-draft") {
+      const workflowId = String(payload.workflowId || "").trim();
+      const executionOptions =
+        (payload.executionOptions as WorkflowExecutionOptions) || {};
+      const changedSection = normalizeDraftChangedSection(payload.changedSection);
+      const changedKey = normalizeDraftChangedKey(payload.changedKey);
+      if (!workflowId) {
+        return;
+      }
+      state.workflowSettingsDraftById.set(workflowId, {
+        backendId:
+          typeof executionOptions.backendId === "string"
+            ? executionOptions.backendId
+            : undefined,
+        workflowParams: executionOptions.workflowParams || {},
+        providerOptions: executionOptions.providerOptions || {},
+      });
+      clearWorkflowSettingsSaveTimer(state, workflowId);
+      state.workflowSettingsSaveStateById.set(workflowId, "saving");
+      state.workflowSettingsSaveErrorById.delete(workflowId);
+      if (
+        isWorkflowSettingsStructuralRefreshChange({
+          changedSection,
+          changedKey,
+        })
+      ) {
+        refresh("user-action");
+      }
+      const timer = taskManagerDialog?.window?.setTimeout(() => {
+        try {
+          const draft = state.workflowSettingsDraftById.get(workflowId) || {};
+          updateWorkflowSettings(workflowId, draft);
+          state.workflowSettingsSaveStateById.set(workflowId, "saved");
+          state.workflowSettingsSaveErrorById.delete(workflowId);
+          const idleTimer = taskManagerDialog?.window?.setTimeout(() => {
+            state.workflowSettingsSaveStateById.set(workflowId, "idle");
+          }, 900);
+          if (idleTimer) {
+            state.workflowSettingsSaveTimerById.set(
+              `${workflowId}:idle`,
+              idleTimer,
+            );
+          }
+        } catch (error) {
+          state.workflowSettingsSaveStateById.set(workflowId, "error");
+          state.workflowSettingsSaveErrorById.set(
+            workflowId,
+            compactError(error),
+          );
+        } finally {
+          state.workflowSettingsSaveTimerById.delete(workflowId);
+        }
+      }, 420);
+      if (timer) {
+        state.workflowSettingsSaveTimerById.set(workflowId, timer);
+      }
+      return;
+    }
+    if (action === "open-running-task") {
+      const taskId = String(payload.taskId || "").trim();
+      const backendId = String(payload.backendId || "").trim();
+      const requestId = String(payload.requestId || "").trim();
+      const payloadBackendType = String(payload.backendType || "").trim();
+      if (!taskId || !backendId) {
+        return;
+      }
+      const backend = state.backends.find((entry) => entry.id === backendId);
+      const backendType = String(backend?.type || payloadBackendType).trim();
+      if (backendType === "skillrunner") {
+        if (!requestId) {
+          taskManagerDialog?.window?.alert?.(
+            localize(
+              "task-dashboard-open-run-missing-request-id",
+              "This run does not have a request ID yet. Try again later.",
+            ),
+          );
+          return;
+        }
+        if (!backend || !isSkillRunnerBackend(backend)) {
+          return;
+        }
+        await openSkillRunnerRunDialog({
+          backend,
+          requestId,
+        });
+        return;
+      }
+      if (backendType === "generic-http") {
+        if (!backend) {
+          return;
+        }
+        state.selectedTabKey = toBackendTabKey(backendId);
+        state.selectedLogTaskByBackendId.set(backendId, taskId);
+        state.selectedLogEntryByBackendId.delete(backendId);
+        refresh("user-action");
+      }
       return;
     }
     if (action === "view-logs" || action === "select-log-task") {
@@ -632,7 +997,7 @@ export async function openTaskManagerDialog() {
         state.selectedLogTaskByBackendId.set(backendId, taskId);
         state.selectedLogEntryByBackendId.delete(backendId);
       }
-      refresh();
+      refresh("user-action");
       return;
     }
     if (action === "open-log-diagnostics") {
@@ -679,7 +1044,7 @@ export async function openTaskManagerDialog() {
       if (backendId && logEntryId) {
         state.selectedLogEntryByBackendId.set(backendId, logEntryId);
       }
-      refresh();
+      refresh("user-action");
       return;
     }
     if (action === "open-run") {
@@ -734,7 +1099,7 @@ export async function openTaskManagerDialog() {
       });
       const target = rows.find((row) => row.requestId === requestId);
       if (target && isTerminalWorkflowTaskState(target.state)) {
-        refresh();
+        refresh("user-action");
         return;
       }
       try {
@@ -755,7 +1120,7 @@ export async function openTaskManagerDialog() {
           }),
         );
       }
-      refresh();
+      refresh("user-action");
       return;
     }
   };
@@ -798,7 +1163,7 @@ export async function openTaskManagerDialog() {
           );
           return;
         }
-        pushSnapshot("dashboard:init");
+        void enqueueRefresh("dashboard:init");
       });
       const onMessage = (event: MessageEvent) => {
         const data = event.data as { type?: unknown };
@@ -810,6 +1175,15 @@ export async function openTaskManagerDialog() {
       dialogWindow.addEventListener("message", onMessage);
       removeMessageListener = () => {
         dialogWindow.removeEventListener("message", onMessage);
+      };
+      externalSelectTab = (next) => {
+        if (typeof next.tabKey === "string" && next.tabKey.trim()) {
+          state.selectedTabKey = next.tabKey.trim();
+        }
+        if (typeof next.workflowId === "string") {
+          state.selectedWorkflowOptionsWorkflowId = next.workflowId.trim();
+        }
+        refresh("user-action");
       };
 
       void (async () => {
@@ -825,19 +1199,19 @@ export async function openTaskManagerDialog() {
           state.backendLoadError = loaded.fatalError
             ? compactError(loaded.fatalError)
             : undefined;
-          refresh();
+          refresh("backend-load");
         } catch (error) {
           state.backendLoadError = compactError(error);
-          refresh();
+          refresh("backend-load");
         }
       })();
 
-      refresh();
+      refresh("init");
       unsubscribeTasks = subscribeWorkflowTasks(() => {
-        refresh();
+        refresh("task-update");
       });
       refreshTimer = dialogWindow.setInterval(() => {
-        refresh();
+        refresh("periodic");
       }, 1200);
     },
     unloadCallback: () => {
@@ -853,6 +1227,13 @@ export async function openTaskManagerDialog() {
         removeMessageListener();
         removeMessageListener = undefined;
       }
+      for (const workflowId of Array.from(
+        state.workflowSettingsSaveTimerById.keys(),
+      )) {
+        clearWorkflowSettingsSaveTimer(state, workflowId);
+      }
+      state.workflowSettingsSaveTimerById.clear();
+      externalSelectTab = undefined;
       frameWindow = null;
     },
   };

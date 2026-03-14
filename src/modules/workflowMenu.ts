@@ -187,7 +187,6 @@ async function rebuildWorkflowPopup(
     try {
       const executionContext = await resolveWorkflowExecutionContext({
         workflow,
-        consumeRunOnce: false,
       });
       resolveProvider({
         requestKind: executionContext.requestKind,
@@ -216,6 +215,7 @@ async function rebuildWorkflowPopup(
         void executeWorkflowFromCurrentSelection({
           win,
           workflow,
+          requireSettingsGate: true,
         });
       });
     }

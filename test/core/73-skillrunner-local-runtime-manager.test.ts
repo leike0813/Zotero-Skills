@@ -10,7 +10,10 @@ import {
   resetLocalRuntimeToastStateForTests,
   getManagedLocalRuntimeStateSnapshot,
   getLocalRuntimeManualDeployCommands,
+  hydrateLocalRuntimeAutoStartSessionStateFromPersistedState,
   readManagedLocalRuntimeState,
+  planLocalRuntimeOneclick,
+  previewLocalRuntimeUninstall,
   setManagedLocalRuntimePostUpTaskReconcileRunnerForTests,
   resetLocalRuntimeAutoStartSessionState,
   releaseManagedLocalRuntimeLeaseOnShutdown,
@@ -28,6 +31,7 @@ import {
   uninstallLocalRuntime,
 } from "../../src/modules/skillRunnerLocalRuntimeManager";
 import type { SkillRunnerCtlCommandResult } from "../../src/modules/skillRunnerCtlBridge";
+import { listSkillRunnerLocalDeployDebugLogs } from "../../src/modules/skillRunnerLocalDeployDebugStore";
 
 function makeCtlResult(args: {
   ok: boolean;
@@ -556,6 +560,185 @@ describe("skillrunner local runtime manager", function () {
     const snapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(snapshot.details?.autoStartPaused, true);
     assert.equal(result.details?.autoEnsureTriggered, false);
+  });
+
+  it("plans one-click deploy when runtime info is missing", async function () {
+    const result = await planLocalRuntimeOneclick({
+      version: "v0.5.2",
+    });
+
+    assert.isTrue(result.ok);
+    assert.equal(result.stage, "oneclick-plan-deploy");
+    assert.equal(result.details?.plannedAction, "deploy");
+    const layout = result.details?.installLayout as
+      | { paths?: Array<{ id?: string }> }
+      | undefined;
+    const ids = Array.isArray(layout?.paths)
+      ? layout!.paths!.map((entry) => entry.id)
+      : [];
+    assert.includeMembers(ids, ["releases", "data", "agent-home", "npm-cache"]);
+  });
+
+  it("plans one-click start when runtime info exists and preflight succeeds", async function () {
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        runtimeState: "stopped",
+        runtimeHost: "127.0.0.1",
+        runtimePort: 29813,
+        requestedPort: 29813,
+        portFallbackSpan: 10,
+      }),
+      true,
+    );
+    const commandTrail: string[] = [];
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async (args: { command: string }) => {
+            commandTrail.push(args.command);
+            return makeCtlResult({ ok: true });
+          },
+        }) as any,
+    );
+
+    const result = await planLocalRuntimeOneclick({
+      version: "v0.5.2",
+    });
+
+    assert.isTrue(result.ok);
+    assert.equal(result.stage, "oneclick-plan-start");
+    assert.equal(result.details?.plannedAction, "start");
+    assert.deepEqual(commandTrail, ["preflight"]);
+  });
+
+  it("reports deploy action progress across all 5 steps", async function () {
+    const progressStages: string[] = [];
+    const unsubscribe = subscribeManagedLocalRuntimeStateChange(() => {
+      const snapshot = getManagedLocalRuntimeStateSnapshot();
+      const actionProgress = snapshot.details?.actionProgress as
+        | { stage?: unknown; action?: unknown }
+        | undefined;
+      if (
+        actionProgress &&
+        String(actionProgress.action || "").trim() === "deploy" &&
+        String(actionProgress.stage || "").trim()
+      ) {
+        progressStages.push(String(actionProgress.stage));
+      }
+    });
+    setSkillRunnerReleaseInstallerForTests(async (args) => {
+      args.onProgress?.({
+        stage: "download-checksum-complete",
+      });
+      args.onProgress?.({
+        stage: "extract-complete",
+      });
+      return {
+        ok: true,
+        stage: "deploy-release-install",
+        message: "installed",
+        installDir: `${args.installRoot}\\${args.version}`,
+        details: {
+          downloadProof: {
+            artifactUrl: "https://example.invalid/artifact.tar.gz",
+          },
+          checksumProof: {
+            matched: true,
+          },
+          extractProof: {
+            installDir: `${args.installRoot}\\${args.version}`,
+          },
+        },
+      };
+    });
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: (installDir: string) =>
+            `${installDir}\\scripts\\skill-runnerctl.ps1`,
+          runCtlCommand: async (args: { command: string }) =>
+            args.command === "bootstrap"
+              ? makeCtlResult({
+                  ok: true,
+                  details: {
+                    bootstrap_report_file: "C:\\SkillRunner\\data\\agent_bootstrap_report.json",
+                  },
+                })
+              : makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    try {
+      const result = await deployAndConfigureLocalSkillRunner({
+        version: "v0.5.2",
+        forcedBranch: "deploy",
+      });
+      assert.isTrue(result.ok, JSON.stringify(result));
+    } finally {
+      unsubscribe();
+    }
+
+    assert.includeMembers(progressStages, [
+      "deploy-release-assets-probe",
+      "deploy-release-download-checksum",
+      "deploy-release-extract",
+      "deploy-bootstrap",
+      "deploy-post-bootstrap",
+    ]);
+    const snapshotAfter = getManagedLocalRuntimeStateSnapshot();
+    assert.isNull(snapshotAfter.details?.actionProgress || null);
+  });
+
+  it("previews uninstall targets with conservative defaults", async function () {
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async () => true,
+      readUTF8: async () =>
+        JSON.stringify({
+          summary: {
+            outcome: "ok",
+            failed_engines: [],
+          },
+        }),
+    };
+
+    const preview = await previewLocalRuntimeUninstall();
+
+    assert.isTrue(preview.ok);
+    assert.equal(preview.stage, "uninstall-preview");
+    const details = preview.details as
+      | {
+          clearData?: boolean;
+          clearAgentHome?: boolean;
+          canInvokeDown?: boolean;
+          removableTargets?: Array<{ id?: string }>;
+          preservedTargets?: Array<{ id?: string }>;
+        }
+      | undefined;
+    assert.equal(details?.clearData, false);
+    assert.equal(details?.clearAgentHome, false);
+    assert.equal(details?.canInvokeDown, true);
+    assert.includeMembers(
+      (details?.removableTargets || []).map((entry) => entry.id),
+      ["releases", "npm-cache", "uv-cache", "uv-venv"],
+    );
+    assert.includeMembers(
+      (details?.preservedTargets || []).map((entry) => entry.id),
+      ["data", "agent-home"],
+    );
   });
 
   it("ensures runtime with preflight -> up -> status and then acquires lease", async function () {
@@ -1321,6 +1504,92 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(snapshot.details?.autoStartPaused, true);
   });
 
+  it("reports uninstall progress by down + per-directory + profile steps", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        for (const existingPath of Array.from(existingPaths.values())) {
+          if (
+            existingPath === path ||
+            existingPath.startsWith(`${path}\\`) ||
+            existingPath.startsWith(`${path}/`)
+          ) {
+            existingPaths.delete(existingPath);
+          }
+        }
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+    const progressStages: string[] = [];
+    const unsubscribe = subscribeManagedLocalRuntimeStateChange(() => {
+      const snapshot = getManagedLocalRuntimeStateSnapshot();
+      const actionProgress = snapshot.details?.actionProgress as
+        | { stage?: unknown; action?: unknown }
+        | undefined;
+      if (
+        actionProgress &&
+        String(actionProgress.action || "").trim() === "uninstall" &&
+        String(actionProgress.stage || "").trim()
+      ) {
+        progressStages.push(String(actionProgress.stage));
+      }
+    });
+
+    try {
+      const result = await uninstallLocalRuntime();
+      assert.isTrue(result.ok, JSON.stringify(result));
+    } finally {
+      unsubscribe();
+    }
+
+    assert.includeMembers(progressStages, [
+      "uninstall-down",
+      "uninstall-delete-releases",
+      "uninstall-delete-npm-cache",
+      "uninstall-delete-uv-cache",
+      "uninstall-delete-uv-venv",
+      "uninstall-profile",
+    ]);
+    const snapshotAfter = getManagedLocalRuntimeStateSnapshot();
+    assert.isNull(snapshotAfter.details?.actionProgress || null);
+  });
+
   it("uninstall fails when managed localRoot cannot be resolved safely", async function () {
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
@@ -1403,6 +1672,52 @@ describe("skillrunner local runtime manager", function () {
       loaded.backends.find((entry) => entry.id === "local-skillrunner-backend"),
     );
     assert.deepEqual(readManagedLocalRuntimeState(), {});
+  });
+
+  it("deploy does not conflict when managed profile exists but runtime state was cleared", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.clear(localRuntimeStatePrefKey, true);
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: (installDir: string) =>
+            `${installDir}\\scripts\\skill-runnerctl.ps1`,
+          runCtlCommand: async (args: { command: string }) =>
+            args.command === "bootstrap"
+              ? makeCtlResult({
+                  ok: true,
+                  details: {
+                    bootstrap_report_file: "C:\\SkillRunner\\data\\agent_bootstrap_report.json",
+                  },
+                })
+              : makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await deployAndConfigureLocalSkillRunner({
+      version: "v0.5.2",
+      forcedBranch: "deploy",
+    });
+
+    assert.isTrue(result.ok, JSON.stringify(result));
+    assert.equal(result.stage, "deploy-complete");
+    const loaded = await loadBackendsRegistry();
+    assert.isOk(
+      loaded.backends.find((entry) => entry.id === "local-skillrunner-backend"),
+    );
   });
 
   it("uninstall respects clear flags and keeps runtime info cleared when deletion fails", async function () {
@@ -1495,6 +1810,157 @@ describe("skillrunner local runtime manager", function () {
     assert.deepEqual(readManagedLocalRuntimeState(), {});
   });
 
+  it("uninstall retries transient npm delete errors and succeeds", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\npm\\node_modules\\@google\\gemini-cli",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    const removeCallCounts = new Map<string, number>();
+    const removedPaths: string[] = [];
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        const count = removeCallCounts.get(path) || 0;
+        removeCallCounts.set(path, count + 1);
+        if (/agent-cache\\npm$/i.test(path) && count === 0) {
+          const error = new Error("path too long") as Error & { code?: string };
+          error.code = "ENAMETOOLONG";
+          throw error;
+        }
+        removedPaths.push(path);
+        for (const existingPath of Array.from(existingPaths.values())) {
+          if (
+            existingPath === path ||
+            existingPath.startsWith(`${path}\\`) ||
+            existingPath.startsWith(`${path}/`)
+          ) {
+            existingPaths.delete(existingPath);
+          }
+        }
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await uninstallLocalRuntime();
+
+    assert.isTrue(result.ok, JSON.stringify(result));
+    assert.equal(result.stage, "uninstall-complete");
+    assert.isAtLeast(
+      removeCallCounts.get("C:\\SkillRunner\\agent-cache\\npm") || 0,
+      2,
+    );
+    assert.includeMembers(removedPaths, [
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+  });
+
+  it("uninstall reports npm delete diagnostics when retries and long-path fallback still fail", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        if (/agent-cache\\npm$/i.test(path)) {
+          const error = new Error("path too long") as Error & { code?: string };
+          error.code = "ENAMETOOLONG";
+          throw error;
+        }
+        for (const existingPath of Array.from(existingPaths.values())) {
+          if (
+            existingPath === path ||
+            existingPath.startsWith(`${path}\\`) ||
+            existingPath.startsWith(`${path}/`)
+          ) {
+            existingPaths.delete(existingPath);
+          }
+        }
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await uninstallLocalRuntime();
+
+    assert.isFalse(result.ok);
+    assert.equal(result.stage, "uninstall-delete");
+    const failureMap = (result.details?.failed_path_errors ||
+      {}) as Record<string, string>;
+    const npmFailure = String(
+      failureMap["C:\\SkillRunner\\agent-cache\\npm"] || "",
+    );
+    assert.include(npmFailure, "retries=");
+    assert.include(npmFailure, "long_path_fallback=");
+    assert.include(npmFailure, "hint=");
+    assert.deepEqual(readManagedLocalRuntimeState(), {});
+  });
+
   it("uninstall continues cleanup when ctl path is missing", async function () {
     Zotero.Prefs.set(
       backendsConfigPrefKey,
@@ -1559,6 +2025,74 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(result.details?.down_result?.invoked, false);
   });
 
+  it("writes uninstall lifecycle logs into local deploy debug console store", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        for (const existingPath of Array.from(existingPaths.values())) {
+          if (
+            existingPath === path ||
+            existingPath.startsWith(`${path}\\`) ||
+            existingPath.startsWith(`${path}/`)
+          ) {
+            existingPaths.delete(existingPath);
+          }
+        }
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await uninstallLocalRuntime();
+
+    assert.isTrue(result.ok, JSON.stringify(result));
+    const logs = listSkillRunnerLocalDeployDebugLogs();
+    const operations = logs.map((entry) => String(entry.operation || ""));
+    assert.includeMembers(operations, [
+      "deploy-session",
+      "uninstall-start",
+      "uninstall-plan",
+      "uninstall-down",
+      "uninstall-delete-target",
+      "uninstall-profile",
+      "uninstall-complete",
+    ]);
+  });
+
   it("reads bootstrap report from ctl bootstrap payload path when available", async function () {
     const readPaths: string[] = [];
     (globalThis as { IOUtils?: unknown }).IOUtils = {
@@ -1599,7 +2133,7 @@ describe("skillrunner local runtime manager", function () {
     assert.deepEqual(readPaths, [reportPath]);
   });
 
-  it("uses session-only auto-start switch and ignores persisted autoStartPaused field", async function () {
+  it("hydrates auto-start session switch from persisted autoStartPaused", async function () {
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -1614,6 +2148,10 @@ describe("skillrunner local runtime manager", function () {
     const firstSnapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(firstSnapshot.details?.autoStartPaused, true);
 
+    hydrateLocalRuntimeAutoStartSessionStateFromPersistedState();
+    const hydrated = getManagedLocalRuntimeStateSnapshot();
+    assert.equal(hydrated.details?.autoStartPaused, false);
+
     await setLocalRuntimeAutoPullEnabled(true);
     const secondSnapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(secondSnapshot.details?.autoStartPaused, false);
@@ -1622,6 +2160,9 @@ describe("skillrunner local runtime manager", function () {
     resetLocalRuntimeAutoStartSessionState();
     const resetSnapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(resetSnapshot.details?.autoStartPaused, true);
+    hydrateLocalRuntimeAutoStartSessionStateFromPersistedState();
+    const restoredSnapshot = getManagedLocalRuntimeStateSnapshot();
+    assert.equal(restoredSnapshot.details?.autoStartPaused, false);
   });
 
   it("treats unset auto-start flag as paused and only toggle can enable it", async function () {
@@ -1648,9 +2189,18 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("startup preflight keeps auto-start disabled when runtime info is missing", async function () {
+    await setLocalRuntimeAutoPullEnabled(true);
     const result = await runManagedRuntimeStartupPreflightProbe();
     assert.isTrue(result.ok);
     assert.equal(result.stage, "startup-preflight-skip-no-runtime-info");
+    const snapshot = getManagedLocalRuntimeStateSnapshot();
+    assert.equal(snapshot.details?.autoStartPaused, true);
+  });
+
+  it("startup preflight skips immediately when persisted auto-start is disabled", async function () {
+    const result = await runManagedRuntimeStartupPreflightProbe();
+    assert.isTrue(result.ok);
+    assert.equal(result.stage, "startup-preflight-skip-paused");
     const snapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(snapshot.details?.autoStartPaused, true);
   });
@@ -1660,6 +2210,7 @@ describe("skillrunner local runtime manager", function () {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
+        autoStartPaused: false,
         installDir: "C:\\SkillRunner\\releases\\v0.5.2",
         ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
         runtimeHost: "127.0.0.1",
@@ -1676,6 +2227,7 @@ describe("skillrunner local runtime manager", function () {
           runCtlCommand: async () => makeCtlResult({ ok: true }),
         }) as any,
     );
+    hydrateLocalRuntimeAutoStartSessionStateFromPersistedState();
 
     const result = await runManagedRuntimeStartupPreflightProbe();
 

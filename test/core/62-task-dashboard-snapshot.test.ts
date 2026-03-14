@@ -128,6 +128,14 @@ describe("task dashboard snapshot", function () {
     assert.equal(normalized, "home");
   });
 
+  it("keeps workflow-options tab key when requested", function () {
+    const normalized = normalizeDashboardTabKey({
+      requestedTabKey: "workflow-options",
+      backends: [makeBackend("skillrunner-local", "skillrunner")],
+    });
+    assert.equal(normalized, "workflow-options");
+  });
+
   it("maps managed local backend id to localized display name", function () {
     const displayName = resolveBackendDisplayName("local-skillrunner-backend");
     assert.notEqual(displayName, "local-skillrunner-backend");

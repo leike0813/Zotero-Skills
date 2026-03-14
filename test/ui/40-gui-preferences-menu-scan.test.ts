@@ -23,16 +23,47 @@ class FakeXULElement {
   private attrs = new Map<string, string>();
   private listeners = new Map<string, Listener[]>();
   private _id = "";
+  private classTokens = new Set<string>();
 
+  public style: Record<string, string> = {};
   public value = "";
   public textContent = "";
+  public checked = false;
   public parentNode: FakeXULElement | null = null;
   public children: FakeXULElement[] = [];
+  public classList = {
+    add: (...tokens: string[]) => {
+      for (const token of tokens) {
+        const normalized = String(token || "").trim();
+        if (!normalized) {
+          continue;
+        }
+        this.classTokens.add(normalized);
+      }
+      this.syncClassNameFromTokens();
+    },
+    remove: (...tokens: string[]) => {
+      for (const token of tokens) {
+        const normalized = String(token || "").trim();
+        if (!normalized) {
+          continue;
+        }
+        this.classTokens.delete(normalized);
+      }
+      this.syncClassNameFromTokens();
+    },
+    contains: (token: string) => this.classTokens.has(String(token || "").trim()),
+  };
+  public className = "";
 
   constructor(
     private readonly owner: FakeDocument,
     public readonly tagName: string,
   ) {}
+
+  private syncClassNameFromTokens() {
+    this.className = Array.from(this.classTokens.values()).join(" ").trim();
+  }
 
   get id() {
     return this._id;
@@ -73,6 +104,15 @@ class FakeXULElement {
     this.attrs.set(name, value);
     if (name === "id") {
       this.id = value;
+    }
+    if (name === "class") {
+      this.className = String(value || "");
+      this.classTokens = new Set(
+        this.className
+          .split(/\s+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      );
     }
   }
 
@@ -201,8 +241,14 @@ function setWorkflowState(workflows: LoadedWorkflow[]) {
   };
 }
 
-function createPrefsWindow() {
+function createPrefsWindow(args?: {
+  confirmResults?: boolean[];
+}) {
   const document = new FakeDocument();
+  const confirmResults = Array.isArray(args?.confirmResults)
+    ? [...args!.confirmResults!]
+    : [];
+  const confirmMessages: string[] = [];
 
   const workflowDirInput = document.createXULElement("input");
   workflowDirInput.id = `zotero-prefpane-${config.addonRef}-workflow-dir`;
@@ -241,9 +287,53 @@ function createPrefsWindow() {
   const localRuntimeStatusText = document.createXULElement("description");
   localRuntimeStatusText.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-status-text`;
+  const localRuntimeUninstallOptionsDialog = document.createXULElement("hbox");
+  localRuntimeUninstallOptionsDialog.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-dialog`;
+  const localRuntimeUninstallOptionClearData = document.createXULElement("checkbox");
+  localRuntimeUninstallOptionClearData.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-option-clear-data`;
+  localRuntimeUninstallOptionClearData.checked = false;
+  const localRuntimeUninstallOptionClearAgentHome =
+    document.createXULElement("checkbox");
+  localRuntimeUninstallOptionClearAgentHome.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-option-clear-agent-home`;
+  localRuntimeUninstallOptionClearAgentHome.checked = false;
+  const localRuntimeUninstallOptionsConfirmButton = document.createXULElement("button");
+  localRuntimeUninstallOptionsConfirmButton.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-confirm`;
+  const localRuntimeUninstallOptionsCancelButton = document.createXULElement("button");
+  localRuntimeUninstallOptionsCancelButton.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-cancel`;
+  const localRuntimeProgressmeterContainer = document.createXULElement("div");
+  localRuntimeProgressmeterContainer.className = "custom-progress-container";
+  localRuntimeProgressmeterContainer.id = "mock-progress-container";
+  
+  const localRuntimeProgressmeter = document.createXULElement("div");
+  localRuntimeProgressmeter.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-progressmeter`;
+  localRuntimeProgressmeter.className = "custom-progress-bar";
+  localRuntimeProgressmeter.style.width = "0%";
+  
+  localRuntimeProgressmeterContainer.appendChild(localRuntimeProgressmeter);
+  localRuntimeProgressRow.appendChild(localRuntimeProgressmeterContainer);
+
+  const localRuntimeProgressText = document.createXULElement("span");
+  localRuntimeProgressText.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-progress-text`;
+  localRuntimeProgressRow.appendChild(localRuntimeProgressText);
 
   return {
-    window: { document } as unknown as Window,
+    window: {
+      document,
+      confirm: (message: string) => {
+        confirmMessages.push(message);
+        if (confirmResults.length > 0) {
+          return confirmResults.shift() === true;
+        }
+        return true;
+      },
+    } as unknown as Window,
     workflowDirInput,
     scanButton,
     workflowSettingsButton,
@@ -257,6 +347,15 @@ function createPrefsWindow() {
     localRuntimeLed,
     localRuntimeAutoStartIcon,
     localRuntimeStatusText,
+    localRuntimeUninstallOptionsDialog,
+    localRuntimeUninstallOptionClearData,
+    localRuntimeUninstallOptionClearAgentHome,
+    localRuntimeUninstallOptionsConfirmButton,
+    localRuntimeUninstallOptionsCancelButton,
+    localRuntimeProgressRow,
+    localRuntimeProgressmeter,
+    localRuntimeProgressText,
+    confirmMessages,
   };
 }
 
@@ -431,6 +530,27 @@ describe("gui: preference scripts", function () {
           },
         };
       }
+      if (type === "planSkillRunnerLocalRuntimeOneclick") {
+        return {
+          ok: true,
+          details: {
+            plannedAction: "start",
+          },
+        };
+      }
+      if (type === "previewSkillRunnerLocalRuntimeUninstall") {
+        return {
+          ok: true,
+          details: {
+            removableTargets: [
+              { path: "C:\\SkillRunner\\releases", purpose: "release artifacts" },
+            ],
+            preservedTargets: [
+              { path: "C:\\SkillRunner\\data", purpose: "runtime data" },
+            ],
+          },
+        };
+      }
       if (type === "deploySkillRunnerLocalRuntime") {
         await new Promise<void>((resolve) => {
           releaseDeploy = resolve;
@@ -454,10 +574,14 @@ describe("gui: preference scripts", function () {
       localRuntimeOpenDebugConsoleButton,
       localRuntimeOpenManagementButton,
       localRuntimeRefreshModelCacheButton,
+      localRuntimeUninstallOptionsConfirmButton,
       localRuntimeLed,
       localRuntimeAutoStartIcon,
       localRuntimeStatusText,
-    } = createPrefsWindow();
+      confirmMessages,
+    } = createPrefsWindow({
+      confirmResults: [true],
+    });
     await registerPrefsScripts(window);
 
       assert.equal(localRuntimeOpenDebugConsoleButton.getAttribute("disabled"), null);
@@ -479,6 +603,8 @@ describe("gui: preference scripts", function () {
       await flushTasks();
       localRuntimeUninstallButton.dispatch("command");
       await flushTasks();
+      localRuntimeUninstallOptionsConfirmButton.dispatch("command");
+      await flushTasks();
       localRuntimeOpenManagementButton.dispatch("command");
       await flushTasks();
       localRuntimeRefreshModelCacheButton.dispatch("command");
@@ -486,7 +612,9 @@ describe("gui: preference scripts", function () {
 
     const callTypes = calls.map((entry) => entry.type);
     assert.equal(callTypes[0], "stateSkillRunnerLocalRuntime");
+    assert.include(callTypes, "planSkillRunnerLocalRuntimeOneclick");
     assert.include(callTypes, "deploySkillRunnerLocalRuntime");
+    assert.include(callTypes, "previewSkillRunnerLocalRuntimeUninstall");
     assert.include(callTypes, "stopSkillRunnerLocalRuntime");
     assert.include(callTypes, "uninstallSkillRunnerLocalRuntime");
     assert.include(callTypes, "openSkillRunnerLocalDeployDebugConsole");
@@ -499,13 +627,17 @@ describe("gui: preference scripts", function () {
     assert.notInclude(callTypes, "toggleSkillRunnerLocalRuntimeAutoPull");
 
     const deployCall = calls.find((entry) => entry.type === "deploySkillRunnerLocalRuntime");
-    assert.deepEqual(deployCall?.data, { window });
+    assert.deepEqual(deployCall?.data, { window, forcedBranch: "start" });
     const stopCall = calls.find((entry) => entry.type === "stopSkillRunnerLocalRuntime");
     assert.deepEqual(stopCall?.data, { window });
     const uninstallCall = calls.find(
       (entry) => entry.type === "uninstallSkillRunnerLocalRuntime",
     );
-    assert.deepEqual(uninstallCall?.data, { window });
+    assert.deepEqual(uninstallCall?.data, {
+      window,
+      clearData: false,
+      clearAgentHome: false,
+    });
     const snapshotCalls = calls.filter(
       (entry) => entry.type === "stateSkillRunnerLocalRuntime",
     );
@@ -514,8 +646,128 @@ describe("gui: preference scripts", function () {
       localRuntimeStatusText.textContent || "",
       /Success:|成功：|pref-skillrunner-local-status-ok-prefix/,
     );
+    assert.lengthOf(confirmMessages, 1);
     assert.match(localRuntimeLed.className, /is-green|is-red|is-gray|is-orange/);
     assert.match(localRuntimeAutoStartIcon.className, /is-green|is-red/);
+  });
+
+  it("shows deploy confirm only for deploy branch and can cancel before execution", async function () {
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "stopped",
+            autoStartPaused: true,
+            hasRuntimeInfo: false,
+            inFlightAction: "",
+            monitoringState: "inactive",
+          },
+        };
+      }
+      if (type === "planSkillRunnerLocalRuntimeOneclick") {
+        return {
+          ok: true,
+          details: {
+            plannedAction: "deploy",
+            installLayout: {
+              paths: [
+                { path: "C:\\SkillRunner\\releases", purpose: "release artifacts" },
+              ],
+            },
+          },
+        };
+      }
+      return {
+        ok: true,
+        message: `ok-${type}`,
+      };
+    };
+
+    const { window, localRuntimeDeployButton, localRuntimeStatusText, confirmMessages } =
+      createPrefsWindow({
+        confirmResults: [false],
+      });
+    await registerPrefsScripts(window);
+    await flushTasks();
+
+    localRuntimeDeployButton.dispatch("command");
+    await flushTasks();
+
+    const callTypes = calls.map((entry) => entry.type);
+    assert.include(callTypes, "planSkillRunnerLocalRuntimeOneclick");
+    assert.notInclude(callTypes, "deploySkillRunnerLocalRuntime");
+    assert.match(
+      localRuntimeStatusText.textContent || "",
+      /取消|cancelled|canceled|pref-skillrunner-local-status-cancelled/,
+    );
+    assert.isAtLeast(confirmMessages.length, 1);
+  });
+
+  it("renders inline progressmeter from runtime snapshot actionProgress", async function () {
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "stopped",
+            autoStartPaused: true,
+            hasRuntimeInfo: true,
+            inFlightAction: "oneclick-deploy-start",
+            monitoringState: "inactive",
+            actionProgress: {
+              action: "deploy",
+              current: 2,
+              total: 5,
+              percent: 40,
+              stage: "deploy-release-download-checksum",
+              label: "Download and checksum",
+            },
+          },
+        };
+      }
+      return {
+        ok: true,
+      };
+    };
+
+    const {
+      window,
+      localRuntimeProgressmeter,
+      localRuntimeProgressText,
+    } = createPrefsWindow();
+    
+    // Wire up defaultView for tests since it's used directly in standard browser environments
+    (window.document as any).defaultView = window;
+    await registerPrefsScripts(window);
+    await flushTasks();
+
+    assert.match(localRuntimeProgressRow.className || "", /is-visible/);
+    assert.equal(localRuntimeProgressmeter.style.width, "40%");
+    assert.match(
+      localRuntimeProgressText.textContent || "",
+      /Download and checksum|下载与校验|deploy-release-download-checksum|pref-skillrunner-local-progress-deploy-step-2/,
+    );
   });
 
   it("disables oneclick/stop/uninstall when snapshot is starting or in-flight while keeping debug enabled", async function () {

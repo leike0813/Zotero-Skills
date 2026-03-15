@@ -21,6 +21,7 @@ import {
   listSkillRunnerModelOptions,
   listSkillRunnerModelOptionsForProvider,
   listSkillRunnerModelProviders,
+  normalizeSkillRunnerModelForProvider,
   normalizeSkillRunnerModel,
   splitSkillRunnerModelId,
 } from "./modelCatalog";
@@ -245,18 +246,13 @@ export class SkillRunnerProvider implements Provider {
         }
       } else if (normalizedModelProvider) {
         const rawModelName = parsedRawModel ? parsedRawModel.model : rawModelText;
-        const allowedModels = listSkillRunnerModelOptionsForProvider(
-          normalizedEngine,
-          normalizedModelProvider,
-          backendContext,
-        ).map((entry) => entry.value);
-        if (rawModelName && allowedModels.includes(rawModelName)) {
-          const combinedModel = `${normalizedModelProvider}/${rawModelName}`;
-          normalizedModel = normalizeSkillRunnerModel(
-            normalizedEngine,
-            combinedModel,
-            backendContext,
-          );
+        if (rawModelName) {
+          normalizedModel = normalizeSkillRunnerModelForProvider({
+            engine: normalizedEngine,
+            provider: normalizedModelProvider,
+            model: rawModelName,
+            scope: backendContext,
+          });
         }
       }
     } else {

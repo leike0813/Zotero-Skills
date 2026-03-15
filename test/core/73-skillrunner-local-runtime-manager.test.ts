@@ -24,6 +24,7 @@ import {
   setSuppressManagedRuntimeAutoEnsureTriggerForTests,
   setSkillRunnerCtlBridgeFactoryForTests,
   setSkillRunnerReleaseInstallerForTests,
+  shouldPersistLocalRuntimeLogForTests,
   startLocalRuntime,
   stopLocalRuntime,
   subscribeManagedLocalRuntimeStateChange,
@@ -32,6 +33,11 @@ import {
 } from "../../src/modules/skillRunnerLocalRuntimeManager";
 import type { SkillRunnerCtlCommandResult } from "../../src/modules/skillRunnerCtlBridge";
 import { listSkillRunnerLocalDeployDebugLogs } from "../../src/modules/skillRunnerLocalDeployDebugStore";
+import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
+import {
+  clearRuntimeLogs,
+  listRuntimeLogs,
+} from "../../src/modules/runtimeLogManager";
 
 function makeCtlResult(args: {
   ok: boolean;
@@ -128,6 +134,8 @@ describe("skillrunner local runtime manager", function () {
       },
     }));
     resetLocalRuntimeAutoStartSessionState();
+    setDebugModeOverrideForTests(true);
+    clearRuntimeLogs();
     resetManagedLocalRuntimeStateChangeListenersForTests();
     resetManagedRuntimeAsyncTriggerForTests();
     resetLocalRuntimeToastStateForTests();
@@ -162,6 +170,8 @@ describe("skillrunner local runtime manager", function () {
     }
     setSkillRunnerCtlBridgeFactoryForTests();
     setSkillRunnerReleaseInstallerForTests();
+    setDebugModeOverrideForTests();
+    clearRuntimeLogs();
     resetManagedLocalRuntimeStateChangeListenersForTests();
     resetManagedRuntimeAsyncTriggerForTests();
     resetLocalRuntimeToastStateForTests();
@@ -2093,6 +2103,157 @@ describe("skillrunner local runtime manager", function () {
     ]);
   });
 
+  it("writes key uninstall stages into persistent runtime logs", async function () {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        existingPaths.delete(path);
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await uninstallLocalRuntime();
+    assert.isTrue(result.ok, JSON.stringify(result));
+
+    const logs = listRuntimeLogs({
+      component: "skillrunner-local-runtime",
+    });
+    const operations = logs.map((entry) => String(entry.operation || ""));
+    assert.includeMembers(operations, [
+      "uninstall-start",
+      "uninstall-plan",
+      "uninstall-down",
+      "uninstall-delete-target",
+      "uninstall-profile",
+      "uninstall-complete",
+    ]);
+    assert.notInclude(operations, "lease-heartbeat");
+    assert.notInclude(operations, "heartbeat-fail-reconcile");
+  });
+
+  it("keeps persistent runtime logs while debug console logging is disabled", async function () {
+    setDebugModeOverrideForTests(false);
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:29813",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      localRuntimeStatePrefKey,
+      JSON.stringify({
+        managedBackendId: "local-skillrunner-backend",
+        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      }),
+      true,
+    );
+    const existingPaths = new Set([
+      "C:\\SkillRunner\\releases",
+      "C:\\SkillRunner\\agent-cache\\npm",
+      "C:\\SkillRunner\\agent-cache\\uv_cache",
+      "C:\\SkillRunner\\agent-cache\\uv_venv",
+    ]);
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        existingPaths.delete(path);
+      },
+    };
+    setSkillRunnerCtlBridgeFactoryForTests(
+      () =>
+        ({
+          resolveCtlPathFromInstallDir: () => "",
+          runCtlCommand: async () => makeCtlResult({ ok: true }),
+        }) as any,
+    );
+
+    const result = await uninstallLocalRuntime();
+    assert.isTrue(result.ok, JSON.stringify(result));
+    assert.lengthOf(listSkillRunnerLocalDeployDebugLogs(), 0);
+
+    const logs = listRuntimeLogs({
+      component: "skillrunner-local-runtime",
+    });
+    assert.isAtLeast(logs.length, 1);
+  });
+
+  it("applies persistent log whitelist for deploy chains and excludes monitoring operations", function () {
+    assert.isTrue(
+      shouldPersistLocalRuntimeLogForTests({
+        operation: "deploy-release-install",
+        stage: "deploy-release-install",
+      }),
+    );
+    assert.isTrue(
+      shouldPersistLocalRuntimeLogForTests({
+        operation: "oneclick-preflight",
+        stage: "oneclick-preflight",
+      }),
+    );
+    assert.isTrue(
+      shouldPersistLocalRuntimeLogForTests({
+        operation: "lease-acquire",
+        stage: "local-lease-acquired",
+      }),
+    );
+    assert.isFalse(
+      shouldPersistLocalRuntimeLogForTests({
+        operation: "lease-heartbeat",
+        stage: "local-lease-heartbeat-failed",
+      }),
+    );
+    assert.isFalse(
+      shouldPersistLocalRuntimeLogForTests({
+        operation: "heartbeat-fail-reconcile",
+        stage: "heartbeat-fail-reconcile",
+      }),
+    );
+  });
+
   it("reads bootstrap report from ctl bootstrap payload path when available", async function () {
     const readPaths: string[] = [];
     (globalThis as { IOUtils?: unknown }).IOUtils = {
@@ -2239,7 +2400,7 @@ describe("skillrunner local runtime manager", function () {
 
   it("builds manual deploy commands with preflight before up", async function () {
     const commandText = buildManualDeployCommands({
-      version: "v0.4.4",
+      version: "v0.4.5",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       host: "127.0.0.1",
       port: 29813,
@@ -2250,7 +2411,7 @@ describe("skillrunner local runtime manager", function () {
     assert.include(commandText, "up --mode local");
 
     const result = await getLocalRuntimeManualDeployCommands({
-      version: "v0.4.4",
+      version: "v0.4.5",
     });
     assert.isTrue(result.ok);
     assert.equal(result.stage, "manual-deploy-commands");

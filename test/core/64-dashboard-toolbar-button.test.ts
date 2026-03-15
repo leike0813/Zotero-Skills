@@ -125,6 +125,11 @@ class FakeDocument {
 }
 
 describe("dashboard toolbar button", function () {
+  async function flushTasks() {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
   it("adds button to top toolbar and dispatches openDashboard", async function () {
     const calls: Array<{ type: string; data: unknown }> = [];
     (globalThis as any).addon = {
@@ -144,11 +149,18 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    const button = host.children[0];
-    assert.isOk(button);
-    assert.equal(button.getAttribute("class"), "zotero-tb-button");
+    const executeButton = host.children.find(
+      (entry) => entry.id === "zotero-skills-tb-execute-workflow",
+    );
+    const dashboardButton = host.children.find(
+      (entry) => entry.id === "zotero-skills-tb-dashboard",
+    );
+    assert.isOk(executeButton);
+    assert.isOk(dashboardButton);
+    assert.equal(executeButton!.getAttribute("class"), "zotero-tb-button");
+    assert.equal(dashboardButton!.getAttribute("class"), "zotero-tb-button");
 
-    button.dispatch("command");
+    dashboardButton!.dispatch("command");
     assert.lengthOf(calls, 1);
     assert.equal(calls[0].type, "openDashboard");
     assert.deepEqual(calls[0].data, { window: win });
@@ -163,13 +175,13 @@ describe("dashboard toolbar button", function () {
     } as unknown as _ZoteroTypes.MainWindow;
 
     ensureDashboardToolbarButton(win);
-    assert.lengthOf(host.children, 1);
+    assert.lengthOf(host.children, 2);
 
     removeDashboardToolbarButton(win);
     assert.lengthOf(host.children, 0);
   });
 
-  it("inserts dashboard button before search anchor when present", function () {
+  it("inserts execute and dashboard buttons before search anchor when note anchor is missing", function () {
     const document = new FakeDocument();
     const host = document.createXULElement("hbox");
     host.id = "zotero-toolbar-item-tree";
@@ -182,12 +194,13 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    assert.lengthOf(host.children, 2);
-    assert.equal(host.children[0].id, "zotero-skills-tb-dashboard");
-    assert.equal(host.children[1].id, "zotero-tb-search");
+    assert.lengthOf(host.children, 3);
+    assert.equal(host.children[0].id, "zotero-skills-tb-execute-workflow");
+    assert.equal(host.children[1].id, "zotero-skills-tb-dashboard");
+    assert.equal(host.children[2].id, "zotero-tb-search");
   });
 
-  it("inserts dashboard button before nested search container", function () {
+  it("inserts execute and dashboard buttons before nested search container", function () {
     const document = new FakeDocument();
     const host = document.createXULElement("hbox");
     host.id = "zotero-toolbar-item-tree";
@@ -203,9 +216,10 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    assert.lengthOf(host.children, 2);
-    assert.equal(host.children[0].id, "zotero-skills-tb-dashboard");
-    assert.equal(host.children[1].id, "zotero-search-wrap");
+    assert.lengthOf(host.children, 3);
+    assert.equal(host.children[0].id, "zotero-skills-tb-execute-workflow");
+    assert.equal(host.children[1].id, "zotero-skills-tb-dashboard");
+    assert.equal(host.children[2].id, "zotero-search-wrap");
   });
 
   it("prefers zotero-items-toolbar as host to avoid left-edge insertion", function () {
@@ -226,8 +240,71 @@ describe("dashboard toolbar button", function () {
 
     assert.lengthOf(toolbar.children, 1);
     assert.equal(toolbar.children[0].id, "zotero-items-toolbar");
-    assert.lengthOf(itemsToolbar.children, 2);
-    assert.equal(itemsToolbar.children[0].id, "zotero-skills-tb-dashboard");
-    assert.equal(itemsToolbar.children[1].id, "zotero-tb-search");
+    assert.lengthOf(itemsToolbar.children, 3);
+    assert.equal(itemsToolbar.children[0].id, "zotero-skills-tb-execute-workflow");
+    assert.equal(itemsToolbar.children[1].id, "zotero-skills-tb-dashboard");
+    assert.equal(itemsToolbar.children[2].id, "zotero-tb-search");
+  });
+
+  it("places execute button right after note button while dashboard stays before search", function () {
+    const document = new FakeDocument();
+    const host = document.createXULElement("hbox");
+    host.id = "zotero-items-toolbar";
+    const note = document.createXULElement("toolbarbutton");
+    note.id = "zotero-tb-note-add";
+    const search = document.createXULElement("toolbarbutton");
+    search.id = "zotero-tb-search";
+    host.appendChild(note);
+    host.appendChild(search);
+    const win = {
+      document,
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    ensureDashboardToolbarButton(win);
+
+    assert.lengthOf(host.children, 4);
+    assert.equal(host.children[0].id, "zotero-tb-note-add");
+    assert.equal(host.children[1].id, "zotero-skills-tb-execute-workflow");
+    assert.equal(host.children[2].id, "zotero-skills-tb-dashboard");
+    assert.equal(host.children[3].id, "zotero-tb-search");
+  });
+
+  it("rebuilds execute popup without dashboard shortcut and shows empty disabled item", async function () {
+    (globalThis as any).addon = {
+      data: {},
+      hooks: {
+        onPrefsEvent: async () => {},
+      },
+    };
+    const document = new FakeDocument();
+    const host = document.createXULElement("hbox");
+    host.id = "zotero-items-toolbar";
+    const note = document.createXULElement("toolbarbutton");
+    note.id = "zotero-tb-note-add";
+    host.appendChild(note);
+    const win = {
+      document,
+      ZoteroPane: {
+        getSelectedItems: () => [],
+      },
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    ensureDashboardToolbarButton(win);
+    const execute = host.children.find(
+      (entry) => entry.id === "zotero-skills-tb-execute-workflow",
+    );
+    assert.isOk(execute);
+    const popup = execute!.children[0];
+    assert.isOk(popup);
+
+    popup.dispatch("popupshowing");
+    await flushTasks();
+
+    assert.lengthOf(popup.children, 1);
+    assert.equal(popup.children[0].getAttribute("disabled"), "true");
+    assert.include(
+      ["No workflows loaded", "未加载任何 Workflow"],
+      popup.children[0].getAttribute("label"),
+    );
   });
 });

@@ -6,6 +6,7 @@
       workflowParams: {},
       providerOptions: {},
     },
+    fieldCollectors: [],
   };
 
   function sendAction(action, payload) {
@@ -101,6 +102,29 @@
     });
   }
 
+  function registerFieldCollector(collector) {
+    if (typeof collector === "function") {
+      state.fieldCollectors.push(collector);
+    }
+  }
+
+  function flushDraftFromControls() {
+    const collectors = Array.isArray(state.fieldCollectors)
+      ? state.fieldCollectors
+      : [];
+    let hasError = false;
+    collectors.forEach(function (collector) {
+      try {
+        if (collector() === false) {
+          hasError = true;
+        }
+      } catch {
+        hasError = true;
+      }
+    });
+    return !hasError;
+  }
+
   function createField(args) {
     const wrap = document.createElement("div");
     wrap.className = "field-row";
@@ -126,6 +150,10 @@
         });
       });
       checkbox.className = "field-checkbox-control";
+      registerFieldCollector(function () {
+        args.values[args.entry.key] = checkbox.checked;
+        return true;
+      });
       controlWrap.appendChild(checkbox);
       wrap.appendChild(controlWrap);
       return wrap;
@@ -135,12 +163,18 @@
       : [];
     if (enumValues.length > 0 && args.entry.allowCustom !== true) {
       const options = enumValues.map(function(val) { return { value: val, label: val }; });
-      const customSelect = window.createCustomSelect(options, toText(currentValue || enumValues[0] || ""), function(newValue) {
-        args.values[args.entry.key] = newValue;
+      let selectedValue = toText(currentValue || enumValues[0] || "");
+      const customSelect = window.createCustomSelect(options, selectedValue, function(newValue) {
+        selectedValue = toText(newValue);
+        args.values[args.entry.key] = selectedValue;
         args.onChange({
           changedSection: args.section,
           changedKey: args.entry.key,
         });
+      });
+      registerFieldCollector(function () {
+        args.values[args.entry.key] = selectedValue;
+        return true;
       });
       controlWrap.appendChild(customSelect.element);
       wrap.appendChild(controlWrap);
@@ -174,6 +208,7 @@
     }
     const errorNode = document.createElement("div");
     errorNode.className = "field-error";
+    let lastCommittedRaw = toText(control.value);
     const setFieldError = function (message) {
       if (message) {
         control.classList.add("invalid");
@@ -188,36 +223,61 @@
         }
       }
     };
-    control.addEventListener("change", function () {
+    const commitControlValue = function (emitChange) {
+      const rawValue = toText(control.value);
+      let changed = false;
       if (args.entry.type === "number") {
         const validation = validateNumberFieldValue({
           entry: args.entry,
-          rawValue: control.value,
+          rawValue,
           labels: args.labels || {},
         });
         if (!validation.ok) {
           setFieldError(validation.message);
-          return;
+          return false;
         }
         setFieldError("");
         if (validation.remove) {
+          changed = Object.prototype.hasOwnProperty.call(args.values, args.entry.key);
           delete args.values[args.entry.key];
         } else {
+          changed = args.values[args.entry.key] !== validation.value;
           args.values[args.entry.key] = validation.value;
         }
       } else {
         setFieldError("");
-        const nextValue = normalizeTypeValue(args.entry.type, control.value);
+        const nextValue = normalizeTypeValue(args.entry.type, rawValue);
         if (typeof nextValue === "undefined") {
+          changed = Object.prototype.hasOwnProperty.call(args.values, args.entry.key);
           delete args.values[args.entry.key];
         } else {
+          changed = args.values[args.entry.key] !== nextValue;
           args.values[args.entry.key] = nextValue;
         }
       }
-      args.onChange({
-        changedSection: args.section,
-        changedKey: args.entry.key,
-      });
+      if (emitChange && (changed || rawValue !== lastCommittedRaw)) {
+        args.onChange({
+          changedSection: args.section,
+          changedKey: args.entry.key,
+        });
+      }
+      lastCommittedRaw = rawValue;
+      return true;
+    };
+    control.addEventListener("input", function () {
+      if (args.entry.type === "number") {
+        setFieldError("");
+      }
+      args.values[args.entry.key] = control.value;
+    });
+    control.addEventListener("change", function () {
+      commitControlValue(true);
+    });
+    control.addEventListener("blur", function () {
+      commitControlValue(true);
+    });
+    registerFieldCollector(function () {
+      return commitControlValue(false);
     });
     controlWrap.appendChild(control);
     wrap.appendChild(controlWrap);
@@ -262,6 +322,7 @@
     if (!snapshot) {
       return;
     }
+    state.fieldCollectors = [];
     document.title = snapshot.title || "Workflow Settings";
     const shell = document.createElement("div");
     shell.className = "settings-shell";
@@ -393,8 +454,15 @@
     confirmBtn.textContent = snapshot.labels.confirmLabel;
     confirmBtn.disabled = form.profileMissing === true;
     confirmBtn.addEventListener("click", function () {
+      if (!flushDraftFromControls()) {
+        return;
+      }
       sendAction("confirm", {
-        executionOptions: state.draft,
+        executionOptions: {
+          backendId: toText(state.draft.backendId || "").trim(),
+          workflowParams: cloneRecord(state.draft.workflowParams),
+          providerOptions: cloneRecord(state.draft.providerOptions),
+        },
       });
     });
     actions.appendChild(confirmBtn);

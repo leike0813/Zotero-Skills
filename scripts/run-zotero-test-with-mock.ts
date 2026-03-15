@@ -1,16 +1,29 @@
 import { spawn } from "child_process";
-import path from "path";
 
 type Child = ReturnType<typeof spawn>;
 type SpawnOptions = Parameters<typeof spawn>[2];
 
 const MOCK_PORT = "8030";
 const MOCK_HOST = "127.0.0.1";
-const TARGET_TEST_SCRIPT = process.argv[2] || "test:zotero:raw";
-const REQUESTED_TEST_MODE = process.argv[3] || process.env.ZOTERO_TEST_MODE || "lite";
+const CLI_ARGS = process.argv.slice(2);
+const TARGET_TEST_SCRIPT = CLI_ARGS[0] || "test:zotero:raw";
+let modeArg = CLI_ARGS[1];
+let domainArg = CLI_ARGS[2];
+let targetTestArgs = CLI_ARGS.slice(3);
+if (modeArg?.startsWith("-")) {
+  modeArg = undefined;
+  domainArg = undefined;
+  targetTestArgs = CLI_ARGS.slice(1);
+} else if (domainArg?.startsWith("-")) {
+  domainArg = undefined;
+  targetTestArgs = CLI_ARGS.slice(2);
+}
+const REQUESTED_TEST_MODE = modeArg || process.env.ZOTERO_TEST_MODE || "lite";
 const REQUESTED_TEST_DOMAIN =
-  process.argv[4] || process.env.ZOTERO_TEST_DOMAIN || "all";
-const TEST_WORKFLOW_DIR = path.join(process.cwd(), "workflows");
+  domainArg || process.env.ZOTERO_TEST_DOMAIN || "all";
+const TEST_WORKFLOW_DIR = String(
+  process.env.ZOTERO_TEST_WORKFLOW_DIR || "",
+).trim();
 
 function normalizeTestMode(value: string) {
   return value.trim().toLowerCase() === "full" ? "full" : "lite";
@@ -86,7 +99,11 @@ function waitForMockReady(mock: Child, timeoutMs = 8000) {
 
 function runTargetTests(env: NodeJS.ProcessEnv) {
   return new Promise<number>((resolve) => {
-    const proc = spawnNpm(["run", TARGET_TEST_SCRIPT], {
+    const args = ["run", TARGET_TEST_SCRIPT];
+    if (targetTestArgs.length > 0) {
+      args.push("--", ...targetTestArgs);
+    }
+    const proc = spawnNpm(args, {
       stdio: "inherit",
       env,
     });
@@ -140,11 +157,19 @@ async function main() {
     ...process.env,
     ZOTERO_TEST_MODE: TEST_MODE,
     ZOTERO_TEST_DOMAIN: TEST_DOMAIN,
-    ZOTERO_TEST_WORKFLOW_DIR: TEST_WORKFLOW_DIR,
   };
+  if (TEST_WORKFLOW_DIR) {
+    testEnv.ZOTERO_TEST_WORKFLOW_DIR = TEST_WORKFLOW_DIR;
+  } else {
+    delete testEnv.ZOTERO_TEST_WORKFLOW_DIR;
+  }
   console.log(`[test-mode] ${TEST_MODE}`);
   console.log(`[test-domain] ${TEST_DOMAIN}`);
-  console.log(`[test-workflow-dir] ${TEST_WORKFLOW_DIR}`);
+  console.log(
+    `[test-workflow-dir] ${
+      TEST_WORKFLOW_DIR || "(default from Zotero.DataDirectory/zotero-skills/workflows)"
+    }`,
+  );
 
   const mock = spawnNpm(
     [

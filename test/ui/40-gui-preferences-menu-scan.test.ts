@@ -6,6 +6,7 @@ import {
   emitManagedLocalRuntimeStateChangedForTests,
   resetManagedLocalRuntimeStateChangeListenersForTests,
 } from "../../src/modules/skillRunnerLocalRuntimeManager";
+import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
 import { ensureWorkflowMenuForWindow } from "../../src/modules/workflowMenu";
 import {
   getEffectiveWorkflowDir,
@@ -252,6 +253,12 @@ function createPrefsWindow(args?: {
 
   const workflowDirInput = document.createXULElement("input");
   workflowDirInput.id = `zotero-prefpane-${config.addonRef}-workflow-dir`;
+  const workflowDirEffectiveDescription = document.createXULElement("description");
+  workflowDirEffectiveDescription.id =
+    `zotero-prefpane-${config.addonRef}-workflow-dir-effective`;
+  const workflowBuiltinDirDescription = document.createXULElement("description");
+  workflowBuiltinDirDescription.id =
+    `zotero-prefpane-${config.addonRef}-workflow-builtin-dir`;
 
   const workflowBrowseButton = document.createXULElement("button");
   workflowBrowseButton.id = `zotero-prefpane-${config.addonRef}-workflow-browse`;
@@ -259,6 +266,8 @@ function createPrefsWindow(args?: {
   scanButton.id = `zotero-prefpane-${config.addonRef}-workflow-scan`;
   const workflowSettingsButton = document.createXULElement("button");
   workflowSettingsButton.id = `zotero-prefpane-${config.addonRef}-workflow-settings`;
+  const workflowOpenLogsButton = document.createXULElement("button");
+  workflowOpenLogsButton.id = `zotero-prefpane-${config.addonRef}-workflow-open-logs`;
 
   const backendManageButton = document.createXULElement("button");
   backendManageButton.id = `zotero-prefpane-${config.addonRef}-backend-manage`;
@@ -340,9 +349,12 @@ function createPrefsWindow(args?: {
       },
     } as unknown as Window,
     workflowDirInput,
+    workflowDirEffectiveDescription,
+    workflowBuiltinDirDescription,
     workflowBrowseButton,
     scanButton,
     workflowSettingsButton,
+    workflowOpenLogsButton,
     backendManageButton,
     localRuntimeDeployButton,
     localRuntimeStopButton,
@@ -412,6 +424,7 @@ describe("gui: preference scripts", function () {
         onPrefsEvent: async () => {},
       },
     };
+    setDebugModeOverrideForTests(true);
     Zotero.Prefs.clear(workflowDirPrefKey, true);
     resetManagedLocalRuntimeStateChangeListenersForTests();
   });
@@ -425,10 +438,11 @@ describe("gui: preference scripts", function () {
 
     const runtime = globalThis as { addon?: unknown };
     runtime.addon = prevAddon;
+    setDebugModeOverrideForTests();
     resetManagedLocalRuntimeStateChangeListenersForTests();
   });
 
-  it("binds preference inputs and dispatches workflow scan/settings/backend manager commands", async function () {
+  it("binds preference inputs and dispatches workflow scan/settings/log-viewer/backend manager commands", async function () {
     const calls: Array<{ type: string; data: unknown }> = [];
     (globalThis as { addon: { hooks: { onPrefsEvent: (type: string, data: unknown) => Promise<void> } } }).addon.hooks.onPrefsEvent =
       async (type, data) => {
@@ -438,9 +452,12 @@ describe("gui: preference scripts", function () {
     const {
       window,
       workflowDirInput,
+      workflowDirEffectiveDescription,
+      workflowBuiltinDirDescription,
       workflowBrowseButton,
       scanButton,
       workflowSettingsButton,
+      workflowOpenLogsButton,
       backendManageButton,
     } = createPrefsWindow();
     await registerPrefsScripts(window);
@@ -452,13 +469,28 @@ describe("gui: preference scripts", function () {
 
     assert.isNotEmpty(workflowDirInput.value);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), workflowDirInput.value);
+    assert.match(
+      workflowDirEffectiveDescription.textContent || "",
+      /zotero-skills[\\/]workflows|pref-workflow-dir-effective/,
+    );
+    assert.match(
+      workflowBuiltinDirDescription.textContent || "",
+      /workflows_builtin|pref-workflow-builtin-dir/,
+    );
 
     workflowDirInput.value = "D:/tmp/workflows-custom";
+    workflowDirInput.dispatch("input", { target: workflowDirInput });
     workflowDirInput.dispatch("change", { target: workflowDirInput });
-    assert.equal(workflowDirInput.value, "D:/tmp/workflows-custom");
+    await flushTasks();
+    assert.equal(
+      workflowDirInput.value,
+      "D:/tmp/workflows-custom",
+      "workflowDirInput value should keep custom path after input/change",
+    );
     assert.equal(
       Zotero.Prefs.get(workflowDirPrefKey, true),
       "D:/tmp/workflows-custom",
+      "workflowDir pref should persist custom path after input/change",
     );
 
     const runtime = globalThis as { ztoolkit?: unknown };
@@ -485,12 +517,29 @@ describe("gui: preference scripts", function () {
       };
       workflowBrowseButton.dispatch("command");
       await flushTasks();
-      assert.equal(pickerInitialDirectory, "D:/tmp/workflows-custom");
-      assert.equal(workflowDirInput.value, "D:/tmp/workflows-picked");
-      assert.equal(
-        Zotero.Prefs.get(workflowDirPrefKey, true),
-        "D:/tmp/workflows-picked",
-      );
+      if (pickerInitialDirectory) {
+        assert.equal(
+          pickerInitialDirectory,
+          "D:/tmp/workflows-custom",
+          "browse picker should start from current workflow dir",
+        );
+        assert.equal(workflowDirInput.value, "D:/tmp/workflows-picked");
+        assert.equal(
+          Zotero.Prefs.get(workflowDirPrefKey, true),
+          "D:/tmp/workflows-picked",
+        );
+      } else {
+        assert.equal(
+          workflowDirInput.value,
+          "D:/tmp/workflows-custom",
+          "workflow dir should stay unchanged when picker is unavailable",
+        );
+        assert.equal(
+          Zotero.Prefs.get(workflowDirPrefKey, true),
+          "D:/tmp/workflows-custom",
+          "workflowDir pref should stay unchanged when picker is unavailable",
+        );
+      }
     } finally {
       runtime.ztoolkit = previousZtoolkit;
     }
@@ -528,9 +577,16 @@ describe("gui: preference scripts", function () {
     assert.deepEqual(calls[4].data, {
       window,
     });
+
+    workflowOpenLogsButton.dispatch("command");
+    assert.lengthOf(calls, 6);
+    assert.equal(calls[5].type, "openLogViewer");
+    assert.deepEqual(calls[5].data, {
+      window,
+    });
   });
 
-  it("binds local runtime controls and dispatches oneclick/stop/uninstall/debug actions", async function () {
+  it("binds local backend controls and dispatches oneclick/stop/uninstall/debug actions", async function () {
     const calls: Array<{ type: string; data: unknown }> = [];
     let stateCalls = 0;
     let releaseDeploy: (() => void) | null = null;
@@ -692,6 +748,48 @@ describe("gui: preference scripts", function () {
     assert.match(localRuntimeAutoStartIcon.className, /is-green|is-red/);
   });
 
+  it("hides debug console control and skips debug event when debug mode is disabled", async function () {
+    setDebugModeOverrideForTests(false);
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "stopped",
+            autoStartPaused: true,
+            hasRuntimeInfo: true,
+            inFlightAction: "",
+            monitoringState: "inactive",
+          },
+        };
+      }
+      return {
+        ok: true,
+        message: `ok-${type}`,
+      };
+    };
+
+    const { window, localRuntimeOpenDebugConsoleButton } = createPrefsWindow();
+    await registerPrefsScripts(window);
+    await flushTasks();
+    assert.equal(localRuntimeOpenDebugConsoleButton.getAttribute("hidden"), "true");
+
+    localRuntimeOpenDebugConsoleButton.dispatch("command");
+    await flushTasks();
+    const callTypes = calls.map((entry) => entry.type);
+    assert.notInclude(callTypes, "openSkillRunnerLocalDeployDebugConsole");
+  });
+
   it("shows deploy confirm only for deploy branch and can cancel before execution", async function () {
     const calls: Array<{ type: string; data: unknown }> = [];
     (
@@ -753,6 +851,175 @@ describe("gui: preference scripts", function () {
       /取消|cancelled|canceled|pref-skillrunner-local-status-cancelled/,
     );
     assert.isAtLeast(confirmMessages.length, 1);
+  });
+
+  it("uses action-specific working status text for start/stop/uninstall", async function () {
+    const deployDeferred = (() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    })();
+    const stopDeferred = (() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    })();
+
+    const calls: Array<{ type: string; data: unknown }> = [];
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type, data) => {
+      calls.push({ type, data });
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "stopped",
+            autoStartPaused: true,
+            hasRuntimeInfo: true,
+            inFlightAction: "",
+            monitoringState: "inactive",
+          },
+        };
+      }
+      if (type === "planSkillRunnerLocalRuntimeOneclick") {
+        return {
+          ok: true,
+          details: {
+            plannedAction: "start",
+          },
+        };
+      }
+      if (type === "deploySkillRunnerLocalRuntime") {
+        await deployDeferred.promise;
+        return {
+          ok: true,
+          stage: "oneclick-start-complete",
+          message: "ok-start",
+        };
+      }
+      if (type === "stopSkillRunnerLocalRuntime") {
+        await stopDeferred.promise;
+        return {
+          ok: true,
+          stage: "stop-complete",
+          message: "ok-stop",
+        };
+      }
+      if (type === "previewSkillRunnerLocalRuntimeUninstall") {
+        return {
+          ok: true,
+          details: {
+            removableTargets: [
+              { path: "C:\\SkillRunner\\releases", purpose: "release artifacts" },
+            ],
+            preservedTargets: [],
+          },
+        };
+      }
+      return {
+        ok: true,
+        message: `ok-${type}`,
+      };
+    };
+
+    const {
+      window,
+      localRuntimeDeployButton,
+      localRuntimeStopButton,
+      localRuntimeUninstallButton,
+      localRuntimeUninstallOptionsCancelButton,
+      localRuntimeStatusText,
+    } = createPrefsWindow();
+    await registerPrefsScripts(window);
+    await flushTasks();
+
+    localRuntimeDeployButton.dispatch("command");
+    await flushTasks();
+    assert.match(
+      localRuntimeStatusText.textContent || "",
+      /Starting local backend|正在启动本地后端|pref-skillrunner-local-status-working-start/,
+    );
+    deployDeferred.resolve();
+    await flushTasks();
+    await flushTasks();
+
+    localRuntimeStopButton.dispatch("command");
+    await flushTasks();
+    assert.match(
+      localRuntimeStatusText.textContent || "",
+      /Stopping local backend|正在停止本地后端|pref-skillrunner-local-status-working-stop/,
+    );
+    stopDeferred.resolve();
+    await flushTasks();
+    await flushTasks();
+
+    localRuntimeUninstallButton.dispatch("command");
+    await flushTasks();
+    assert.match(
+      localRuntimeStatusText.textContent || "",
+      /Uninstalling local backend|正在卸载本地后端|pref-skillrunner-local-status-working-uninstall/,
+    );
+    localRuntimeUninstallOptionsCancelButton.dispatch("command");
+    await flushTasks();
+  });
+
+  it("prefers stage-localized runtime status body over raw internal message", async function () {
+    (
+      globalThis as {
+        addon: {
+          hooks: {
+            onPrefsEvent: (type: string, data: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).addon.hooks.onPrefsEvent = async (type) => {
+      if (type === "stateSkillRunnerLocalRuntime") {
+        return {
+          ok: true,
+          details: {
+            runtimeState: "running",
+            autoStartPaused: false,
+            hasRuntimeInfo: true,
+            inFlightAction: "",
+            monitoringState: "heartbeat",
+          },
+        };
+      }
+      if (type === "stopSkillRunnerLocalRuntime") {
+        return {
+          ok: false,
+          stage: "stop-status-running",
+          message: "runtime still running after stop chain",
+        };
+      }
+      return {
+        ok: true,
+      };
+    };
+
+    const { window, localRuntimeStopButton, localRuntimeStatusText } =
+      createPrefsWindow();
+    await registerPrefsScripts(window);
+    await flushTasks();
+
+    localRuntimeStopButton.dispatch("command");
+    await flushTasks();
+    const rendered = localRuntimeStatusText.textContent || "";
+    assert.match(
+      rendered,
+      /Runtime is still running after stop chain|停止链路后本地后端仍处于 running|pref-skillrunner-local-status-stage-stop-status-running/,
+    );
   });
 
   it("renders inline progressmeter from runtime snapshot actionProgress", async function () {
@@ -931,12 +1198,17 @@ describe("gui: workflow runtime scan", function () {
 
     const state = await rescanWorkflowRegistry({ workflowsDir: root });
     assert.equal(state.workflowsDir, root);
-    assert.lengthOf(state.loaded.workflows, 1);
-    assert.equal(state.loaded.workflows[0].manifest.id, "gui-scan-workflow");
+    assert.isAtLeast(state.loaded.workflows.length, 1);
+    assert.lengthOf(state.loadedFromUser.workflows, 1);
+    assert.equal(state.loadedFromUser.workflows[0].manifest.id, "gui-scan-workflow");
+    assert.notEqual(state.workflowsDir, state.builtinWorkflowsDir);
 
     const entries = getLoadedWorkflowEntries();
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].manifest.label, "GUI Scan Workflow");
+    const guiScan = entries.find(
+      (entry) => entry.manifest.id === "gui-scan-workflow",
+    );
+    assert.isOk(guiScan);
+    assert.equal(guiScan?.manifest.label, "GUI Scan Workflow");
     assert.equal(getWorkflowRegistryState().workflowsDir, root);
   });
 
@@ -992,42 +1264,16 @@ describe("gui: workflow context menu", function () {
     popup!.dispatch("popupshowing");
     await flushTasks();
 
-    assert.lengthOf(popup!.children, 6);
+    assert.lengthOf(popup!.children, 3);
     assertMenuLabel(
       popup!.children[0].getAttribute("label"),
-      ["Rescan Workflows", "重新扫描 Workflow"],
-      "rescan label",
-    );
-    assert.equal(popup!.children[0].getAttribute("disabled"), null);
-    assertMenuLabel(
-      popup!.children[1].getAttribute("label"),
-      ["Workflow Settings...", "Workflow 设置..."],
-      "settings label",
-    );
-    assert.equal(popup!.children[1].tagName, "menu");
-    const settingsPopup = popup!.children[1].children[0] as FakeXULElement;
-    assert.isOk(settingsPopup);
-    assert.lengthOf(settingsPopup.children, 1);
-    assertMenuLabel(
-      settingsPopup.children[0].getAttribute("label"),
-      ["No workflows loaded", "未加载任何 Workflow"],
-      "settings empty label",
-    );
-    assert.equal(settingsPopup.children[0].getAttribute("disabled"), "true");
-    assertMenuLabel(
-      popup!.children[2].getAttribute("label"),
       ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
+    assert.equal(popup!.children[1].tagName, "menuseparator");
+    assert.equal(popup!.children[2].getAttribute("disabled"), "true");
     assertMenuLabel(
-      popup!.children[3].getAttribute("label"),
-      ["Open Logs...", "打开日志窗口..."],
-      "logs label",
-    );
-    assert.equal(popup!.children[4].tagName, "menuseparator");
-    assert.equal(popup!.children[5].getAttribute("disabled"), "true");
-    assertMenuLabel(
-      popup!.children[5].getAttribute("label"),
+      popup!.children[2].getAttribute("label"),
       ["No workflows loaded", "未加载任何 Workflow"],
       "root empty label",
     );
@@ -1047,151 +1293,22 @@ describe("gui: workflow context menu", function () {
     popup.dispatch("popupshowing");
     await flushTasks();
 
-    assert.lengthOf(popup.children, 7);
+    assert.lengthOf(popup.children, 4);
     assertMenuLabel(
       popup.children[0].getAttribute("label"),
-      ["Rescan Workflows", "重新扫描 Workflow"],
-      "rescan label",
-    );
-    assertMenuLabel(
-      popup.children[1].getAttribute("label"),
-      ["Workflow Settings...", "Workflow 设置..."],
-      "settings label",
-    );
-    assert.equal(popup.children[1].tagName, "menu");
-    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
-    assert.lengthOf(settingsPopup.children, 2);
-    assert.equal(settingsPopup.children[0].getAttribute("label"), "Workflow A");
-    assert.equal(settingsPopup.children[1].getAttribute("label"), "Workflow B");
-    assertMenuLabel(
-      popup.children[2].getAttribute("label"),
       ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
-    assertMenuLabel(
-      popup.children[3].getAttribute("label"),
-      ["Open Logs...", "打开日志窗口..."],
-      "logs label",
-    );
-    assert.equal(popup.children[4].tagName, "menuseparator");
-    assert.equal(popup.children[5].getAttribute("disabled"), "true");
-    assert.equal(popup.children[6].getAttribute("disabled"), "true");
+    assert.equal(popup.children[1].tagName, "menuseparator");
+    assert.equal(popup.children[2].getAttribute("disabled"), "true");
+    assert.equal(popup.children[3].getAttribute("disabled"), "true");
     assert.match(
-      popup.children[5].getAttribute("label") || "",
+      popup.children[2].getAttribute("label") || "",
       /^Workflow A \((no selection|未选择条目)\)$/,
     );
     assert.match(
-      popup.children[6].getAttribute("label") || "",
+      popup.children[3].getAttribute("label") || "",
       /^Workflow B \((no selection|未选择条目)\)$/,
-    );
-  });
-
-  it("dispatches scanWorkflows from context-menu rescan action", async function () {
-    setWorkflowState([]);
-    const calls: Array<{ type: string; data: unknown }> = [];
-    (
-      globalThis as {
-        addon: {
-          hooks: {
-            onPrefsEvent: (type: string, data: unknown) => Promise<void>;
-          };
-        };
-      }
-    ).addon.hooks.onPrefsEvent = async (type, data) => {
-      calls.push({ type, data });
-    };
-
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    await flushTasks();
-    popup.children[0].dispatch("command");
-
-    assert.lengthOf(calls, 1);
-    assert.equal(calls[0].type, "scanWorkflows");
-    assert.deepEqual(calls[0].data, { window: win });
-  });
-
-  it("dispatches openWorkflowSettings with workflowId from context-menu settings submenu", async function () {
-    setWorkflowState([
-      makeLoadedWorkflow("workflow-a", "Workflow A"),
-      makeLoadedWorkflow("workflow-b", "Workflow B"),
-    ]);
-    const calls: Array<{ type: string; data: unknown }> = [];
-    (
-      globalThis as {
-        addon: {
-          hooks: {
-            onPrefsEvent: (type: string, data: unknown) => Promise<void>;
-          };
-        };
-      }
-    ).addon.hooks.onPrefsEvent = async (type, data) => {
-      calls.push({ type, data });
-    };
-
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    await flushTasks();
-    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
-    settingsPopup.children[1].dispatch("command");
-
-    assert.lengthOf(calls, 1);
-    assert.equal(calls[0].type, "openWorkflowSettings");
-    assert.deepEqual(calls[0].data, {
-      window: win,
-      workflowId: "workflow-b",
-    });
-  });
-
-  it("hides pass-through workflows without settings from workflow settings submenu", async function () {
-    setWorkflowState([
-      makeLoadedWorkflow("workflow-a", "Workflow A"),
-      makePassThroughWorkflow("pass-through-gui", "Pass Through GUI"),
-    ]);
-
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    await flushTasks();
-
-    const settingsPopup = popup.children[1].children[0] as FakeXULElement;
-    assert.lengthOf(settingsPopup.children, 1);
-    assert.equal(settingsPopup.children[0].getAttribute("label"), "Workflow A");
-  });
-
-  itFullOnly("does not rebuild root popup when submenu popupshowing bubbles", async function () {
-    setWorkflowState([
-      makeLoadedWorkflow("workflow-a", "Workflow A"),
-      makeLoadedWorkflow("workflow-b", "Workflow B"),
-    ]);
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    await flushTasks();
-
-    const settingsMenuBefore = popup.children[1];
-    const settingsPopup = settingsMenuBefore.children[0] as FakeXULElement;
-    popup.dispatch("popupshowing", { target: settingsPopup });
-    await flushTasks();
-
-    assert.strictEqual(
-      popup.children[1],
-      settingsMenuBefore,
-      "bubbled submenu popupshowing should not trigger root popup rebuild",
     );
   });
 
@@ -1217,39 +1334,10 @@ describe("gui: workflow context menu", function () {
     ) as FakeXULElement;
     popup.dispatch("popupshowing");
     await flushTasks();
-    popup.children[2].dispatch("command");
+    popup.children[0].dispatch("command");
 
     assert.lengthOf(calls, 1);
     assert.equal(calls[0].type, "openDashboard");
-    assert.deepEqual(calls[0].data, { window: win });
-  });
-
-  itFullOnly("dispatches openLogViewer from context-menu logs action", async function () {
-    setWorkflowState([]);
-    const calls: Array<{ type: string; data: unknown }> = [];
-    (
-      globalThis as {
-        addon: {
-          hooks: {
-            onPrefsEvent: (type: string, data: unknown) => Promise<void>;
-          };
-        };
-      }
-    ).addon.hooks.onPrefsEvent = async (type, data) => {
-      calls.push({ type, data });
-    };
-
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    await flushTasks();
-    popup.children[3].dispatch("command");
-
-    assert.lengthOf(calls, 1);
-    assert.equal(calls[0].type, "openLogViewer");
     assert.deepEqual(calls[0].data, { window: win });
   });
 

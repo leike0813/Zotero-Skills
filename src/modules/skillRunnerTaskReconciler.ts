@@ -81,6 +81,7 @@ type ReconcileDocument = {
 
 const PREF_KEY = "skillRunnerDeferredTasksJson";
 const POLL_INTERVAL_MS = 1600;
+const BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS = 60000;
 const APPLY_MAX_ATTEMPTS = 5;
 const APPLY_RETRY_BASE_MS = 1000;
 const APPLY_RETRY_MAX_MS = 30000;
@@ -108,12 +109,27 @@ type BackendReconcileFailureToastPayload = {
   text: string;
 };
 
+type SkillRunnerTaskLifecycleToastPayload = {
+  state: "waiting_user" | "waiting_auth" | "succeeded" | "failed" | "canceled";
+  text: string;
+  type: "default" | "success" | "error";
+};
+
 let backendReconcileFailureToastEmitter: (
   payload: BackendReconcileFailureToastPayload,
 ) => void = (payload) => {
   showWorkflowToast({
     text: payload.text,
     type: "error",
+  });
+};
+
+let skillRunnerTaskLifecycleToastEmitter: (
+  payload: SkillRunnerTaskLifecycleToastPayload,
+) => void = (payload) => {
+  showWorkflowToast({
+    text: payload.text,
+    type: payload.type,
   });
 };
 
@@ -124,6 +140,17 @@ export function setSkillRunnerBackendReconcileFailureToastEmitterForTests(
     showWorkflowToast({
       text: payload.text,
       type: "error",
+    });
+  });
+}
+
+export function setSkillRunnerTaskLifecycleToastEmitterForTests(
+  emitter?: (payload: SkillRunnerTaskLifecycleToastPayload) => void,
+) {
+  skillRunnerTaskLifecycleToastEmitter = emitter || ((payload) => {
+    showWorkflowToast({
+      text: payload.text,
+      type: payload.type,
     });
   });
 }
@@ -568,6 +595,8 @@ export class SkillRunnerTaskReconciler {
 
   private readonly reportedViolationKeysByContext = new Map<string, Set<string>>();
 
+  private readonly backendReconcileFailureLogUntilByBackend = new Map<string, number>();
+
   private timer: ReturnType<typeof setInterval> | undefined;
 
   private isReconciling = false;
@@ -729,7 +758,8 @@ export class SkillRunnerTaskReconciler {
   }
 
   private showWaitingToast(context: ReconcileContext, state: "waiting_user" | "waiting_auth") {
-    showWorkflowToast({
+    skillRunnerTaskLifecycleToastEmitter({
+      state,
       text: localizeWorkflowText(
         "workflow-execute-toast-waiting",
         `Workflow ${context.workflowLabel} is waiting for backend input. pending=1`,
@@ -755,6 +785,65 @@ export class SkillRunnerTaskReconciler {
       phase: "waiting",
       stage: "backend-waiting",
       message: `backend entered ${state}`,
+    });
+  }
+
+  private showTerminalToast(
+    context: ReconcileContext,
+    state: "succeeded" | "failed" | "canceled",
+  ) {
+    const taskLabel = normalizeString(context.taskName) || context.requestId;
+    if (state === "succeeded") {
+      skillRunnerTaskLifecycleToastEmitter({
+        state,
+        text: localizeWorkflowText(
+          "workflow-execute-toast-job-success",
+          `Workflow ${context.workflowLabel} job 1/1 succeeded: ${taskLabel}`,
+          {
+            workflowLabel: context.workflowLabel,
+            taskLabel,
+            index: 1,
+            total: 1,
+          },
+        ),
+        type: "success",
+      });
+      return;
+    }
+    if (state === "failed") {
+      const reason =
+        normalizeString(context.error) ||
+        localizeWorkflowText("workflow-execute-unknown-error", "unknown error");
+      skillRunnerTaskLifecycleToastEmitter({
+        state,
+        text: localizeWorkflowText(
+          "workflow-execute-toast-job-failed",
+          `Workflow ${context.workflowLabel} job 1/1 failed: ${taskLabel} (${reason})`,
+          {
+            workflowLabel: context.workflowLabel,
+            taskLabel,
+            index: 1,
+            total: 1,
+            reason,
+          },
+        ),
+        type: "error",
+      });
+      return;
+    }
+    skillRunnerTaskLifecycleToastEmitter({
+      state,
+      text: localizeWorkflowText(
+        "workflow-execute-toast-job-canceled",
+        `Workflow ${context.workflowLabel} job 1/1 canceled: ${taskLabel}`,
+        {
+          workflowLabel: context.workflowLabel,
+          taskLabel,
+          index: 1,
+          total: 1,
+        },
+      ),
+      type: "default",
     });
   }
 
@@ -827,6 +916,8 @@ export class SkillRunnerTaskReconciler {
       baseUrl: context.backendBaseUrl,
     });
     const previousState = context.state;
+    const backendFailureKey = normalizeString(context.backendId) || "__unknown_backend__";
+    let reconcileFailed = false;
     try {
       const runState = await client.getRunState({
         requestId: context.requestId,
@@ -890,6 +981,7 @@ export class SkillRunnerTaskReconciler {
             kind: "apply-succeeded",
             status: nextState,
           });
+          this.showTerminalToast(context, "succeeded");
         } catch (error) {
           context.applyAttempt += 1;
           context.lastApplyError = normalizeString(
@@ -957,11 +1049,24 @@ export class SkillRunnerTaskReconciler {
           writePersistedContexts(Array.from(this.contexts.values()));
           return;
         }
+      } else if (nextState === "failed" || nextState === "canceled") {
+        this.showTerminalToast(context, nextState);
       }
       this.contexts.delete(context.id);
       this.reportedViolationKeysByContext.delete(context.id);
       writePersistedContexts(Array.from(this.contexts.values()));
     } catch (error) {
+      reconcileFailed = true;
+      const now = Date.now();
+      const throttleUntil =
+        this.backendReconcileFailureLogUntilByBackend.get(backendFailureKey) || 0;
+      if (now < throttleUntil) {
+        return;
+      }
+      this.backendReconcileFailureLogUntilByBackend.set(
+        backendFailureKey,
+        now + BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS,
+      );
       appendRuntimeLog({
         level: "warn",
         scope: "job",
@@ -979,6 +1084,10 @@ export class SkillRunnerTaskReconciler {
         message: "backend reconcile step failed; will retry",
         error,
       });
+    } finally {
+      if (!reconcileFailed) {
+        this.backendReconcileFailureLogUntilByBackend.delete(backendFailureKey);
+      }
     }
   }
 

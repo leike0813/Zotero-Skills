@@ -115,6 +115,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
       requests: duplicateGuard.allowedRequests,
     },
   });
+
   if (showWorkflowNotifications) {
     emitWorkflowStartToast({
       workflowLabel: args.workflow.manifest.label,

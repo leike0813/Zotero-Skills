@@ -116,7 +116,7 @@ export function fixturePath(...segments: string[]) {
 }
 
 export function workflowsPath(...segments: string[]) {
-  return joinPath(getProjectRoot(), "workflows", ...segments);
+  return joinPath(getProjectRoot(), "workflows_builtin", ...segments);
 }
 
 function dirnamePath(targetPath: string) {

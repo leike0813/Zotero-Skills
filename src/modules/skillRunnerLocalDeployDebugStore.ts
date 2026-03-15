@@ -1,3 +1,5 @@
+import { isDebugModeEnabled } from "./debugMode";
+
 export type SkillRunnerLocalDeployDebugLevel = "debug" | "info" | "warn" | "error";
 
 export type SkillRunnerLocalDeployDebugEntry = {
@@ -55,6 +57,10 @@ export function resetSkillRunnerLocalDeployDebugSession(args?: {
   sessionSeq += 1;
   entrySeq = 0;
   entries = [];
+  if (!isDebugModeEnabled()) {
+    emitChanged();
+    return;
+  }
   appendSkillRunnerLocalDeployDebugLog({
     level: "info",
     operation: "deploy-session",
@@ -71,6 +77,9 @@ export function resetSkillRunnerLocalDeployDebugSession(args?: {
 export function appendSkillRunnerLocalDeployDebugLog(
   input: SkillRunnerLocalDeployDebugInput,
 ) {
+  if (!isDebugModeEnabled()) {
+    return null;
+  }
   const entry: SkillRunnerLocalDeployDebugEntry = {
     id: `deploy-log-${sessionSeq}-${++entrySeq}`,
     ts: String(input.ts || new Date().toISOString()),
@@ -98,4 +107,3 @@ export function subscribeSkillRunnerLocalDeployDebugLogs(
     listeners.delete(listener);
   };
 }
-

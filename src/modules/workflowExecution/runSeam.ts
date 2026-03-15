@@ -4,6 +4,7 @@ import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
 import { recordTaskDashboardHistoryFromJob } from "../taskDashboardHistory";
 import { registerSkillRunnerDeferredTask } from "../skillRunnerTaskReconciler";
+import { openSkillRunnerRunDialog } from "../skillRunnerRunDialog";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
   resolveInputUnitIdentityFromRequest,
@@ -13,12 +14,15 @@ import {
 } from "./requestMeta";
 
 type RunSeamDeps = {
-  createQueue: (config: ConstructorParameters<typeof JobQueueManager>[0]) => JobQueueManager;
+  createQueue: (
+    config: ConstructorParameters<typeof JobQueueManager>[0],
+  ) => JobQueueManager;
   executeWithProvider: typeof executeWithProvider;
   appendRuntimeLog: typeof appendRuntimeLog;
   recordWorkflowTaskUpdate: typeof recordWorkflowTaskUpdate;
   recordTaskDashboardHistoryFromJob: typeof recordTaskDashboardHistoryFromJob;
   registerSkillRunnerDeferredTask: typeof registerSkillRunnerDeferredTask;
+  openSkillRunnerRunDialog: typeof openSkillRunnerRunDialog;
 };
 
 const defaultRunSeamDeps: RunSeamDeps = {
@@ -28,11 +32,15 @@ const defaultRunSeamDeps: RunSeamDeps = {
   recordWorkflowTaskUpdate,
   recordTaskDashboardHistoryFromJob,
   registerSkillRunnerDeferredTask,
+  openSkillRunnerRunDialog,
 };
 
-export function runWorkflowExecutionSeam(args: {
-  prepared: PreparedWorkflowExecution;
-}, deps: Partial<RunSeamDeps> = {}): WorkflowRunState {
+export function runWorkflowExecutionSeam(
+  args: {
+    prepared: PreparedWorkflowExecution;
+  },
+  deps: Partial<RunSeamDeps> = {},
+): WorkflowRunState {
   const resolved = {
     ...defaultRunSeamDeps,
     ...deps,
@@ -57,6 +65,20 @@ export function runWorkflowExecutionSeam(args: {
         const requestId = String(event.requestId || "").trim();
         if (requestId) {
           job.meta.requestId = requestId;
+        }
+
+        const executionContext = args.prepared.executionContext;
+        const skillrunnerMode =
+          args.prepared.workflow.manifest.execution?.skillrunner_mode;
+        if (
+          executionContext.providerId === "skillrunner" &&
+          skillrunnerMode === "interactive" &&
+          requestId
+        ) {
+          resolved.openSkillRunnerRunDialog({
+            backend: executionContext.backend,
+            requestId,
+          });
         }
       }
     },

@@ -20,6 +20,13 @@ function readDomainFromProcessEnv() {
   return process.env.ZOTERO_TEST_DOMAIN || "";
 }
 
+function readGrepFromProcessEnv() {
+  if (typeof process === "undefined" || !process.env) {
+    return "";
+  }
+  return process.env.ZOTERO_TEST_GREP || "";
+}
+
 function readFromServicesEnv() {
   const runtime = globalThis as {
     Services?: { env?: { get?: (key: string) => string } };
@@ -43,6 +50,20 @@ function readDomainFromServicesEnv() {
   }
   try {
     return runtime.Services.env.get("ZOTERO_TEST_DOMAIN") || "";
+  } catch {
+    return "";
+  }
+}
+
+function readGrepFromServicesEnv() {
+  const runtime = globalThis as {
+    Services?: { env?: { get?: (key: string) => string } };
+  };
+  if (!runtime.Services?.env?.get) {
+    return "";
+  }
+  try {
+    return runtime.Services.env.get("ZOTERO_TEST_GREP") || "";
   } catch {
     return "";
   }
@@ -82,4 +103,16 @@ export function getTestDomain(): TestDomain {
     return normalizeDomain(fromServices);
   }
   return "all";
+}
+
+export function getTestGrepPattern() {
+  const fromProcess = readGrepFromProcessEnv();
+  if (fromProcess) {
+    return String(fromProcess || "").trim();
+  }
+  const fromServices = readGrepFromServicesEnv();
+  if (fromServices) {
+    return String(fromServices || "").trim();
+  }
+  return "";
 }

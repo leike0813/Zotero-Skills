@@ -354,6 +354,72 @@ export function listSkillRunnerModelOptionsForProvider(
   return options;
 }
 
+export function normalizeSkillRunnerModelForProvider(args: {
+  engine: string;
+  provider: string;
+  model: unknown;
+  scope?: SkillRunnerModelCatalogScope;
+}) {
+  const normalizedEngine = String(args.engine || "").trim();
+  const normalizedProvider = String(args.provider || "").trim();
+  const normalizedModel = String(args.model || "").trim();
+  if (!normalizedEngine || !normalizedProvider || !normalizedModel) {
+    return "";
+  }
+  const models = resolveEngineModels(normalizedEngine, args.scope);
+  for (const entry of models) {
+    const entryId = String(entry.id || "").trim();
+    const entryProvider = resolveModelProvider(entry);
+    const entryModel = resolveModelName(entry);
+    if (!entryId || entryProvider !== normalizedProvider) {
+      continue;
+    }
+    if (normalizedModel === entryId) {
+      return entryId;
+    }
+    if (entryModel && normalizedModel === entryModel) {
+      return entryId;
+    }
+    if (entryModel && normalizedModel === `${entryProvider}/${entryModel}`) {
+      return entryId;
+    }
+  }
+  return "";
+}
+
+export function resolveSkillRunnerModelNameForProvider(args: {
+  engine: string;
+  provider: string;
+  model: unknown;
+  scope?: SkillRunnerModelCatalogScope;
+}) {
+  const normalizedEngine = String(args.engine || "").trim();
+  const normalizedProvider = String(args.provider || "").trim();
+  const normalizedModel = String(args.model || "").trim();
+  if (!normalizedEngine || !normalizedProvider || !normalizedModel) {
+    return "";
+  }
+  const models = resolveEngineModels(normalizedEngine, args.scope);
+  for (const entry of models) {
+    const entryId = String(entry.id || "").trim();
+    const entryProvider = resolveModelProvider(entry);
+    const entryModel = resolveModelName(entry);
+    if (!entryId || entryProvider !== normalizedProvider) {
+      continue;
+    }
+    if (normalizedModel === entryModel) {
+      return entryModel;
+    }
+    if (normalizedModel === entryId && entryModel) {
+      return entryModel;
+    }
+    if (entryModel && normalizedModel === `${entryProvider}/${entryModel}`) {
+      return entryModel;
+    }
+  }
+  return "";
+}
+
 export function normalizeSkillRunnerModel(
   engine: string,
   model: unknown,

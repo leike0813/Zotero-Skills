@@ -232,7 +232,7 @@ describe("startup workflow scan + menu init", function () {
     assert.equal(state.workflowsDir, expectedDir);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), expectedDir);
     assert.lengthOf(state.loaded.workflows, 0);
-    assert.lengthOf(state.loaded.errors, 1);
+    assert.isAtLeast(state.loaded.errors.length, 1);
 
     const menu = win.document.getElementById(`${config.addonRef}-workflows-menu`) as FakeXULElement | null;
     const popup = win.document.getElementById(
@@ -243,35 +243,17 @@ describe("startup workflow scan + menu init", function () {
 
     popup!.dispatch("popupshowing");
     await flushTasks();
-    assert.lengthOf(popup!.children, 6);
+    assert.lengthOf(popup!.children, 3);
     assertMenuLabel(
       popup!.children[0].getAttribute("label"),
-      ["Rescan Workflows", "重新扫描 Workflow"],
-      "rescan label",
-    );
-    assert.equal(popup!.children[0].getAttribute("disabled"), null);
-    assertMenuLabel(
-      popup!.children[1].getAttribute("label"),
-      ["Workflow Settings...", "Workflow 设置..."],
-      "settings label",
-    );
-    assert.equal(popup!.children[1].getAttribute("disabled"), null);
-    assertMenuLabel(
-      popup!.children[2].getAttribute("label"),
       ["Open Dashboard...", "打开 Dashboard..."],
       "task-manager label",
     );
-    assert.equal(popup!.children[2].getAttribute("disabled"), null);
+    assert.equal(popup!.children[0].getAttribute("disabled"), null);
+    assert.equal(popup!.children[1].getAttribute("label"), null);
+    assert.equal(popup!.children[2].getAttribute("disabled"), "true");
     assertMenuLabel(
-      popup!.children[3].getAttribute("label"),
-      ["Open Logs...", "打开日志窗口..."],
-      "logs label",
-    );
-    assert.equal(popup!.children[3].getAttribute("disabled"), null);
-    assert.equal(popup!.children[4].getAttribute("label"), null);
-    assert.equal(popup!.children[5].getAttribute("disabled"), "true");
-    assertMenuLabel(
-      popup!.children[5].getAttribute("label"),
+      popup!.children[2].getAttribute("label"),
       ["No workflows loaded", "未加载任何 Workflow"],
       "empty label",
     );

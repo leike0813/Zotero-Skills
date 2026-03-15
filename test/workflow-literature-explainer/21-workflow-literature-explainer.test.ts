@@ -204,6 +204,40 @@ describe("workflow: literature-explainer", function () {
     assert.equal(payload?.content, markdown);
   });
 
+  it("prefers uploads-prefixed note_path without forcing artifacts/result rewrite", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Literature Explainer Uploads note_path Parent" },
+    });
+    const uploadsPath = "uploads/inputs/source_path/artifacts/conversation-note.md";
+    const markdown = "# Uploads Path\n\nResolved from bundle-relative uploads path.\n";
+
+    const workflow = await getWorkflow();
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: {
+        async readText(entryPath: string) {
+          if (entryPath === "result/result.json") {
+            return JSON.stringify({
+              note_path: uploadsPath,
+            });
+          }
+          if (entryPath === uploadsPath) {
+            return markdown;
+          }
+          throw new Error(`missing bundle entry: ${entryPath}`);
+        },
+      },
+    })) as { notes?: Zotero.Item[] };
+
+    assert.lengthOf(applied.notes || [], 1);
+    const note = Zotero.Items.get((applied.notes || [])[0].id)!;
+    const payload = parsePayloadData(note.getNote());
+    assert.equal(payload?.path, uploadsPath);
+    assert.equal(payload?.content, markdown);
+  });
+
   it("skips note creation when note_path is empty", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",

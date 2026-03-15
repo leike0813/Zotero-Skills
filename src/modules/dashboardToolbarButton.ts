@@ -1,9 +1,14 @@
 import { config } from "../../package.json";
 import { getString } from "../utils/locale";
+import { rebuildWorkflowActionPopup } from "./workflowMenu";
 
 const DASHBOARD_BUTTON_ID = `${config.addonRef}-tb-dashboard`;
+const EXECUTE_WORKFLOW_BUTTON_ID = `${config.addonRef}-tb-execute-workflow`;
+const EXECUTE_WORKFLOW_POPUP_ID = `${config.addonRef}-tb-execute-workflow-popup`;
+const NOTE_ADD_BUTTON_ID = "zotero-tb-note-add";
 const PRIMARY_ICON_URI = `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`;
 const FALLBACK_ICON_URI = `chrome://${config.addonRef}/content/icons/favicon.png`;
+const EXECUTE_ICON_URI = `chrome://${config.addonRef}/content/icons/icon_play.png`;
 
 function localize(key: string, fallback: string) {
   try {
@@ -34,6 +39,38 @@ function asElementLike(
     return null;
   }
   return value as Element & { parentNode: Node | null };
+}
+
+function resolveDirectChildForHost(
+  host: Element,
+  candidate: Element | null,
+): Element | null {
+  if (!candidate) {
+    return null;
+  }
+  if (candidate.parentNode === host) {
+    return candidate;
+  }
+  let current: Element | null = candidate;
+  while (current && current.parentNode && current.parentNode !== host) {
+    current = asElementLike(current.parentNode);
+  }
+  if (current && current.parentNode === host) {
+    return current;
+  }
+  return null;
+}
+
+function resolveNextSiblingInHost(host: Element, reference: Element) {
+  const children = Array.from(
+    ((host as unknown as { children?: ArrayLike<Element> }).children ||
+      []) as ArrayLike<Element>,
+  );
+  const idx = children.indexOf(reference);
+  if (idx >= 0 && idx < children.length - 1) {
+    return children[idx + 1];
+  }
+  return null;
 }
 
 function resolveInsertAnchor(host: Element, doc: Document) {
@@ -113,13 +150,92 @@ function syncButtonIconFill(
   }
 }
 
-export function ensureDashboardToolbarButton(win: _ZoteroTypes.MainWindow) {
+function insertWithAnchor(
+  host: Element,
+  button: Element & { style?: CSSStyleDeclaration },
+  anchor: Element | null,
+) {
+  if (anchor) {
+    host.insertBefore(button, anchor);
+  } else {
+    host.appendChild(button);
+  }
+}
+
+function ensureExecuteWorkflowToolbarButton(
+  win: _ZoteroTypes.MainWindow,
+  host: Element,
+) {
   const doc = win.document;
-  const host = resolveToolbarHost(win);
-  if (!host) {
+  const existing = doc.getElementById(EXECUTE_WORKFLOW_BUTTON_ID);
+  if (existing) {
     return;
   }
 
+  const button = doc.createXULElement("toolbarbutton");
+  const tooltip = localize(
+    "task-dashboard-toolbar-execute-workflow",
+    "Execute Workflow",
+  );
+  button.id = EXECUTE_WORKFLOW_BUTTON_ID;
+  button.setAttribute("class", "zotero-tb-button");
+  button.setAttribute("tooltiptext", tooltip);
+  button.setAttribute("aria-label", tooltip);
+  button.setAttribute("type", "menu");
+  button.setAttribute("wantdropmarker", "false");
+  button.setAttribute("image", EXECUTE_ICON_URI);
+  applyButtonStyling(
+    button as Element & { style?: CSSStyleDeclaration },
+    EXECUTE_ICON_URI,
+  );
+
+  const popup = doc.createXULElement("menupopup") as XULElement;
+  popup.id = EXECUTE_WORKFLOW_POPUP_ID;
+  popup.addEventListener("popupshowing", (event: Event) => {
+    if (event.target !== popup) {
+      return;
+    }
+    void rebuildWorkflowActionPopup(win, popup, {
+      includeTaskManagerItem: false,
+    });
+  });
+  button.appendChild(popup);
+
+  const noteAnchor = resolveDirectChildForHost(
+    host,
+    doc.getElementById(NOTE_ADD_BUTTON_ID),
+  );
+  if (noteAnchor) {
+    const nextSibling = resolveNextSiblingInHost(host, noteAnchor);
+    insertWithAnchor(
+      host,
+      button as Element & { style?: CSSStyleDeclaration },
+      nextSibling,
+    );
+  } else {
+    const fallbackAnchor = resolveInsertAnchor(host, doc);
+    insertWithAnchor(
+      host,
+      button as Element & { style?: CSSStyleDeclaration },
+      fallbackAnchor,
+    );
+  }
+
+  syncButtonIconFill(
+    button as Element & {
+      style?: CSSStyleDeclaration;
+      querySelector?: (selector: string) => Element | null;
+      getBoundingClientRect?: () => { width: number; height: number };
+    },
+    win,
+  );
+}
+
+function ensureDashboardOnlyToolbarButton(
+  win: _ZoteroTypes.MainWindow,
+  host: Element,
+) {
+  const doc = win.document;
   const existing = doc.getElementById(DASHBOARD_BUTTON_ID);
   if (existing) {
     return;
@@ -144,11 +260,11 @@ export function ensureDashboardToolbarButton(win: _ZoteroTypes.MainWindow) {
     void addon.hooks.onPrefsEvent("openDashboard", { window: win });
   });
   const anchor = resolveInsertAnchor(host, doc);
-  if (anchor) {
-    host.insertBefore(button, anchor);
-  } else {
-    host.appendChild(button);
-  }
+  insertWithAnchor(
+    host,
+    button as Element & { style?: CSSStyleDeclaration },
+    anchor,
+  );
   syncButtonIconFill(
     button as Element & {
       style?: CSSStyleDeclaration;
@@ -159,11 +275,22 @@ export function ensureDashboardToolbarButton(win: _ZoteroTypes.MainWindow) {
   );
 }
 
+export function ensureDashboardToolbarButton(win: _ZoteroTypes.MainWindow) {
+  const host = resolveToolbarHost(win);
+  if (!host) {
+    return;
+  }
+  ensureExecuteWorkflowToolbarButton(win, host);
+  ensureDashboardOnlyToolbarButton(win, host);
+}
+
 export function removeDashboardToolbarButton(win: Window | _ZoteroTypes.MainWindow) {
   const doc = (win as _ZoteroTypes.MainWindow)?.document;
   if (!doc) {
     return;
   }
+  const execute = doc.getElementById(EXECUTE_WORKFLOW_BUTTON_ID);
+  execute?.remove();
   const existing = doc.getElementById(DASHBOARD_BUTTON_ID);
   existing?.remove();
 }

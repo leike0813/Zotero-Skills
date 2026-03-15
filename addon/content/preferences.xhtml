@@ -5,6 +5,31 @@
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
 >
   <html:style>
+    .zs-pref-root {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .zs-pref-card {
+      border: 1px solid rgba(15, 23, 42, 0.15);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(248, 250, 252, 0.65);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .zs-pref-card-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    .zs-pref-actions-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
     #zotero-prefpane-__addonRef__-skillrunner-local-inline-status {
       gap: 8px;
       align-items: center;
@@ -113,106 +138,130 @@
       gap: 8px;
     }
   </html:style>
-  <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
-  <label><html:h3 data-l10n-id="pref-section-plugin"></html:h3></label>
-  <hbox align="center">
-    <html:label
-      for="zotero-prefpane-__addonRef__-workflow-dir"
-      data-l10n-id="pref-workflow-dir"
-    ></html:label>
-  </hbox>
-  <hbox>
-    <html:input
-      type="text"
-      id="zotero-prefpane-__addonRef__-workflow-dir"
-      preference="workflowDir"
-    ></html:input>
-    <button
-      id="zotero-prefpane-__addonRef__-workflow-browse"
-      data-l10n-id="pref-workflow-browse"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-workflow-scan"
-      data-l10n-id="pref-workflow-scan"
-    ></button>
-  </hbox>
-  <description data-l10n-id="pref-workflow-dir-help"></description>
-  <hbox>
-    <button
-      id="zotero-prefpane-__addonRef__-workflow-settings"
-      data-l10n-id="pref-workflow-settings"
-    ></button>
-  </hbox>
-  <description data-l10n-id="pref-workflow-settings-help"></description>
-  <description data-l10n-id="pref-plugin-placeholder"></description>
+  <vbox class="zs-pref-root">
+    <vbox class="zs-pref-card">
+      <label class="zs-pref-card-title" data-l10n-id="pref-section-workflows"></label>
+      <hbox align="center">
+        <html:label
+          for="zotero-prefpane-__addonRef__-workflow-dir"
+          data-l10n-id="pref-workflow-dir"
+        ></html:label>
+      </hbox>
+      <hbox class="zs-pref-actions-row">
+        <html:input
+          type="text"
+          id="zotero-prefpane-__addonRef__-workflow-dir"
+          preference="workflowDir"
+        ></html:input>
+        <button
+          id="zotero-prefpane-__addonRef__-workflow-browse"
+          data-l10n-id="pref-workflow-browse"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-workflow-scan"
+          data-l10n-id="pref-workflow-scan"
+        ></button>
+      </hbox>
+      <description data-l10n-id="pref-workflow-dir-help"></description>
+      <description
+        id="zotero-prefpane-__addonRef__-workflow-dir-effective"
+        data-l10n-id="pref-workflow-dir-effective"
+      ></description>
+      <description
+        id="zotero-prefpane-__addonRef__-workflow-builtin-dir"
+        data-l10n-id="pref-workflow-builtin-dir"
+      ></description>
+      <description data-l10n-id="pref-workflow-datadir-env-note"></description>
+      <hbox class="zs-pref-actions-row">
+        <button
+          id="zotero-prefpane-__addonRef__-workflow-settings"
+          data-l10n-id="pref-workflow-settings"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-workflow-open-logs"
+          data-l10n-id="pref-workflow-open-logs"
+        ></button>
+      </hbox>
+      <description data-l10n-id="pref-workflow-settings-help"></description>
+      <description data-l10n-id="pref-plugin-placeholder"></description>
+    </vbox>
 
-  <label><html:h3 data-l10n-id="pref-section-backends"></html:h3></label>
-  <hbox>
-    <button
-      id="zotero-prefpane-__addonRef__-backend-manage"
-      data-l10n-id="pref-backend-manage"
-    ></button>
-  </hbox>
-  <description data-l10n-id="pref-backend-manage-help"></description>
+    <vbox class="zs-pref-card">
+      <label class="zs-pref-card-title" data-l10n-id="pref-section-backends"></label>
+      <hbox class="zs-pref-actions-row">
+        <button
+          id="zotero-prefpane-__addonRef__-backend-manage"
+          data-l10n-id="pref-backend-manage"
+        ></button>
+      </hbox>
+      <description data-l10n-id="pref-backend-manage-help"></description>
+    </vbox>
 
-  <label><html:h3 data-l10n-id="pref-section-skillrunner-local-runtime"></html:h3></label>
-  <hbox>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-deploy"
-      data-l10n-id="pref-skillrunner-local-deploy"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-stop"
-      data-l10n-id="pref-skillrunner-local-stop"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall"
-      data-l10n-id="pref-skillrunner-local-uninstall"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-open-debug-console"
-      data-l10n-id="pref-skillrunner-local-open-debug-console"
-    ></button>
-  </hbox>
-  <hbox id="zotero-prefpane-__addonRef__-skillrunner-local-inline-status">
-    <html:span data-l10n-id="pref-skillrunner-local-runtime-indicator"></html:span>
-    <html:span
-      id="zotero-prefpane-__addonRef__-skillrunner-local-runtime-led"
-      class="zs-runtime-led is-gray"
-      title="-"
-    ></html:span>
-    <html:span data-l10n-id="pref-skillrunner-local-autostart-indicator"></html:span>
-    <html:span
-      id="zotero-prefpane-__addonRef__-skillrunner-local-autostart-icon"
-      class="zs-autostart-icon is-red"
-      title="-"
-      >▶</html:span
-    >
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-open-management"
-      data-l10n-id="pref-skillrunner-local-open-management"
-    ></button>
-    <button
-      id="zotero-prefpane-__addonRef__-skillrunner-local-refresh-model-cache"
-      data-l10n-id="pref-skillrunner-local-refresh-model-cache"
-    ></button>
-  </hbox>
-  <description data-l10n-id="pref-skillrunner-local-help"></description>
-  <html:div id="zotero-prefpane-__addonRef__-skillrunner-local-progress-row">
-    <html:div class="custom-progress-container">
-      <html:div
-        id="zotero-prefpane-__addonRef__-skillrunner-local-progressmeter"
-        class="custom-progress-bar"
-      ></html:div>
-    </html:div>
-    <html:span
-      id="zotero-prefpane-__addonRef__-skillrunner-local-progress-text"
-    ></html:span>
-  </html:div>
-  <description
-    id="zotero-prefpane-__addonRef__-skillrunner-local-status-text"
-    data-l10n-id="pref-skillrunner-local-status-idle"
-  ></description>
+    <vbox class="zs-pref-card">
+      <label
+        class="zs-pref-card-title"
+        data-l10n-id="pref-section-skillrunner-local-runtime"
+      ></label>
+      <hbox class="zs-pref-actions-row">
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-deploy"
+          data-l10n-id="pref-skillrunner-local-deploy"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-stop"
+          data-l10n-id="pref-skillrunner-local-stop"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall"
+          data-l10n-id="pref-skillrunner-local-uninstall"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-open-debug-console"
+          data-l10n-id="pref-skillrunner-local-open-debug-console"
+        ></button>
+      </hbox>
+      <hbox id="zotero-prefpane-__addonRef__-skillrunner-local-inline-status">
+        <html:span data-l10n-id="pref-skillrunner-local-runtime-indicator"></html:span>
+        <html:span
+          id="zotero-prefpane-__addonRef__-skillrunner-local-runtime-led"
+          class="zs-runtime-led is-gray"
+          title="-"
+        ></html:span>
+        <html:span data-l10n-id="pref-skillrunner-local-autostart-indicator"></html:span>
+        <html:span
+          id="zotero-prefpane-__addonRef__-skillrunner-local-autostart-icon"
+          class="zs-autostart-icon is-red"
+          title="-"
+          >▶</html:span
+        >
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-open-management"
+          data-l10n-id="pref-skillrunner-local-open-management"
+        ></button>
+        <button
+          id="zotero-prefpane-__addonRef__-skillrunner-local-refresh-model-cache"
+          data-l10n-id="pref-skillrunner-local-refresh-model-cache"
+        ></button>
+      </hbox>
+      <description data-l10n-id="pref-skillrunner-local-help"></description>
+      <html:div id="zotero-prefpane-__addonRef__-skillrunner-local-progress-row">
+        <html:div class="custom-progress-container">
+          <html:div
+            id="zotero-prefpane-__addonRef__-skillrunner-local-progressmeter"
+            class="custom-progress-bar"
+          ></html:div>
+        </html:div>
+        <html:span
+          id="zotero-prefpane-__addonRef__-skillrunner-local-progress-text"
+        ></html:span>
+      </html:div>
+      <description
+        id="zotero-prefpane-__addonRef__-skillrunner-local-status-text"
+        data-l10n-id="pref-skillrunner-local-status-idle"
+      ></description>
+    </vbox>
+  </vbox>
+
   <hbox
     id="zotero-prefpane-__addonRef__-skillrunner-local-uninstall-options-dialog"
   >
@@ -251,29 +300,31 @@
     </vbox>
   </hbox>
 
-  <label><html:h3 data-l10n-id="pref-section-about"></html:h3></label>
-  <hbox align="center">
-    <html:img
-      src="chrome://__addonRef__/content/icons/icon_full.png"
-      alt="Zotero-Skills"
-      style="max-width: 180px; width: 50%; height: auto"
-    ></html:img>
-  </hbox>
-  <hbox align="center">
-    <html:label data-l10n-id="pref-about-author"></html:label>
-  </hbox>
-  <hbox align="center">
-    <html:label data-l10n-id="pref-about-github-label"></html:label>
-    <html:a
-      href="https://github.com/leike0813/Zotero-Skills"
-      target="_blank"
-      style="margin-left: 6px"
-      >https://github.com/leike0813/Zotero-Skills</html:a
-    >
-  </hbox>
-  <hbox align="center">
-    <html:label data-l10n-id="pref-about-welcome"></html:label>
-  </hbox>
+  <vbox class="zs-pref-card">
+    <label class="zs-pref-card-title" data-l10n-id="pref-section-about"></label>
+    <hbox align="center">
+      <html:img
+        src="chrome://__addonRef__/content/icons/icon_full.png"
+        alt="Zotero-Skills"
+        style="max-width: 180px; width: 50%; height: auto"
+      ></html:img>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-about-author"></html:label>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-about-github-label"></html:label>
+      <html:a
+        href="https://github.com/leike0813/Zotero-Skills"
+        target="_blank"
+        style="margin-left: 6px"
+        >https://github.com/leike0813/Zotero-Skills</html:a
+      >
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-about-welcome"></html:label>
+    </hbox>
+  </vbox>
 </groupbox>
 <vbox>
   <html:label

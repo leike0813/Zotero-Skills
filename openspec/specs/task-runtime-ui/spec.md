@@ -60,3 +60,58 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 - **THEN** 系统 MUST 打开日志窗口并聚焦诊断导出操作
 - **AND** 保留当前 backend/任务过滤上下文用于导出构建
 
+### Requirement: Main-window toolbar MUST provide execute-workflow menu shortcut
+系统 MUST 在 Zotero 主窗口工具栏提供 `Execute Workflow` 图标菜单按钮。
+
+#### Scenario: inject toolbar execute-workflow button with anchored placement
+- **WHEN** 主窗口加载并注入插件工具栏按钮
+- **THEN** 系统 MUST 注入 `Execute Workflow` 图标菜单按钮
+- **AND** 若存在 `zotero-tb-note-add`，该按钮 MUST 插入在其右侧
+- **AND** Dashboard 图标按钮 MUST 继续位于搜索锚点前
+- **AND** 卸载/窗口关闭时 MUST 清理两个按钮
+
+### Requirement: Execute-workflow toolbar menu MUST reuse workflow trigger semantics
+系统 MUST 复用右键 workflow 触发区的 workflow 可执行判定、禁用原因文案和执行命令行为。
+
+#### Scenario: build toolbar execute-workflow popup
+- **WHEN** 用户展开工具栏 `Execute Workflow` 菜单
+- **THEN** 菜单项 MUST 与右键 workflow 触发区使用同源 workflow 判定逻辑
+- **AND** 菜单 MUST NOT 包含 `Open Dashboard...` 等非 workflow 入口
+- **AND** 无 workflow 时 MUST 显示禁用空态项
+
+### Requirement: Dashboard home MUST provide workflow bubbles above task summary
+系统 MUST 在 Dashboard 首页任务统计区上方渲染 workflow 气泡区，并为每个已注册 workflow 提供说明与设置入口。
+
+#### Scenario: render compact workflow bubbles on home page
+- **WHEN** 用户打开 Dashboard 首页
+- **THEN** 系统 MUST 在任务统计区上方显示 workflow 气泡区
+- **AND** 每个气泡 MUST 显示 workflow label
+- **AND** 每个气泡 MUST 提供“说明”和“设置”两个按钮
+- **AND** 气泡布局 MUST 水平排列并在空间不足时换行
+- **AND** 气泡标题与按钮行 MUST 保持单行显示（不换行）
+
+#### Scenario: disable settings button for non-configurable workflow
+- **WHEN** 某 workflow 无可配置项
+- **THEN** 该 workflow 气泡中的“设置”按钮 MUST 为禁用状态
+
+### Requirement: Dashboard home MUST support embedded workflow README doc subview
+系统 MUST 支持从首页 workflow 气泡进入 README 说明子页，并保持左侧 tab 结构不变。
+
+#### Scenario: open workflow doc subview in home main area
+- **WHEN** 用户点击 workflow 气泡中的“说明”按钮
+- **THEN** 系统 MUST 在右侧主区显示该 workflow 的 README 渲染内容
+- **AND** `selectedTabKey` MUST 保持为 `home`
+- **AND** 页面 MUST 提供“回到 Dashboard”按钮返回首页主视图
+
+#### Scenario: fallback when README is missing
+- **WHEN** 目标 workflow 根目录不存在 `README.md`
+- **THEN** 系统 MUST 显示本地化的“README 缺失”提示文本
+
+### Requirement: Dashboard home MUST route workflow settings from bubbles
+系统 MUST 支持从首页 workflow 气泡直接跳转到 workflow 设置页并定位目标 workflow。
+
+#### Scenario: open workflow options from home bubble
+- **WHEN** 用户点击 workflow 气泡中的“设置”按钮
+- **THEN** 系统 MUST 切换到 `workflow-options` tab
+- **AND** 系统 MUST 选中对应 workflow 的设置子页
+

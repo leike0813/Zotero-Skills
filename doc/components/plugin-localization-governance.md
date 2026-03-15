@@ -15,7 +15,6 @@ This document defines localization governance for the plugin:
 |---|---|
 | `addon/locale/*/addon.ftl` | runtime-facing copy (dashboard, toasts, backend display names, runtime dialogs) |
 | `addon/locale/*/preferences.ftl` | preferences pane controls and status text |
-| `addon/locale/*/mainWindow.ftl` | main-window/menu entry strings |
 
 Rule: a key belongs to one owner file. Cross-file duplicates are forbidden unless explicitly allowlisted for migration compatibility.
 
@@ -42,12 +41,14 @@ Rule: a key belongs to one owner file. Cross-file duplicates are forbidden unles
 
 Governance validator must enforce:
 
-- `en-US` and `zh-CN` key parity for `addon.ftl`, `preferences.ftl`, `mainWindow.ftl`.
+- key parity for `en-US`, `zh-CN`, `ja-JP`, and `fr-FR` for `addon.ftl`, `preferences.ftl`.
 - required keys existence:
   - `backend-display-local-skillrunner`
   - `skillrunner-local-runtime-toast-up`
   - `skillrunner-local-runtime-toast-down`
   - `skillrunner-local-runtime-toast-abnormal-stop`
+  - local-runtime action working keys (`deploy/start/stop/uninstall`)
+  - local-runtime user-visible stage-message keys used by preferences status renderer
 - cross-file duplicate keys limited to explicit allowlist.
 - managed local backend display/toast code path wired to shared helper.
 

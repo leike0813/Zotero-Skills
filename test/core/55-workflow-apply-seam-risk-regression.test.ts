@@ -193,4 +193,41 @@ describe("workflow apply seam risk regression", function () {
     assert.lengthOf(summary.failureReasons, 0);
     assert.include(runtimeStages, "job-pending");
   });
+
+  it("propagates explicit bundle-entry path error into failureReasons", async function () {
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [{ taskName: "path-resolution.md", targetParentID: 7 }],
+          jobIds: ["job-path-1"],
+          jobsById: {
+            "job-path-1": {
+              id: "job-path-1",
+              state: "succeeded",
+              meta: {
+                targetParentID: 7,
+              },
+              result: {
+                requestId: "req-path-1",
+              },
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        executeApplyResult: async () => {
+          throw new Error(
+            "[digest_path] bundle entry not found; raw_path=uploads/inputs/source_path/artifacts/digest.md; candidates=[\"uploads/inputs/source_path/artifacts/digest.md\",\"artifacts/digest.md\"]",
+          );
+        },
+      },
+    );
+
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 1);
+    assert.notInclude(summary.failureReasons[0], "unknown error");
+    assert.include(summary.failureReasons[0], "[digest_path] bundle entry not found");
+    assert.include(summary.failureReasons[0], "uploads/inputs/source_path/artifacts/digest.md");
+  });
 });

@@ -17,7 +17,10 @@ import {
   normalizeDashboardBackends,
   normalizeDashboardTabKey,
 } from "./taskDashboardSnapshot";
-import { getLoadedWorkflowEntries } from "./workflowRuntime";
+import {
+  getLoadedWorkflowEntries,
+  getLoadedWorkflowSourceById,
+} from "./workflowRuntime";
 import {
   listActiveWorkflowTasks,
   subscribeWorkflowTasks,
@@ -28,6 +31,7 @@ import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
+import { joinPath } from "../utils/path";
 import {
   buildWorkflowSettingsUiDescriptor,
   updateWorkflowSettings,
@@ -62,6 +66,14 @@ type DashboardState = {
     runId?: string;
   };
   runtimeLogSelectedIdSet: Set<string>;
+  homeWorkflowDocWorkflowId: string;
+  homeWorkflowDocCacheByWorkflowId: Map<
+    string,
+    {
+      html: string;
+      missingReadme: boolean;
+    }
+  >;
 };
 
 type DashboardRow = {
@@ -119,6 +131,19 @@ type DashboardSnapshot = {
     canceled: number;
   };
   runningRows: DashboardRow[];
+  homeWorkflows?: Array<{
+    workflowId: string;
+    workflowLabel: string;
+    providerId: string;
+    configurable: boolean;
+    builtin: boolean;
+  }>;
+  homeWorkflowDocView?: {
+    workflowId: string;
+    workflowLabel: string;
+    html: string;
+    missingReadme: boolean;
+  };
   backendLoadError?: string;
   workflowOptionsView?: {
     workflows: Array<{
@@ -202,6 +227,192 @@ function localize(
   } catch {
     return fallback;
   }
+}
+
+type DynamicImport = (specifier: string) => Promise<any>;
+const dynamicImport: DynamicImport = new Function(
+  "specifier",
+  "return import(specifier)",
+) as DynamicImport;
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function sanitizeRenderedMarkdownHtml(html: string) {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/<\/?(iframe|object|embed|style|link|meta|base)[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, "")
+    .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
+    .replace(
+      /\s(href|src)\s*=\s*(['"])\s*javascript:[^'"]*\2/gi,
+      (_m, attr: string) => ` ${attr}="#"`,
+    );
+}
+
+function renderInlineMarkdownFallback(value: string) {
+  let text = escapeHtml(value);
+  text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+  );
+  return text;
+}
+
+function renderMarkdownFallback(markdown: string) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html: string[] = [];
+  let inCodeBlock = false;
+  let codeLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let paragraphLines: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+    const joined = paragraphLines.join(" ").trim();
+    paragraphLines = [];
+    if (!joined) {
+      return;
+    }
+    html.push(`<p>${renderInlineMarkdownFallback(joined)}</p>`);
+  };
+
+  const closeLists = () => {
+    if (inUnorderedList) {
+      html.push("</ul>");
+      inUnorderedList = false;
+    }
+    if (inOrderedList) {
+      html.push("</ol>");
+      inOrderedList = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine || "";
+    const trimmed = line.trim();
+    if (/^```/.test(trimmed)) {
+      flushParagraph();
+      closeLists();
+      if (inCodeBlock) {
+        html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        codeLines = [];
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+      }
+      continue;
+    }
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!trimmed) {
+      flushParagraph();
+      closeLists();
+      continue;
+    }
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      closeLists();
+      const level = headingMatch[1].length;
+      const content = renderInlineMarkdownFallback(headingMatch[2]);
+      html.push(`<h${level}>${content}</h${level}>`);
+      continue;
+    }
+    const ulMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (ulMatch) {
+      flushParagraph();
+      if (inOrderedList) {
+        html.push("</ol>");
+        inOrderedList = false;
+      }
+      if (!inUnorderedList) {
+        html.push("<ul>");
+        inUnorderedList = true;
+      }
+      html.push(`<li>${renderInlineMarkdownFallback(ulMatch[1])}</li>`);
+      continue;
+    }
+    const olMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (olMatch) {
+      flushParagraph();
+      if (inUnorderedList) {
+        html.push("</ul>");
+        inUnorderedList = false;
+      }
+      if (!inOrderedList) {
+        html.push("<ol>");
+        inOrderedList = true;
+      }
+      html.push(`<li>${renderInlineMarkdownFallback(olMatch[1])}</li>`);
+      continue;
+    }
+    paragraphLines.push(trimmed);
+  }
+
+  if (inCodeBlock) {
+    html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+  }
+  flushParagraph();
+  closeLists();
+  return html.join("\n");
+}
+
+async function renderMarkdownToSafeHtml(markdown: string) {
+  const moduleName = "marked";
+  try {
+    const loaded = (await import(moduleName)) as {
+      parse?: (source: string, options?: Record<string, unknown>) => string;
+      marked?: {
+        parse?: (source: string, options?: Record<string, unknown>) => string;
+      };
+    };
+    const parse =
+      typeof loaded.parse === "function"
+        ? loaded.parse
+        : typeof loaded.marked?.parse === "function"
+          ? loaded.marked.parse
+          : undefined;
+    if (parse) {
+      const rendered = String(
+        parse(markdown, {
+          gfm: true,
+          breaks: true,
+          headerIds: false,
+          mangle: false,
+        }),
+      );
+      return sanitizeRenderedMarkdownHtml(rendered);
+    }
+  } catch {
+    // fallback renderer below
+  }
+  return renderMarkdownFallback(markdown);
+}
+
+async function readUtf8TextFile(filePath: string) {
+  const runtime = globalThis as {
+    IOUtils?: { readUTF8?: (path: string) => Promise<string> };
+  };
+  if (typeof runtime.IOUtils?.readUTF8 === "function") {
+    return runtime.IOUtils.readUTF8(filePath);
+  }
+  const fs = await dynamicImport("fs/promises");
+  return fs.readFile(filePath, "utf8") as Promise<string>;
 }
 
 function toBackendTabKey(backendId: string) {
@@ -519,6 +730,70 @@ async function buildWorkflowOptionsView(args: {
   };
 }
 
+async function buildHomeWorkflowSummaries(args: {
+  backends: BackendInstance[];
+}) {
+  const loaded = getLoadedWorkflowEntries();
+  const entries = await Promise.all(
+    loaded.map(async (workflow) => {
+      const descriptor = await buildWorkflowSettingsUiDescriptor({
+        workflow,
+        candidateBackends: args.backends,
+      });
+      return {
+        workflowId: workflow.manifest.id,
+        workflowLabel: workflow.manifest.label,
+        providerId: descriptor.providerId,
+        configurable: descriptor.hasConfigurableSettings,
+        builtin: getLoadedWorkflowSourceById(workflow.manifest.id) === "builtin",
+      };
+    }),
+  );
+  return entries.sort((a, b) => a.workflowLabel.localeCompare(b.workflowLabel));
+}
+
+async function buildHomeWorkflowDocView(args: {
+  state: DashboardState;
+  workflowId: string;
+}) {
+  const loaded = getLoadedWorkflowEntries();
+  const matched = loaded.find(
+    (entry) => entry.manifest.id === args.workflowId,
+  );
+  if (!matched) {
+    return undefined;
+  }
+  const cached = args.state.homeWorkflowDocCacheByWorkflowId.get(args.workflowId);
+  if (cached) {
+    return {
+      workflowId: args.workflowId,
+      workflowLabel: matched.manifest.label,
+      html: cached.html,
+      missingReadme: cached.missingReadme,
+    };
+  }
+  const readmePath = joinPath(matched.rootDir, "README.md");
+  let markdown = "";
+  let missingReadme = false;
+  try {
+    markdown = await readUtf8TextFile(readmePath);
+  } catch {
+    missingReadme = true;
+  }
+  const html = missingReadme ? "" : await renderMarkdownToSafeHtml(markdown);
+  const cachedEntry = {
+    html,
+    missingReadme,
+  };
+  args.state.homeWorkflowDocCacheByWorkflowId.set(args.workflowId, cachedEntry);
+  return {
+    workflowId: args.workflowId,
+    workflowLabel: matched.manifest.label,
+    html,
+    missingReadme,
+  };
+}
+
 async function buildDashboardSnapshot(args: {
   state: DashboardState;
   backends: BackendInstance[];
@@ -555,6 +830,26 @@ async function buildDashboardSnapshot(args: {
       }),
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  let homeWorkflows: DashboardSnapshot["homeWorkflows"] = [];
+  let homeWorkflowDocView: DashboardSnapshot["homeWorkflowDocView"] = undefined;
+  if (selectedTabKey === "home") {
+    homeWorkflows = await buildHomeWorkflowSummaries({
+      backends: args.backends,
+    });
+    const requestedWorkflowId = String(
+      args.state.homeWorkflowDocWorkflowId || "",
+    ).trim();
+    if (requestedWorkflowId) {
+      homeWorkflowDocView = await buildHomeWorkflowDocView({
+        state: args.state,
+        workflowId: requestedWorkflowId,
+      });
+      if (!homeWorkflowDocView) {
+        args.state.homeWorkflowDocWorkflowId = "";
+      }
+    }
+  }
 
   const labels = {
     home: localize("task-dashboard-tab-home", "Dashboard Home"),
@@ -701,6 +996,34 @@ async function buildDashboardSnapshot(args: {
       "task-dashboard-runtime-logs-context-scope",
       "Active Context Filters: "
     ),
+    homeWorkflowTitle: localize(
+      "task-dashboard-home-workflows-title",
+      "Workflows",
+    ),
+    homeWorkflowDocButton: localize(
+      "task-dashboard-home-workflow-doc",
+      "Description",
+    ),
+    homeWorkflowSettingsButton: localize(
+      "task-dashboard-home-workflow-settings",
+      "Settings",
+    ),
+    homeWorkflowBuiltinBadge: localize(
+      "task-dashboard-home-workflow-builtin",
+      "Builtin",
+    ),
+    homeWorkflowDocMissingReadme: localize(
+      "task-dashboard-home-workflow-doc-missing-readme",
+      "README.md was not found for this workflow.",
+    ),
+    homeWorkflowDocBack: localize(
+      "task-dashboard-home-workflow-doc-back",
+      "Back to Dashboard",
+    ),
+    homeSummaryTitle: localize(
+      "task-dashboard-home-summary-title",
+      "Task Summary",
+    ),
   };
 
   const tabs = [
@@ -741,6 +1064,8 @@ async function buildDashboardSnapshot(args: {
       canceled: summary.canceled,
     },
     runningRows,
+    homeWorkflows,
+    homeWorkflowDocView,
     backendLoadError: args.state.backendLoadError,
   };
 
@@ -934,6 +1259,8 @@ export async function openTaskManagerDialog(args?: {
     workflowSettingsSaveTimerById: new Map(),
     runtimeLogFilters: {},
     runtimeLogSelectedIdSet: new Set(),
+    homeWorkflowDocWorkflowId: "",
+    homeWorkflowDocCacheByWorkflowId: new Map(),
   };
 
   cleanupTaskDashboardHistory();
@@ -1019,6 +1346,9 @@ export async function openTaskManagerDialog(args?: {
     }
     if (action === "select-tab") {
       state.selectedTabKey = String(payload.tabKey || "home").trim() || "home";
+      if (state.selectedTabKey !== "home") {
+        state.homeWorkflowDocWorkflowId = "";
+      }
       refresh("user-action");
       return;
     }
@@ -1026,6 +1356,33 @@ export async function openTaskManagerDialog(args?: {
       state.selectedWorkflowOptionsWorkflowId = String(
         payload.workflowId || "",
       ).trim();
+      refresh("user-action");
+      return;
+    }
+    if (action === "open-home-workflow-doc") {
+      const workflowId = String(payload.workflowId || "").trim();
+      if (!workflowId) {
+        return;
+      }
+      state.selectedTabKey = "home";
+      state.homeWorkflowDocWorkflowId = workflowId;
+      refresh("user-action");
+      return;
+    }
+    if (action === "close-home-workflow-doc") {
+      state.selectedTabKey = "home";
+      state.homeWorkflowDocWorkflowId = "";
+      refresh("user-action");
+      return;
+    }
+    if (action === "open-home-workflow-settings") {
+      const workflowId = String(payload.workflowId || "").trim();
+      if (!workflowId) {
+        return;
+      }
+      state.homeWorkflowDocWorkflowId = "";
+      state.selectedTabKey = "workflow-options";
+      state.selectedWorkflowOptionsWorkflowId = workflowId;
       refresh("user-action");
       return;
     }
@@ -1428,6 +1785,9 @@ export async function openTaskManagerDialog(args?: {
       externalSelectTab = (next) => {
         if (typeof next.tabKey === "string" && next.tabKey.trim()) {
           state.selectedTabKey = next.tabKey.trim();
+          if (state.selectedTabKey !== "home") {
+            state.homeWorkflowDocWorkflowId = "";
+          }
         }
         if (typeof next.workflowId === "string") {
           state.selectedWorkflowOptionsWorkflowId = next.workflowId.trim();

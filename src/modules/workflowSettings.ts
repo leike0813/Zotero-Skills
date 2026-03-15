@@ -2,6 +2,10 @@ import { resolveBackendForWorkflow, listBackendsForProvider } from "../backends/
 import type { BackendInstance } from "../backends/types";
 import { resolveBackendDisplayName } from "../backends/displayName";
 import { resolveProviderById, normalizeProviderRuntimeOptions } from "../providers/registry";
+import {
+  normalizeSkillRunnerModelForProvider,
+  resolveSkillRunnerModelNameForProvider,
+} from "../providers/skillrunner/modelCatalog";
 import type { LoadedWorkflow } from "../workflows/types";
 import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import { getPref, setPref } from "../utils/prefs";
@@ -229,6 +233,52 @@ function constrainSkillRunnerProviderOptionsByMode(args: {
   return next;
 }
 
+function normalizeProviderOptionsForUi(args: {
+  workflow: LoadedWorkflow;
+  backend: BackendInstance | undefined;
+  options: Record<string, unknown>;
+}) {
+  const next: Record<string, unknown> = { ...args.options };
+  const mode = resolveSkillRunnerMode(args.workflow);
+  if (!mode) {
+    return next;
+  }
+  const engine = String(next.engine || "").trim();
+  const modelProvider = String(next.model_provider || "").trim();
+  const model = String(next.model || "").trim();
+  if (engine !== "opencode" || !modelProvider || !model) {
+    return next;
+  }
+  const scope =
+    args.backend &&
+    typeof args.backend.id === "string" &&
+    typeof args.backend.baseUrl === "string"
+      ? {
+          backendId: args.backend.id,
+          baseUrl: args.backend.baseUrl,
+        }
+      : undefined;
+  const canonical = normalizeSkillRunnerModelForProvider({
+    engine,
+    provider: modelProvider,
+    model,
+    scope,
+  });
+  if (!canonical) {
+    return next;
+  }
+  const uiModelName = resolveSkillRunnerModelNameForProvider({
+    engine,
+    provider: modelProvider,
+    model: canonical,
+    scope,
+  });
+  if (uiModelName) {
+    next.model = uiModelName;
+  }
+  return next;
+}
+
 export type { WorkflowExecutionOptions, WorkflowSettingsRecord, WorkflowSettingsDialogInitialState };
 
 export function getWorkflowSettings(workflowId: string): WorkflowExecutionOptions {
@@ -388,6 +438,11 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
     workflow: args.workflow,
     options: providerOptions,
   });
+  const uiProviderOptions = normalizeProviderOptionsForUi({
+    workflow: args.workflow,
+    backend: selectedBackend,
+    options: constrainedProviderOptions,
+  });
   const providerSchemaEntries = toProviderSchemaEntries({
     workflow: args.workflow,
     backend: selectedBackend,
@@ -412,7 +467,7 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
     profileMissing,
     selectedProfile,
     workflowParams,
-    providerOptions: constrainedProviderOptions,
+    providerOptions: uiProviderOptions,
     workflowSchemaEntries,
     providerSchemaEntries,
     hasConfigurableSettings,

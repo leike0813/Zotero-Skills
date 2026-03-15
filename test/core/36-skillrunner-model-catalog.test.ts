@@ -204,4 +204,48 @@ describe("skillrunner model catalog", function () {
     });
     assert.deepEqual(modelEnum || [], ["gpt-5"]);
   });
+
+  it("normalizes opencode provider-scoped model name to canonical model id", function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      updatedAt: "2026-03-11T00:00:00.000Z",
+      engines: ["opencode"],
+      modelsByEngine: {
+        opencode: [
+          {
+            id: "minimax-m2.5",
+            provider: "alibaba-coding-plan-cn",
+            model: "minimax-m2.5",
+            display_name: "MiniMax M2.5",
+            deprecated: false,
+          },
+          {
+            id: "qwen-plus-latest",
+            provider: "alibaba-coding-plan-cn",
+            model: "qwen-3.5-plus",
+            display_name: "Qwen 3.5 Plus",
+            deprecated: false,
+          },
+        ],
+      },
+    });
+
+    const provider = resolveProviderById("skillrunner");
+    const normalized = provider.normalizeRuntimeOptions?.(
+      {
+        engine: "opencode",
+        model_provider: "alibaba-coding-plan-cn",
+        model: "qwen-3.5-plus",
+      },
+      {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+    );
+    assert.equal(normalized?.model_provider, "alibaba-coding-plan-cn");
+    assert.equal(normalized?.model, "qwen-plus-latest");
+  });
 });

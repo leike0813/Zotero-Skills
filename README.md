@@ -31,31 +31,57 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 - 🔌 **Multi-Backend Support** — Route tasks to [Skill-Runner](https://github.com/leike0813/Skill-Runner), generic HTTP APIs, or local pass-through logic.
 - ⚡ **Unified Execution** — Selection context, request building, job queuing, result application, and error handling are all handled by a shared runtime.
 
-> Think of it as a **workflow engine inside Zotero** — you define *what* to do via declarative manifests and hook scripts, and the plugin handles *how* to execute it.
+> Think of it as a **workflow engine inside Zotero** — you define _what_ to do via declarative manifests and hook scripts, and the plugin handles _how_ to execute it.
 
 ## 🚀 Key Features
 
-| Feature | Description |
-|---|---|
-| **Workflow Engine** | Declarative `workflow.json` manifests + optional hooks (`filterInputs`, `buildRequest`, `applyResult`) |
-| **Provider Registry** | Three built-in providers: `skillrunner`, `generic-http`, `pass-through` |
-| **Backend Manager** | GUI for configuring multiple backend profiles per provider type |
-| **Task Dashboard** | Real-time job monitoring, SkillRunner chat interaction, runtime logs |
-| **Workflow Settings** | Per-workflow persistent & one-shot parameter overrides |
-| **Workflow Editor** | Host-based renderer for structured data editing (e.g. reference notes) |
-| **Log Viewer** | Filterable runtime logs with NDJSON export for diagnostics |
+| Feature               | Description                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Workflow Engine**   | Declarative `workflow.json` manifests + optional hooks (`filterInputs`, `buildRequest`, `applyResult`) |
+| **Provider Registry** | Three built-in providers: `skillrunner`, `generic-http`, `pass-through`                                |
+| **Backend Manager**   | GUI for configuring multiple backend profiles per provider type                                        |
+| **Task Dashboard**    | Real-time job monitoring, SkillRunner chat interaction, runtime logs                                   |
+| **Workflow Settings** | Per-workflow persistent & one-shot parameter overrides                                                 |
+| **Workflow Editor**   | Host-based renderer for structured data editing (e.g. reference notes)                                 |
+| **Log Viewer**        | Filterable runtime logs with NDJSON export for diagnostics                                             |
+
+## 💡 Engine Recommendations
+
+### Codex (Top Recommendation)
+
+- **Pros**: Best-in-class performance across agent CLI tools and LLM models (speed, comprehension, output stability). Supports thought process streaming. Extremely stable execution. Free tier available with model access limitations.
+- **Cons**: Free tier has model access restrictions (may not include latest/most powerful models).
+- **Verdict**: First recommendation for most users. Even the free tier delivers excellent results.
+
+### Opencode
+
+- **Pros**: Supports multiple model providers. Highly recommended when paired with Alibaba's Wanli Coding Plan, Zhipu Coding Plan, etc. Models like Qwen3.5-Plus, MiniMax-M2.5, Kimi-K2.5, GLM-5 have excellent performance in literature understanding, extraction, and summarization — fully practical for real workflows.
+- **Cons**: Speed can be inconsistent. DeepSeek API integration is usable but V3.2 model performance significantly lags behind; using "reasoner" tier helps but may require patience. Third-party Antigravity quota support exists but carries account ban risk.
+- **Verdict**: Best free/low-cost option if you have access to qualifying API keys or compatible subscriptions.
+
+### Gemini-CLI
+
+- **Pros**: Free tier available.
+- **Cons**: Slow startup, poor experience for interactive tasks, frequent model availability issues recently. After Google further restricted Pro subscription quotas, cost-performance is generally poor.
+- **Verdict**: Gemini-3-Flash is a decent choice for simple tasks only.
+
+### iFlow-CLI
+
+- **Pros**: Completely free.
+- **Cons**: Poor skill understanding, execution, and structured output stability. Interactive mode tasks often fail to complete reliably.
+- **Verdict**: Free but not production-ready — expectations should be managed accordingly.
 
 ## 📋 Built-in Workflows
 
-| Workflow | Provider | Description |
-|---|---|---|
-| **Literature Digest** | `skillrunner` | Generate digest/reference notes from markdown or PDF context |
-| **Literature Explainer** | `skillrunner` | Interactive conversation-based literature interpretation with conversation notes |
-| **Reference Matching** | `pass-through` | Match references to citekeys, rewrite structured payloads |
-| **Reference Note Editor** | `pass-through` | Edit structured reference entries in a dedicated form dialog |
-| **MinerU** | `generic-http` | Parse PDFs, materialize markdown/assets, attach to parent items |
-| **Tag Manager** | `pass-through` | Controlled vocabulary CRUD, facet filtering, YAML import/export |
-| **Tag Regulator** | `skillrunner` | Normalize tags via Skill-Runner, import suggested tags |
+| Workflow                  | Provider       | Description                                                                      |
+| ------------------------- | -------------- | -------------------------------------------------------------------------------- |
+| **Literature Digest**     | `skillrunner`  | Generate digest/reference notes from markdown or PDF context                     |
+| **Literature Explainer**  | `skillrunner`  | Interactive conversation-based literature interpretation with conversation notes |
+| **Reference Matching**    | `pass-through` | Match references to citekeys, rewrite structured payloads                        |
+| **Reference Note Editor** | `pass-through` | Edit structured reference entries in a dedicated form dialog                     |
+| **MinerU**                | `generic-http` | Parse PDFs, materialize markdown/assets, attach to parent items                  |
+| **Tag Manager**           | `pass-through` | Controlled vocabulary CRUD, facet filtering, YAML import/export                  |
+| **Tag Regulator**         | `skillrunner`  | Normalize tags via Skill-Runner, import suggested tags                           |
 
 ## 📥 Installation
 
@@ -72,9 +98,37 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 
 ### Quick Start
 
-1. **Configure a Backend** — Open `Edit` → `Preferences` → `Zotero Skills` → `Backend Manager`, add your Skill-Runner endpoint.
-2. **Place Workflows** — Copy workflow folders into the workflows directory (configurable in preferences).
-3. **Use It** — Right-click selected items → `Zotero-Skills` → choose a workflow.
+#### 1. Deploy Skill-Runner (Prerequisite)
+
+**One-Click Local Deploy** (Recommended for quick testing)
+
+1. Open `Edit` → `Preferences` → `Zotero Skills` → `SkillRunner Local Runtime`
+2. Click **Deploy** and wait for completion
+3. The backend will be auto-configured
+
+**Docker Deploy** (Recommended for production)
+
+See [Skill-Runner](https://github.com/leike0813/Skill-Runner) for Docker deployment guide:
+
+```bash
+mkdir -p skills data
+docker compose up -d --build
+```
+
+- **API**: http://localhost:9813/v1
+- **Admin UI**: http://localhost:9813/ui
+
+#### 2. Configure a Backend
+
+_If not using one-click deploy_: Open `Edit` → `Preferences` → `Zotero Skills` → `Backend Manager`, add your Skill-Runner endpoint.
+
+#### 3. Place Workflows
+
+Copy workflow folders into the workflows directory (configurable in preferences).
+
+#### 4. Use It
+
+Right-click selected items → `Zotero-Skills` → choose a workflow.
 
 ## 🏗️ Architecture Overview
 
@@ -132,13 +186,13 @@ See [Development Guide](doc/dev_guide.md) for detailed architecture and contribu
 
 ## 📖 Documentation
 
-| Document | Description |
-|---|---|
-| [Architecture Flow](doc/architecture-flow.md) | Execution pipeline overview with Mermaid diagrams |
-| [Development Guide](doc/dev_guide.md) | Core components, config model, execution chain |
-| [Workflows](doc/components/workflows.md) | Manifest schema, hooks, input filtering, execution semantics |
-| [Providers](doc/components/providers.md) | Provider contract system, request kinds |
-| [Testing](doc/testing-framework.md) | Dual-runner strategy, lite/full modes, CI gates |
+| Document                                      | Description                                                  |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| [Architecture Flow](doc/architecture-flow.md) | Execution pipeline overview with Mermaid diagrams            |
+| [Development Guide](doc/dev_guide.md)         | Core components, config model, execution chain               |
+| [Workflows](doc/components/workflows.md)      | Manifest schema, hooks, input filtering, execution semantics |
+| [Providers](doc/components/providers.md)      | Provider contract system, request kinds                      |
+| [Testing](doc/testing-framework.md)           | Dual-runner strategy, lite/full modes, CI gates              |
 
 ## 📄 License
 

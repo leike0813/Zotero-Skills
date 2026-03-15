@@ -19,6 +19,27 @@ workflows/
       applyResult.js    # 必需
 ```
 
+## 内建/用户目录治理（当前实现）
+
+- 内建目录（启动同步目标）：
+  - `<Zotero.DataDirectory>/zotero-skills/workflows_builtin`
+  - 若 `Zotero.DataDirectory` 不可用，回退到 `<cwd>/.zotero-skills-runtime/workflows_builtin`
+- 用户目录（`workflowDir`）：
+  - 优先使用偏好值 `workflowDir`
+  - 为空时默认 `<Zotero.DataDirectory>/zotero-skills/workflows`
+- `.env` 中的 `ZOTERO_PLUGIN_DATA_DIR` 不由插件业务代码直接读取：
+  - 该变量由 scaffold 启动器消费
+  - 最终体现为运行时的 `Zotero.DataDirectory.dir`
+
+### 启动同步安全约束
+
+- 同步仅写入“内建目录”，不会写入或清理用户目录。
+- 若内建源目录与目标目录“同路径或互为嵌套路径”，同步必须拒绝执行。
+- 同步采用 staging 目录替换目标目录：
+  - 先完整写入 staging；
+  - 再替换目标目录；
+  - 若替换失败，保留/回退到上一次可用内建副本。
+
 ## Manifest（当前实现）
 
 Manifest 契约由以下 schema 唯一定义（SSOT）：

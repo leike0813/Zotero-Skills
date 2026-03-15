@@ -21,6 +21,7 @@ import {
   normalizeManagedLocalBackendId,
 } from "./skillRunnerLocalRuntimeConstants";
 import { resolveManagedLocalRuntimeToastText } from "../utils/localizationGovernance";
+import { appendRuntimeLog } from "./runtimeLogManager";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -33,7 +34,7 @@ const MANAGED_PROFILE_ID = MANAGED_LOCAL_BACKEND_ID;
 const DEFAULT_MANAGED_LOCAL_HOST = "127.0.0.1";
 const DEFAULT_MANAGED_LOCAL_PORT = 29813;
 const DEFAULT_MANAGED_LOCAL_PORT_FALLBACK_SPAN = 10;
-const DEFAULT_LOCAL_RUNTIME_VERSION = "v0.4.4";
+const DEFAULT_LOCAL_RUNTIME_VERSION = "v0.4.5";
 const DEFAULT_SKILL_RUNNER_RELEASE_REPO = "leike0813/Skill-Runner";
 const STATE_PREF_KEY = "skillRunnerLocalRuntimeStateJson";
 const VERSION_PREF_KEY = "skillRunnerLocalRuntimeVersion";
@@ -1433,6 +1434,38 @@ function getCtlBridge() {
 let ctlBridgeFactory = () => new SkillRunnerCtlBridge();
 let releaseInstaller = installSkillRunnerRelease;
 
+function shouldPersistLocalRuntimeLog(args: {
+  operation: string;
+  stage: string;
+}) {
+  const operation = normalizeString(args.operation);
+  const stage = normalizeString(args.stage).toLowerCase();
+  if (
+    stage.startsWith("auto-ensure-") ||
+    stage.startsWith("ensure-") ||
+    stage.includes("heartbeat") ||
+    stage.includes("reconcile")
+  ) {
+    return false;
+  }
+  if (!operation) {
+    return false;
+  }
+  return (
+    operation.startsWith("deploy-") ||
+    operation === "oneclick-preflight" ||
+    operation === "lease-acquire" ||
+    operation.startsWith("uninstall-")
+  );
+}
+
+export function shouldPersistLocalRuntimeLogForTests(args: {
+  operation: string;
+  stage: string;
+}) {
+  return shouldPersistLocalRuntimeLog(args);
+}
+
 export function setSkillRunnerCtlBridgeFactoryForTests(
   factory?: () => SkillRunnerCtlBridge,
 ) {
@@ -1473,6 +1506,22 @@ function appendLocalRuntimeLog(args: {
 }) {
   appendSkillRunnerLocalDeployDebugLog({
     level: args.level,
+    operation: args.operation,
+    stage: args.stage,
+    message: args.message,
+    details: args.details,
+    error: args.error,
+  });
+  if (!shouldPersistLocalRuntimeLog(args)) {
+    return;
+  }
+  appendRuntimeLog({
+    level: args.level,
+    scope: "system",
+    backendId: MANAGED_LOCAL_BACKEND_ID,
+    backendType: "skillrunner",
+    providerId: "skillrunner-local-runtime",
+    component: "skillrunner-local-runtime",
     operation: args.operation,
     stage: args.stage,
     message: args.message,
@@ -2192,7 +2241,7 @@ async function ensureManagedProfileConfigured(
   state: ManagedLocalRuntimeState,
   baseUrl: string,
 ) {
-  let message = "";
+  const message = "";
   const loaded = await loadBackendsRegistry();
   if (loaded.fatalError) {
     return {

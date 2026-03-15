@@ -27,6 +27,8 @@ reference/Skill-Runner
 reference/Zotero_TagVocab
 reference/zotero
 
+.zotero-skills-runtime/
+
 *-safeBackup-*
 .opencode
 

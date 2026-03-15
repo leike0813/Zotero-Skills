@@ -35,6 +35,10 @@ describe("workflow settings single-source routing", function () {
     assert.include(ts, "isStructuralDraftChange");
     assert.include(ts, "changedSection");
     assert.include(ts, "changedKey");
+    assert.include(
+      ts,
+      'Object.prototype.hasOwnProperty.call(envelope.payload, "executionOptions")',
+    );
     assert.notInclude(ts, ".addButton(");
   });
 
@@ -85,9 +89,21 @@ describe("workflow settings single-source routing", function () {
 
   it("keeps submit dialog updates metadata-aware for structural refresh gating", async function () {
     const js = await readProjectFile("addon/content/dashboard/workflow-settings-dialog.js");
+    assert.include(js, "flushDraftFromControls");
+    assert.include(js, "registerFieldCollector");
+    assert.include(js, 'control.addEventListener("input"');
+    assert.include(js, 'control.addEventListener("blur"');
     assert.include(js, 'changedSection: "backend"');
     assert.include(js, 'changedKey: "backendId"');
     assert.include(js, "changedSection:");
     assert.include(js, "changedKey:");
+  });
+
+  it("keeps workflow-options field updates input-first but host-sync on change/blur", async function () {
+    const js = await readProjectFile("addon/content/dashboard/app.js");
+    assert.include(js, 'control.addEventListener("input"');
+    assert.include(js, 'control.addEventListener("change"');
+    assert.include(js, 'control.addEventListener("blur"');
+    assert.include(js, "commitControlValue");
   });
 });

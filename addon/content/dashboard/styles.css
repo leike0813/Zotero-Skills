@@ -130,6 +130,128 @@ body {
   font-weight: 650;
 }
 
+.workflow-bubbles-section {
+  margin-top: 0;
+}
+
+.workflow-bubbles-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-bubble {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  inline-size: max-content;
+  max-inline-size: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.workflow-bubble-title {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  max-width: 100%;
+  text-align: center;
+}
+
+.workflow-bubble-title-text {
+  white-space: nowrap;
+}
+
+.workflow-bubble-builtin-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.08);
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.workflow-bubble-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  white-space: nowrap;
+  justify-content: center;
+  width: 100%;
+}
+
+.workflow-bubble-btn {
+  min-width: 36px !important;
+  width: auto !important;
+  height: 30px;
+  padding: 0;
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  margin: 0;
+  line-height: 1;
+}
+
+.workflow-bubble-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 16px 16px;
+}
+
+.workflow-bubble-icon-doc {
+  background-image: url("../icons/icon_workflow_doc.svg");
+}
+
+.workflow-bubble-icon-settings {
+  background-image: url("../icons/icon_workflow_settings.svg");
+}
+
+.workflow-doc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+
+.workflow-doc-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.workflow-doc-content {
+  width: 100%;
+  padding: 12px 14px;
+  overflow: auto;
+  height: 100%;
+}
+
+.workflow-doc-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);

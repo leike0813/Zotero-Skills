@@ -77,13 +77,22 @@ async function clearExistingNotesForFixtureParents(context: unknown) {
     if (!parent || typeof parent.getNotes !== "function") {
       continue;
     }
-    const noteIDs = parent.getNotes() || [];
+    let noteIDs: number[] = [];
+    try {
+      noteIDs = parent.getNotes() || [];
+    } catch {
+      continue;
+    }
     for (const noteID of noteIDs) {
       const note = Zotero.Items.get(noteID);
       if (!note || typeof note.isNote !== "function" || !note.isNote()) {
         continue;
       }
-      await note.eraseTx();
+      try {
+        await note.eraseTx();
+      } catch {
+        // Best-effort cleanup for fixture stability in real Zotero DB.
+      }
     }
   }
 }

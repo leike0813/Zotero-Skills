@@ -196,6 +196,38 @@ describe("workflow settings execution", function () {
     assert.equal(persisted.providerOptions.no_cache, false);
   });
 
+  it("persists explicit A->B updates for default settings", async function () {
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-local",
+      workflowParams: { language: "zh-CN" },
+      providerOptions: {
+        engine: "gemini",
+        model: "gemini-2.5-flash",
+        no_cache: false,
+      },
+    });
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-local",
+      workflowParams: { language: "en-US" },
+      providerOptions: {
+        engine: "gemini",
+        model: "gemini-2.5-pro",
+        no_cache: true,
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const persisted = await resolveWorkflowExecutionContext({ workflow: workflow! });
+    assert.equal(persisted.workflowParams.language, "en-US");
+    assert.equal(persisted.providerOptions.model, "gemini-2.5-pro");
+    assert.equal(persisted.providerOptions.no_cache, true);
+  });
+
   it("enforces interactive-mode runtime options for interactive workflows", async function () {
     updateWorkflowSettings("literature-explainer", {
       backendId: "skillrunner-alt",
@@ -287,6 +319,62 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.engine, "opencode");
     assert.equal(context.providerOptions.model_provider, "openai");
     assert.equal(context.providerOptions.model, "openai/gpt-5");
+  });
+
+  it("maps persisted opencode canonical model id to provider model name in settings descriptor", async function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-alt",
+      baseUrl: "http://127.0.0.1:18030",
+      updatedAt: "2026-03-12T00:00:00.000Z",
+      engines: ["opencode"],
+      modelsByEngine: {
+        opencode: [
+          {
+            id: "minimax-m2.5",
+            provider: "alibaba-coding-plan-cn",
+            model: "minimax-m2.5",
+            display_name: "MiniMax M2.5",
+            deprecated: false,
+          },
+          {
+            id: "qwen-plus-latest",
+            provider: "alibaba-coding-plan-cn",
+            model: "qwen-3.5-plus",
+            display_name: "Qwen 3.5 Plus",
+            deprecated: false,
+          },
+        ],
+      },
+    });
+
+    updateWorkflowSettings("literature-explainer", {
+      backendId: "skillrunner-alt",
+      providerOptions: {
+        engine: "opencode",
+        model_provider: "alibaba-coding-plan-cn",
+        model: "qwen-3.5-plus",
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-explainer",
+    );
+    assert.isOk(workflow);
+
+    const registry = await loadBackendsRegistry();
+    assert.isUndefined(registry.fatalError);
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      candidateBackends: registry.backends,
+    });
+
+    assert.equal(descriptor.providerOptions.engine, "opencode");
+    assert.equal(
+      descriptor.providerOptions.model_provider,
+      "alibaba-coding-plan-cn",
+    );
+    assert.equal(descriptor.providerOptions.model, "qwen-3.5-plus");
   });
 
   it("keeps legacy opencode provider/model string compatible", async function () {

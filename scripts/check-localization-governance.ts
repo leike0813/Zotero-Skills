@@ -2,14 +2,54 @@ import { readFileSync } from "fs";
 import path from "path";
 
 const ROOT = process.cwd();
-const LOCALES = ["en-US", "zh-CN"] as const;
-const FTL_FILES = ["addon.ftl", "preferences.ftl", "mainWindow.ftl"] as const;
-const REQUIRED_ADDON_KEYS = [
-  "backend-display-local-skillrunner",
-  "skillrunner-local-runtime-toast-up",
-  "skillrunner-local-runtime-toast-down",
-  "skillrunner-local-runtime-toast-abnormal-stop",
-];
+const LOCALES = ["en-US", "zh-CN", "ja-JP", "fr-FR"] as const;
+const BASE_LOCALE = "en-US" as const;
+const FTL_FILES = ["addon.ftl", "preferences.ftl"] as const;
+const REQUIRED_KEYS_BY_FILE: Record<string, string[]> = {
+  "addon.ftl": [
+    "backend-display-local-skillrunner",
+    "skillrunner-local-runtime-toast-up",
+    "skillrunner-local-runtime-toast-down",
+    "skillrunner-local-runtime-toast-abnormal-stop",
+  ],
+  "preferences.ftl": [
+    "pref-skillrunner-local-status-working-deploy",
+    "pref-skillrunner-local-status-working-start",
+    "pref-skillrunner-local-status-working-stop",
+    "pref-skillrunner-local-status-working-uninstall",
+    "pref-skillrunner-local-status-result-unknown",
+    "pref-skillrunner-local-status-stage-oneclick-plan-start",
+    "pref-skillrunner-local-status-stage-oneclick-plan-deploy",
+    "pref-skillrunner-local-status-stage-oneclick-preflight-failed",
+    "pref-skillrunner-local-status-stage-oneclick-start-complete",
+    "pref-skillrunner-local-status-stage-oneclick-start-missing-runtime",
+    "pref-skillrunner-local-status-stage-oneclick-status-failed",
+    "pref-skillrunner-local-status-stage-oneclick-configure-profile-failed",
+    "pref-skillrunner-local-status-stage-oneclick-lease-failed",
+    "pref-skillrunner-local-status-stage-deploy-complete",
+    "pref-skillrunner-local-status-stage-deploy-release-assets-probe-failed",
+    "pref-skillrunner-local-status-stage-deploy-release-install-failed",
+    "pref-skillrunner-local-status-stage-deploy-bootstrap-failed",
+    "pref-skillrunner-local-status-stage-deploy-bootstrap-report-failed",
+    "pref-skillrunner-local-status-stage-post-deploy-preflight-failed",
+    "pref-skillrunner-local-status-stage-start-complete",
+    "pref-skillrunner-local-status-stage-start-backend-failed",
+    "pref-skillrunner-local-status-stage-start-ensure-failed",
+    "pref-skillrunner-local-status-stage-stop-complete",
+    "pref-skillrunner-local-status-stage-stop-down-failed",
+    "pref-skillrunner-local-status-stage-stop-status-running",
+    "pref-skillrunner-local-status-stage-stop-status-failed",
+    "pref-skillrunner-local-status-stage-stop-failed",
+    "pref-skillrunner-local-status-stage-uninstall-preview",
+    "pref-skillrunner-local-status-stage-uninstall-complete",
+    "pref-skillrunner-local-status-stage-uninstall-local-root-failed",
+    "pref-skillrunner-local-status-stage-uninstall-down-failed",
+    "pref-skillrunner-local-status-stage-uninstall-delete-failed",
+    "pref-skillrunner-local-status-stage-uninstall-profile-failed",
+    "pref-skillrunner-local-status-stage-open-managed-backend-page",
+    "pref-skillrunner-local-status-stage-refresh-model-cache",
+  ],
+};
 const ALLOWED_CROSS_FILE_DUPLICATES = new Set([
   "pref-skillrunner-local-status-idle",
   "pref-skillrunner-local-status-working",
@@ -64,29 +104,52 @@ function hasAny(content: string, patterns: RegExp[]) {
 function main() {
   const errors: string[] = [];
 
+  const localeFileKeySets = new Map<string, Set<string>>();
+  const getLocaleFileKeySet = (locale: string, file: string) => {
+    const cacheKey = `${locale}/${file}`;
+    const cached = localeFileKeySets.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const keys = new Set(parseFluentKeys(readText(`addon/locale/${locale}/${file}`)));
+    localeFileKeySets.set(cacheKey, keys);
+    return keys;
+  };
+
   for (const file of FTL_FILES) {
-    const enKeys = new Set(parseFluentKeys(readText(`addon/locale/en-US/${file}`)));
-    const zhKeys = new Set(parseFluentKeys(readText(`addon/locale/zh-CN/${file}`)));
-    const { onlyInA, onlyInB } = diffKeys(enKeys, zhKeys);
-    if (onlyInA.length > 0 || onlyInB.length > 0) {
-      errors.push(
-        `[locale-parity] ${file}: en-only=[${onlyInA.join(", ")}], zh-only=[${onlyInB.join(", ")}]`,
-      );
+    const baseKeys = getLocaleFileKeySet(BASE_LOCALE, file);
+    for (const locale of LOCALES) {
+      if (locale === BASE_LOCALE) {
+        continue;
+      }
+      const localeKeys = getLocaleFileKeySet(locale, file);
+      const { onlyInA, onlyInB } = diffKeys(baseKeys, localeKeys);
+      if (onlyInA.length > 0 || onlyInB.length > 0) {
+        errors.push(
+          `[locale-parity] ${file} locale=${locale}: ${BASE_LOCALE}-only=[${onlyInA.join(", ")}], ${locale}-only=[${onlyInB.join(", ")}]`,
+        );
+      }
     }
   }
 
-  const addonKeys = new Set(
-    parseFluentKeys(readText("addon/locale/en-US/addon.ftl")),
-  );
-  for (const key of REQUIRED_ADDON_KEYS) {
-    if (!addonKeys.has(key)) {
-      errors.push(`[required-key] addon.ftl missing required key: ${key}`);
+  for (const locale of LOCALES) {
+    for (const file of FTL_FILES) {
+      const requiredKeys = REQUIRED_KEYS_BY_FILE[file] || [];
+      if (requiredKeys.length === 0) {
+        continue;
+      }
+      const keys = getLocaleFileKeySet(locale, file);
+      for (const key of requiredKeys) {
+        if (!keys.has(key)) {
+          errors.push(`[required-key] locale=${locale} file=${file} missing key: ${key}`);
+        }
+      }
     }
   }
 
   for (const locale of LOCALES) {
     const sources = FTL_FILES.map((file) => {
-      const keys = parseFluentKeys(readText(`addon/locale/${locale}/${file}`));
+      const keys = Array.from(getLocaleFileKeySet(locale, file));
       return { file, keys };
     });
     const ownerByKey = new Map<string, string[]>();

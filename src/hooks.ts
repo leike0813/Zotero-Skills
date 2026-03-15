@@ -1,12 +1,10 @@
-import {
-  BasicExampleFactory,
-} from "./modules/examples";
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { registerSelectionSampleMenu } from "./modules/selectionSample";
 import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
 import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
+import { syncBuiltinWorkflowsOnStartup } from "./modules/builtinWorkflowSync";
 import { openBackendManagerDialog } from "./modules/backendManager";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
@@ -43,9 +41,23 @@ import { loadBackendsRegistry } from "./backends/registry";
 import { openSkillRunnerManagementDialog } from "./modules/skillRunnerManagementDialog";
 import { refreshSkillRunnerModelCacheForBackend } from "./providers/skillrunner/modelCache";
 import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConstants";
+import { isDebugModeEnabled } from "./modules/debugMode";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
+
+function registerPrefsPane() {
+  const runtimeRootURI =
+    typeof rootURI === "string" && rootURI
+      ? rootURI
+      : `chrome://${addon.data.config.addonRef}/`;
+  Zotero.PreferencePanes.register({
+    pluginID: addon.data.config.addonID,
+    src: runtimeRootURI + "content/preferences.xhtml",
+    label: getString("prefs-title"),
+    image: `chrome://${addon.data.config.addonRef}/content/icons/favicon.png`,
+  });
+}
 
 async function reconcileSkillRunnerBackendsOnStartup() {
   try {
@@ -167,6 +179,20 @@ async function onStartup() {
   initLocale();
   installWorkflowEditorHostBridge();
 
+  const runtimeRootURI =
+    typeof rootURI === "string" && rootURI
+      ? rootURI
+      : `chrome://${addon.data.config.addonRef}/`;
+  try {
+    await syncBuiltinWorkflowsOnStartup({
+      rootURI: runtimeRootURI,
+    });
+  } catch (error) {
+    if (typeof console !== "undefined") {
+      console.error("[workflow-builtin-sync] failed to sync builtin workflows", error);
+    }
+  }
+
   await rescanWorkflowRegistry();
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
@@ -177,7 +203,7 @@ async function onStartup() {
   }
   startManagedLocalRuntimeAutoEnsureLoop();
 
-  BasicExampleFactory.registerPrefs();
+  registerPrefsPane();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -194,10 +220,6 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   await ensureWorkflowRegistryAndMenu(win);
   ensureDashboardToolbarButton(win);
-
-  win.MozXULElement.insertFTLIfNeeded(
-    `${addon.data.config.addonRef}-mainWindow.ftl`,
-  );
 
   const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
   const popupWin = ProgressWindow
@@ -221,7 +243,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     });
   }
 
-  registerSelectionSampleMenu();
+  if (isDebugModeEnabled()) {
+    registerSelectionSampleMenu();
+  }
 
   if (popupWin) {
     await Zotero.Promise.delay(1000);
@@ -351,6 +375,13 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       });
       break;
     case "openSkillRunnerLocalDeployDebugConsole":
+      if (!isDebugModeEnabled()) {
+        return {
+          ok: false,
+          stage: "open-debug-console-disabled",
+          message: "debug mode is disabled",
+        };
+      }
       await openSkillRunnerLocalDeployDebugDialog();
       return {
         ok: true,

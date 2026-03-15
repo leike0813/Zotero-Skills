@@ -1,7 +1,12 @@
 import { config } from "../../package.json";
 import { getPref, setPref } from "../utils/prefs";
-import { getDefaultWorkflowDir, getEffectiveWorkflowDir } from "./workflowRuntime";
+import {
+  getBuiltinWorkflowDir,
+  getDefaultWorkflowDir,
+  getEffectiveWorkflowDir,
+} from "./workflowRuntime";
 import { getString } from "../utils/locale";
+import { isDebugModeEnabled } from "./debugMode";
 import { subscribeManagedLocalRuntimeStateChange } from "./skillRunnerLocalRuntimeManager";
 
 let unbindManagedLocalRuntimeStateChange: (() => void) | null = null;
@@ -31,11 +36,20 @@ function bindPrefEvents() {
   const browseWorkflowDirButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-browse`,
   ) as XUL.Button | null;
+  const workflowDirEffectiveDescription = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-dir-effective`,
+  ) as HTMLElement | null;
+  const workflowBuiltinDirDescription = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-builtin-dir`,
+  ) as HTMLElement | null;
   const scanButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-scan`,
   ) as XUL.Button | null;
   const workflowSettingsButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-settings`,
+  ) as XUL.Button | null;
+  const workflowOpenLogsButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-open-logs`,
   ) as XUL.Button | null;
   const backendManageButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-backend-manage`,
@@ -121,11 +135,33 @@ function bindPrefEvents() {
     }
   };
 
+  const setButtonHidden = (button: XUL.Button | null, hidden: boolean) => {
+    if (!button) {
+      return;
+    }
+    if (hidden) {
+      button.setAttribute("hidden", "true");
+      return;
+    }
+    if (
+      typeof (button as { removeAttribute?: (name: string) => void })
+        .removeAttribute === "function"
+    ) {
+      (button as { removeAttribute: (name: string) => void }).removeAttribute(
+        "hidden",
+      );
+      return;
+    }
+    button.setAttribute("hidden", "false");
+  };
+
   const setRuntimeActionButtonsDisabled = (disabled: boolean) => {
     for (const button of runtimeActionButtons) {
       setButtonDisabled(button, disabled);
     }
   };
+  const debugModeEnabled = isDebugModeEnabled();
+  setButtonHidden(localRuntimeOpenDebugConsoleButton, !debugModeEnabled);
 
   const setLocalRuntimeStatusText = (text: string) => {
     if (!localRuntimeStatusText) {
@@ -220,8 +256,77 @@ function bindPrefEvents() {
       ok?: unknown;
       message?: unknown;
       conflict?: unknown;
+      stage?: unknown;
     };
-    const message = String(typed.message || "").trim() || "unknown";
+    const runtimeStageMessageKeyByStage: Record<string, string> = {
+      "oneclick-plan-start": "pref-skillrunner-local-status-stage-oneclick-plan-start",
+      "oneclick-plan-deploy": "pref-skillrunner-local-status-stage-oneclick-plan-deploy",
+      "oneclick-preflight": "pref-skillrunner-local-status-stage-oneclick-preflight-failed",
+      "oneclick-preflight-failed-fallback-deploy":
+        "pref-skillrunner-local-status-stage-oneclick-preflight-failed",
+      "oneclick-start-complete": "pref-skillrunner-local-status-stage-oneclick-start-complete",
+      "oneclick-start-missing-runtime":
+        "pref-skillrunner-local-status-stage-oneclick-start-missing-runtime",
+      "oneclick-status": "pref-skillrunner-local-status-stage-oneclick-status-failed",
+      "oneclick-configure-profile":
+        "pref-skillrunner-local-status-stage-oneclick-configure-profile-failed",
+      "oneclick-lease": "pref-skillrunner-local-status-stage-oneclick-lease-failed",
+      "deploy-complete": "pref-skillrunner-local-status-stage-deploy-complete",
+      "local-runtime-deploy-succeeded":
+        "pref-skillrunner-local-status-stage-deploy-complete",
+      "deploy-release-assets-probe":
+        "pref-skillrunner-local-status-stage-deploy-release-assets-probe-failed",
+      "deploy-release-install":
+        "pref-skillrunner-local-status-stage-deploy-release-install-failed",
+      "deploy-bootstrap": "pref-skillrunner-local-status-stage-deploy-bootstrap-failed",
+      "deploy-bootstrap-report":
+        "pref-skillrunner-local-status-stage-deploy-bootstrap-report-failed",
+      "deploy-post-preflight-failed":
+        "pref-skillrunner-local-status-stage-post-deploy-preflight-failed",
+      "post-deploy-preflight":
+        "pref-skillrunner-local-status-stage-post-deploy-preflight-failed",
+      "start-complete": "pref-skillrunner-local-status-stage-start-complete",
+      "start-backend": "pref-skillrunner-local-status-stage-start-backend-failed",
+      "start-ensure": "pref-skillrunner-local-status-stage-start-ensure-failed",
+      "stop-complete": "pref-skillrunner-local-status-stage-stop-complete",
+      "stop-down": "pref-skillrunner-local-status-stage-stop-down-failed",
+      "stop-status-running":
+        "pref-skillrunner-local-status-stage-stop-status-running",
+      "stop-status": "pref-skillrunner-local-status-stage-stop-status-failed",
+      stop: "pref-skillrunner-local-status-stage-stop-failed",
+      "uninstall-preview": "pref-skillrunner-local-status-stage-uninstall-preview",
+      "uninstall-complete": "pref-skillrunner-local-status-stage-uninstall-complete",
+      "uninstall-local-root":
+        "pref-skillrunner-local-status-stage-uninstall-local-root-failed",
+      "uninstall-down": "pref-skillrunner-local-status-stage-uninstall-down-failed",
+      "uninstall-delete": "pref-skillrunner-local-status-stage-uninstall-delete-failed",
+      "uninstall-configure-profile":
+        "pref-skillrunner-local-status-stage-uninstall-profile-failed",
+      "refresh-managed-model-cache":
+        "pref-skillrunner-local-status-stage-refresh-model-cache",
+      "open-managed-backend-page":
+        "pref-skillrunner-local-status-stage-open-managed-backend-page",
+    };
+    const normalizedStage = String(typed.stage || "")
+      .trim()
+      .toLowerCase();
+    let message = "";
+    if (normalizedStage.startsWith("uninstall-delete-")) {
+      message = getString(
+        "pref-skillrunner-local-status-stage-uninstall-delete-failed" as any,
+      );
+    } else {
+      const stageKey = runtimeStageMessageKeyByStage[normalizedStage];
+      if (stageKey) {
+        message = getString(stageKey as any);
+      }
+    }
+    if (!message) {
+      message = String(typed.message || "").trim();
+    }
+    if (!message) {
+      message = getString("pref-skillrunner-local-status-result-unknown" as any);
+    }
     if (typed.conflict === true) {
       return `${getString("pref-skillrunner-local-status-conflict-prefix" as any)} ${message}`;
     }
@@ -319,7 +424,7 @@ function bindPrefEvents() {
       localRuntimeRefreshModelCacheButton,
       actionBusy || !running,
     );
-    setButtonDisabled(localRuntimeOpenDebugConsoleButton, false);
+    setButtonDisabled(localRuntimeOpenDebugConsoleButton, !debugModeEnabled);
   };
 
   const refreshLocalRuntimeStateSummary = async () => {
@@ -373,9 +478,17 @@ function bindPrefEvents() {
   const runLocalRuntimeAction = async (
     type: string,
     payload?: Record<string, unknown>,
+    options?: {
+      workingKey?: string;
+    },
   ) => {
     setRuntimeActionButtonsDisabled(true);
-    setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
+    const workingKey = String(options?.workingKey || "").trim();
+    setLocalRuntimeStatusText(
+      getString(
+        (workingKey || "pref-skillrunner-local-status-working") as any,
+      ),
+    );
     try {
       const response = await addon.hooks.onPrefsEvent(type, {
         window: addon.data.prefs?.window,
@@ -568,6 +681,13 @@ function bindPrefEvents() {
           await refreshLocalRuntimeStateSummary();
           return;
         }
+        setLocalRuntimeStatusText(
+          getString("pref-skillrunner-local-status-working-deploy" as any),
+        );
+      } else {
+        setLocalRuntimeStatusText(
+          getString("pref-skillrunner-local-status-working-start" as any),
+        );
       }
       const response = await addon.hooks.onPrefsEvent("deploySkillRunnerLocalRuntime", {
         window: addon.data.prefs?.window,
@@ -585,7 +705,9 @@ function bindPrefEvents() {
 
   const runLocalRuntimeUninstall = async () => {
     setRuntimeActionButtonsDisabled(true);
-    setLocalRuntimeStatusText(getString("pref-skillrunner-local-status-working" as any));
+    setLocalRuntimeStatusText(
+      getString("pref-skillrunner-local-status-working-uninstall" as any),
+    );
     try {
       const options = await showUninstallOptionsDialog();
       if (!options) {
@@ -637,7 +759,39 @@ function bindPrefEvents() {
     if (workflowDirInput) {
       workflowDirInput.value = nextValue;
     }
+    updateWorkflowDirDescriptions(nextValue);
     return nextValue;
+  };
+
+  const updateWorkflowDirDescriptions = (effectiveWorkflowDir?: string) => {
+    const currentUserDir =
+      String(effectiveWorkflowDir || "").trim() || getEffectiveWorkflowDir();
+    const builtinDir = String(getBuiltinWorkflowDir() || "").trim();
+    if (workflowDirEffectiveDescription) {
+      workflowDirEffectiveDescription.textContent = getString(
+        "pref-workflow-dir-effective" as any,
+        { args: { path: currentUserDir } },
+      );
+    }
+    if (workflowBuiltinDirDescription) {
+      workflowBuiltinDirDescription.textContent = getString(
+        "pref-workflow-builtin-dir" as any,
+        { args: { path: builtinDir } },
+      );
+    }
+  };
+
+  const persistWorkflowDirFromInput = (options?: {
+    fallbackWhenEmpty?: boolean;
+  }) => {
+    const rawValue = String(workflowDirInput?.value || "");
+    const normalized = rawValue.trim();
+    if (options?.fallbackWhenEmpty === false) {
+      setPref("workflowDir", normalized);
+      updateWorkflowDirDescriptions(normalized || getDefaultWorkflowDir());
+      return normalized;
+    }
+    return persistWorkflowDir(normalized);
   };
 
   const pathExists = async (path: string) => {
@@ -695,8 +849,9 @@ function bindPrefEvents() {
     return "";
   };
 
-  const resolveWorkflowBrowseStartDir = async () => {
+  const resolveWorkflowBrowseStartDir = async (preferredCurrentDir?: string) => {
     const currentWorkflowDir =
+      String(preferredCurrentDir || "").trim() ||
       String(workflowDirInput?.value || "").trim() ||
       String(getPref("workflowDir") || "").trim();
     const defaultWorkflowDir = String(getDefaultWorkflowDir() || "").trim();
@@ -715,19 +870,58 @@ function bindPrefEvents() {
   if (workflowDirInput) {
     const workflowDir = String(getPref("workflowDir") || "").trim();
     persistWorkflowDir(workflowDir);
-    workflowDirInput.addEventListener("change", (event: Event) => {
-      persistWorkflowDir((event.target as HTMLInputElement).value);
+    workflowDirInput.addEventListener("input", () => {
+      persistWorkflowDirFromInput({
+        fallbackWhenEmpty: false,
+      });
     });
+    workflowDirInput.addEventListener("change", () => {
+      persistWorkflowDirFromInput({
+        fallbackWhenEmpty: true,
+      });
+    });
+  } else {
+    updateWorkflowDirDescriptions();
   }
 
   if (browseWorkflowDirButton) {
     browseWorkflowDirButton.addEventListener("command", () => {
       void (async () => {
-        if (typeof ztoolkit?.FilePicker !== "function") {
+        const runtimeToolkit = (
+          (typeof ztoolkit !== "undefined" ? ztoolkit : undefined) ||
+          (globalThis as {
+            ztoolkit?: {
+              FilePicker?: new (
+                title: string,
+                mode: string,
+                filters: [string, string][],
+                suggestion: string,
+                window: Window | undefined,
+                filterMask?: string,
+                directory?: string,
+              ) => { open: () => Promise<unknown> };
+            };
+          }).ztoolkit
+        ) as {
+          FilePicker?: new (
+            title: string,
+            mode: string,
+            filters: [string, string][],
+            suggestion: string,
+            window: Window | undefined,
+            filterMask?: string,
+            directory?: string,
+          ) => { open: () => Promise<unknown> };
+        } | null;
+        if (typeof runtimeToolkit?.FilePicker !== "function") {
           return;
         }
-        const initialDirectory = await resolveWorkflowBrowseStartDir();
-        const selectedPath = await new ztoolkit.FilePicker(
+        const currentWorkflowDir = persistWorkflowDirFromInput({
+          fallbackWhenEmpty: false,
+        });
+        const initialDirectory =
+          await resolveWorkflowBrowseStartDir(currentWorkflowDir);
+        const selectedPath = await new runtimeToolkit.FilePicker(
           getString("pref-workflow-dir" as any),
           "folder",
           [],
@@ -766,6 +960,14 @@ function bindPrefEvents() {
     });
   }
 
+  if (workflowOpenLogsButton) {
+    workflowOpenLogsButton.addEventListener("command", () => {
+      void addon.hooks.onPrefsEvent("openLogViewer", {
+        window: addon.data.prefs?.window,
+      });
+    });
+  }
+
   if (backendManageButton) {
     backendManageButton.addEventListener("command", () => {
       void addon.hooks.onPrefsEvent("openBackendManager", {
@@ -796,7 +998,9 @@ function bindPrefEvents() {
 
   if (localRuntimeStopButton) {
     localRuntimeStopButton.addEventListener("command", () => {
-      void runLocalRuntimeAction("stopSkillRunnerLocalRuntime");
+      void runLocalRuntimeAction("stopSkillRunnerLocalRuntime", undefined, {
+        workingKey: "pref-skillrunner-local-status-working-stop",
+      });
     });
   }
 
@@ -806,7 +1010,7 @@ function bindPrefEvents() {
     });
   }
 
-  if (localRuntimeOpenDebugConsoleButton) {
+  if (localRuntimeOpenDebugConsoleButton && debugModeEnabled) {
     localRuntimeOpenDebugConsoleButton.addEventListener("command", () => {
       void (async () => {
         try {

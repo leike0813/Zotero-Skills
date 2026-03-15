@@ -312,9 +312,19 @@ export async function openWorkflowSettingsWebDialog(args: {
         pushSnapshot("workflow-settings-dialog:snapshot");
         return;
       }
+      const payloadExecutionOptions = normalizeExecutionOptions(
+        isObject(envelope.payload)
+          ? (envelope.payload.executionOptions as unknown)
+          : undefined,
+      );
+      const finalExecutionOptions =
+        isObject(envelope.payload) &&
+        Object.prototype.hasOwnProperty.call(envelope.payload, "executionOptions")
+          ? payloadExecutionOptions
+          : normalizeExecutionOptions(draft);
       result = {
         status: "confirmed",
-        executionOptions: normalizeExecutionOptions(draft),
+        executionOptions: finalExecutionOptions,
         persist: persistChecked,
       };
       closeDialog();

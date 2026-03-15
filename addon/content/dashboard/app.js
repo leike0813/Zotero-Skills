@@ -4,6 +4,9 @@
     logsActiveReadingId: null,
     logsScrollTop: 0,
     logsDetailScrollTop: 0,
+    homeDocScrollTop: 0,
+    homeRunningScrollTop: 0,
+    homeDocWorkflowId: "",
     previousTabKey: null,
   };
 
@@ -125,6 +128,9 @@
     }
 
     const tableWrap = el("div", "table-wrap");
+    if (args.tableWrapClassName) {
+      tableWrap.classList.add(args.tableWrapClassName);
+    }
     const table = document.createElement("table");
     if (args.tableClassName) {
       table.className = args.tableClassName;
@@ -303,6 +309,102 @@
 
   function renderSummary(main, snapshot) {
     const labels = snapshot.labels;
+    const workflows = Array.isArray(snapshot.homeWorkflows)
+      ? snapshot.homeWorkflows
+      : [];
+    if (workflows.length > 0) {
+      const section = el("section", "section");
+      section.classList.add("workflow-bubbles-section");
+      section.appendChild(
+        el(
+          "h3",
+          "section-title",
+          labels.homeWorkflowTitle || "Workflows",
+        ),
+      );
+      const wrap = el("div", "workflow-bubbles-wrap");
+      workflows.forEach(function (workflow) {
+        const bubble = el("div", "workflow-bubble");
+        const title = el("div", "workflow-bubble-title");
+        title.appendChild(
+          el(
+            "span",
+            "workflow-bubble-title-text",
+            workflow.workflowLabel || workflow.workflowId || "-",
+          ),
+        );
+        if (workflow.builtin === true) {
+          title.appendChild(
+            el(
+              "span",
+              "workflow-bubble-builtin-badge",
+              labels.homeWorkflowBuiltinBadge || "Builtin",
+            ),
+          );
+        }
+        bubble.appendChild(title);
+        const actions = el("div", "workflow-bubble-actions");
+        const docButton = el(
+          "button",
+          "btn workflow-bubble-btn",
+          "",
+        );
+        docButton.setAttribute("title", labels.homeWorkflowDocButton || "Description");
+        docButton.setAttribute(
+          "aria-label",
+          labels.homeWorkflowDocButton || "Description",
+        );
+        const docIcon = el("span", "workflow-bubble-icon workflow-bubble-icon-doc");
+        docButton.appendChild(docIcon);
+        docButton.addEventListener("click", function () {
+          sendAction("open-home-workflow-doc", {
+            workflowId: workflow.workflowId || "",
+          });
+        });
+        actions.appendChild(docButton);
+        const settingsButton = el(
+          "button",
+          "btn workflow-bubble-btn",
+          "",
+        );
+        settingsButton.setAttribute(
+          "title",
+          labels.homeWorkflowSettingsButton || "Settings",
+        );
+        settingsButton.setAttribute(
+          "aria-label",
+          labels.homeWorkflowSettingsButton || "Settings",
+        );
+        const settingsIcon = el(
+          "span",
+          "workflow-bubble-icon workflow-bubble-icon-settings",
+        );
+        settingsButton.appendChild(settingsIcon);
+        settingsButton.disabled = workflow.configurable !== true;
+        settingsButton.addEventListener("click", function () {
+          if (settingsButton.disabled) {
+            return;
+          }
+          sendAction("open-home-workflow-settings", {
+            workflowId: workflow.workflowId || "",
+          });
+        });
+        actions.appendChild(settingsButton);
+        bubble.appendChild(actions);
+        wrap.appendChild(bubble);
+      });
+      section.appendChild(wrap);
+      main.appendChild(section);
+    }
+
+    main.appendChild(
+      el(
+        "h3",
+        "section-title",
+        labels.homeSummaryTitle || "Task Summary",
+      ),
+    );
+
     const cards = el("div", "cards");
     [
       { label: labels.summaryTotal, value: snapshot.summary.total },
@@ -324,6 +426,7 @@
       renderTaskTable({
         rows: snapshot.runningRows || [],
         labels,
+        tableWrapClassName: "home-running-table-wrap",
         emptyText: labels.noRunning,
         onRowClick: (row) => {
           sendAction("open-running-task", {
@@ -363,6 +466,56 @@
         },
       }),
     );
+    main.appendChild(section);
+  }
+
+  function renderHomeWorkflowDoc(main, snapshot) {
+    const labels = snapshot.labels || {};
+    const view = snapshot.homeWorkflowDocView;
+    if (!view) {
+      renderSummary(main, snapshot);
+      return;
+    }
+    const section = el("section", "section workflow-doc-section");
+    section.appendChild(
+      el(
+        "h3",
+        "section-title",
+        view.workflowLabel || view.workflowId || "-",
+      ),
+    );
+    const panel = el("div", "panel workflow-doc-panel");
+    const content = el("div", "workflow-doc-content markdown-body");
+    content.setAttribute("data-workflow-id", String(view.workflowId || ""));
+    if (view.missingReadme) {
+      content.appendChild(
+        el(
+          "div",
+          "empty",
+          labels.homeWorkflowDocMissingReadme ||
+            "README.md was not found for this workflow.",
+        ),
+      );
+    } else {
+      content.innerHTML = String(view.html || "");
+    }
+    content.addEventListener("scroll", function () {
+      state.homeDocScrollTop = content.scrollTop || 0;
+      state.homeDocWorkflowId = String(view.workflowId || "");
+    });
+    panel.appendChild(content);
+    section.appendChild(panel);
+    const footer = el("div", "workflow-doc-footer");
+    const backButton = el(
+      "button",
+      "btn",
+      labels.homeWorkflowDocBack || "Back to Dashboard",
+    );
+    backButton.addEventListener("click", function () {
+      sendAction("close-home-workflow-doc", {});
+    });
+    footer.appendChild(backButton);
+    section.appendChild(footer);
     main.appendChild(section);
   }
 
@@ -628,6 +781,7 @@
       }
     }
     const errorNode = el("div", "workflow-settings-field-error");
+    let lastCommittedRaw = String(control.value == null ? "" : control.value);
     const setFieldError = function (message) {
       if (message) {
         control.classList.add("invalid");
@@ -642,30 +796,51 @@
         }
       }
     };
-    control.addEventListener("change", function () {
+    const commitControlValue = function (emitChange) {
+      const rawValue = String(control.value == null ? "" : control.value);
+      let changed = false;
       if (args.entry.type === "number") {
         const validation = validateNumberFieldValue({
           entry: args.entry,
-          rawValue: control.value,
+          rawValue,
           labels: args.labels || {},
         });
         if (!validation.ok) {
           setFieldError(validation.message);
-          return;
+          return false;
         }
         setFieldError("");
         if (validation.remove) {
+          changed = Object.prototype.hasOwnProperty.call(args.values, args.entry.key);
           delete args.values[args.entry.key];
         } else {
+          changed = args.values[args.entry.key] !== validation.value;
           args.values[args.entry.key] = validation.value;
         }
       } else {
         setFieldError("");
-        args.values[args.entry.key] = control.value;
+        changed = args.values[args.entry.key] !== rawValue;
+        args.values[args.entry.key] = rawValue;
       }
-      args.onChange({
-        changedKey: args.entry.key,
-      });
+      if (emitChange && (changed || rawValue !== lastCommittedRaw)) {
+        args.onChange({
+          changedKey: args.entry.key,
+        });
+      }
+      lastCommittedRaw = rawValue;
+      return true;
+    };
+    control.addEventListener("input", function () {
+      if (args.entry.type === "number") {
+        setFieldError("");
+      }
+      args.values[args.entry.key] = control.value;
+    });
+    control.addEventListener("change", function () {
+      commitControlValue(true);
+    });
+    control.addEventListener("blur", function () {
+      commitControlValue(true);
     });
     row.appendChild(control);
     return row;
@@ -1303,6 +1478,54 @@
         previousMainScrollTop = existingMain.scrollTop;
       }
     }
+    const shouldRestoreHomeDocScroll = Boolean(
+      snapshot &&
+        snapshot.selectedTabKey === "home" &&
+        snapshot.homeWorkflowDocView,
+    );
+    const shouldRestoreHomeRunningScroll = Boolean(
+      snapshot &&
+        snapshot.selectedTabKey === "home" &&
+        !snapshot.homeWorkflowDocView,
+    );
+    let previousHomeDocScrollTop = 0;
+    let previousHomeRunningScrollTop = 0;
+    if (shouldRestoreHomeDocScroll) {
+      const existingDoc = app.querySelector(".workflow-doc-content");
+      const requestedWorkflowId = String(
+        (snapshot.homeWorkflowDocView && snapshot.homeWorkflowDocView.workflowId) ||
+          "",
+      );
+      if (
+        existingDoc &&
+        typeof existingDoc.scrollTop === "number" &&
+        Number.isFinite(existingDoc.scrollTop)
+      ) {
+        const existingWorkflowId =
+          String(existingDoc.getAttribute("data-workflow-id") || "").trim();
+        if (existingWorkflowId === requestedWorkflowId) {
+          previousHomeDocScrollTop = existingDoc.scrollTop;
+        }
+      } else if (
+        state.homeDocWorkflowId &&
+        state.homeDocWorkflowId === requestedWorkflowId &&
+        Number.isFinite(state.homeDocScrollTop)
+      ) {
+        previousHomeDocScrollTop = state.homeDocScrollTop;
+      }
+    }
+    if (shouldRestoreHomeRunningScroll) {
+      const existingRunningWrap = app.querySelector(".home-running-table-wrap");
+      if (
+        existingRunningWrap &&
+        typeof existingRunningWrap.scrollTop === "number" &&
+        Number.isFinite(existingRunningWrap.scrollTop)
+      ) {
+        previousHomeRunningScrollTop = existingRunningWrap.scrollTop;
+      } else if (Number.isFinite(state.homeRunningScrollTop)) {
+        previousHomeRunningScrollTop = state.homeRunningScrollTop;
+      }
+    }
     clearNode(app);
     if (!snapshot) {
       const loading = el("div", "main");
@@ -1400,7 +1623,12 @@
     }
     if (snapshot.selectedTabKey === "home") {
       main.appendChild(el("h2", "page-title", snapshot.title));
-      renderSummary(main, snapshot);
+      if (snapshot.homeWorkflowDocView) {
+        main.classList.add("skillrunner-fill");
+        renderHomeWorkflowDoc(main, snapshot);
+      } else {
+        renderSummary(main, snapshot);
+      }
     } else if (snapshot.selectedTabKey === "workflow-options") {
       renderWorkflowOptions(main, snapshot);
     } else if (snapshot.selectedTabKey === "runtime-logs") {
@@ -1415,6 +1643,21 @@
     app.appendChild(main);
     if (shouldRestoreWorkflowOptionsScroll && previousMainScrollTop > 0) {
       main.scrollTop = previousMainScrollTop;
+    }
+    if (shouldRestoreHomeDocScroll && previousHomeDocScrollTop > 0) {
+      const nextDoc = main.querySelector(".workflow-doc-content");
+      if (nextDoc) {
+        nextDoc.scrollTop = previousHomeDocScrollTop;
+      }
+    }
+    if (shouldRestoreHomeRunningScroll && previousHomeRunningScrollTop > 0) {
+      const nextRunningWrap = main.querySelector(".home-running-table-wrap");
+      if (nextRunningWrap) {
+        nextRunningWrap.scrollTop = previousHomeRunningScrollTop;
+        state.homeRunningScrollTop = previousHomeRunningScrollTop;
+      }
+    } else if (snapshot.selectedTabKey !== "home" || snapshot.homeWorkflowDocView) {
+      state.homeRunningScrollTop = 0;
     }
     
     // Synchronously restore scroll layout in the same frame for runtime logs

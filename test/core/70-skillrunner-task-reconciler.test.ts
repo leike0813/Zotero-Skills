@@ -4,6 +4,7 @@ import type { JobRecord } from "../../src/jobQueue/manager";
 import {
   reconcileSkillRunnerBackendTaskLedgerOnce,
   setSkillRunnerBackendReconcileFailureToastEmitterForTests,
+  setSkillRunnerTaskLifecycleToastEmitterForTests,
   mapSkillRunnerBackendStatusToJobState,
   SkillRunnerTaskReconciler,
 } from "../../src/modules/skillRunnerTaskReconciler";
@@ -16,6 +17,7 @@ import {
   listTaskDashboardHistory,
   recordTaskDashboardHistoryFromJob,
 } from "../../src/modules/taskDashboardHistory";
+import { clearRuntimeLogs, listRuntimeLogs } from "../../src/modules/runtimeLogManager";
 import { getPref, setPref } from "../../src/utils/prefs";
 
 function createJsonResponse(payload: unknown, status = 200): Response {
@@ -131,6 +133,7 @@ describe("skillrunner task reconciler", function () {
     setPref("skillRunnerDeferredTasksJson", "");
     setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
+    clearRuntimeLogs();
   });
 
   afterEach(function () {
@@ -138,7 +141,9 @@ describe("skillrunner task reconciler", function () {
     setPref("skillRunnerDeferredTasksJson", "");
     setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
+    clearRuntimeLogs();
     setSkillRunnerBackendReconcileFailureToastEmitterForTests();
+    setSkillRunnerTaskLifecycleToastEmitterForTests();
   });
 
   it("maps backend status to local job state one-to-one", function () {
@@ -383,6 +388,164 @@ describe("skillrunner task reconciler", function () {
     assert.isAtLeast(resultAttempts, 2);
   });
 
+  it("emits succeeded toast when interactive task reaches terminal succeeded and apply completes", async function () {
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-toast-succeeded")) {
+        return createJsonResponse({
+          request_id: "req-toast-succeeded",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-toast-succeeded/result")) {
+        return createJsonResponse({
+          note_path: "",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Toast Succeeded Parent" },
+    });
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: parent.id,
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-toast-succeeded",
+        requestId: "req-toast-succeeded",
+        state: "running",
+        fetchType: "result",
+        targetParentID: parent.id,
+      }),
+    });
+
+    await reconciler.reconcilePending();
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].state, "succeeded");
+    assert.equal(toasts[0].type, "success");
+    assert.include(toasts[0].text, "Literature Explainer");
+    assert.include(toasts[0].text, "paper.md");
+  });
+
+  it("emits failed toast when interactive task reaches terminal failed", async function () {
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-toast-failed")) {
+        return createJsonResponse({
+          request_id: "req-toast-failed",
+          status: "failed",
+          error: "backend failed",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-toast-failed",
+        requestId: "req-toast-failed",
+        state: "running",
+        fetchType: "result",
+      }),
+    });
+
+    await reconciler.reconcilePending();
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].state, "failed");
+    assert.equal(toasts[0].type, "error");
+    assert.include(toasts[0].text, "Literature Explainer");
+    assert.include(toasts[0].text, "backend failed");
+  });
+
+  it("emits canceled toast when interactive task reaches terminal canceled", async function () {
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-toast-canceled")) {
+        return createJsonResponse({
+          request_id: "req-toast-canceled",
+          status: "canceled",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-toast-canceled",
+        requestId: "req-toast-canceled",
+        state: "running",
+        fetchType: "result",
+      }),
+    });
+
+    await reconciler.reconcilePending();
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].state, "canceled");
+    assert.equal(toasts[0].type, "default");
+    assert.include(toasts[0].text, "Literature Explainer");
+    assert.include(toasts[0].text, "paper.md");
+  });
+
   it("stops apply retries after limit and drops deferred context", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
       if (url.endsWith("/v1/jobs/req-retry-exhausted")) {
@@ -551,5 +714,68 @@ describe("skillrunner task reconciler", function () {
     assert.isFalse(result.ok);
     assert.lengthOf(toasts, 1);
     assert.include(toasts[0], "Remote SkillRunner");
+  });
+
+  it("throttles repeated backend-reconcile-failed logs when backend is unreachable", async function () {
+    let networkDown = true;
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-reconcile-throttle")) {
+        if (networkDown) {
+          throw new TypeError("NetworkError when attempting to fetch resource.");
+        }
+        return createJsonResponse({
+          request_id: "req-reconcile-throttle",
+          status: "running",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-reconcile-throttle",
+        requestId: "req-reconcile-throttle",
+        state: "running",
+        fetchType: "result",
+      }),
+    });
+
+    await reconciler.reconcilePending();
+    await reconciler.reconcilePending();
+    let failedLogs = listRuntimeLogs({
+      operation: "backend-reconcile-failed",
+      backendId: "skillrunner-local",
+      requestId: "req-reconcile-throttle",
+      order: "asc",
+    });
+    assert.lengthOf(failedLogs, 1);
+
+    networkDown = false;
+    await reconciler.reconcilePending();
+    networkDown = true;
+    await reconciler.reconcilePending();
+    failedLogs = listRuntimeLogs({
+      operation: "backend-reconcile-failed",
+      backendId: "skillrunner-local",
+      requestId: "req-reconcile-throttle",
+      order: "asc",
+    });
+    assert.lengthOf(failedLogs, 2);
   });
 });

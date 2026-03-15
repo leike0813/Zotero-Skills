@@ -28,7 +28,6 @@ import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
-import { openLogViewerDialogWithArgs } from "./logViewerDialog";
 import {
   buildWorkflowSettingsUiDescriptor,
   updateWorkflowSettings,
@@ -52,6 +51,17 @@ type DashboardState = {
   workflowSettingsSaveStateById: Map<string, "idle" | "saving" | "saved" | "error">;
   workflowSettingsSaveErrorById: Map<string, string>;
   workflowSettingsSaveTimerById: Map<string, number>;
+  runtimeLogFilters: {
+    levels?: string[];
+    diagnosticMode?: boolean;
+    workflowId?: string | string[];
+    requestId?: string;
+    jobId?: string;
+    backendId?: string | string[];
+    backendType?: string;
+    runId?: string;
+  };
+  runtimeLogSelectedIdSet: Set<string>;
 };
 
 type DashboardRow = {
@@ -134,6 +144,29 @@ type DashboardSnapshot = {
     logRows: DashboardLogRow[];
     selectedLogEntryId?: string;
     selectedLogEntryPayload?: unknown;
+  };
+  runtimeLogsView?: {
+    filters: DashboardState["runtimeLogFilters"];
+    diagnosticMode: boolean;
+    totalEntries: number;
+    budget: {
+      maxEntries: number;
+      maxBytes: number;
+      estimatedBytes: number;
+      droppedEntries: number;
+      droppedByReason: {
+        entry_limit: number;
+        byte_budget: number;
+        expired: number;
+      };
+      retentionMode: string;
+    };
+    logs: DashboardLogRow[];
+    selectedEntryIds: string[];
+    filterOptions: {
+      backends: { value: string; label: string }[];
+      workflows: { value: string; label: string }[];
+    };
   };
 };
 
@@ -628,6 +661,46 @@ async function buildDashboardSnapshot(args: {
       "workflow-settings-dashboard-save-error",
       "Save failed",
     ),
+    runtimeLogsTabTitle: localize(
+      "task-dashboard-runtime-logs-tab-title",
+      "Runtime Logs",
+    ),
+    runtimeLogsClear: localize(
+      "task-dashboard-runtime-logs-clear",
+      "Clear Logs",
+    ),
+    runtimeLogsCopySelected: localize(
+      "task-dashboard-runtime-logs-copy-selected",
+      "Copy Selected",
+    ),
+    runtimeLogsCopyVisibleNDJSON: localize(
+      "task-dashboard-runtime-logs-copy-visible-ndjson",
+      "Copy Visible (NDJSON)",
+    ),
+    runtimeLogsCopyIssueSummary: localize(
+      "task-dashboard-runtime-logs-copy-issue-summary",
+      "Copy Issue Summary",
+    ),
+    runtimeLogsCopyDiagnosticBundle: localize(
+      "task-dashboard-runtime-logs-copy-diagnostic-bundle",
+      "Copy Diagnostic Bundle",
+    ),
+    runtimeLogsDiagnosticMode: localize(
+      "task-dashboard-runtime-logs-diagnostic-mode",
+      "Diagnostic Mode",
+    ),
+    runtimeLogsClearContext: localize(
+      "task-dashboard-runtime-logs-clear-context",
+      "Clear Context",
+    ),
+    runtimeLogsSelectToView: localize(
+      "task-dashboard-runtime-logs-select-to-view",
+      "Select a log entry to view details.",
+    ),
+    runtimeLogsContextScope: localize(
+      "task-dashboard-runtime-logs-context-scope",
+      "Active Context Filters: "
+    ),
   };
 
   const tabs = [
@@ -638,6 +711,10 @@ async function buildDashboardSnapshot(args: {
     {
       key: "workflow-options",
       label: labels.tabWorkflowOptions,
+    },
+    {
+      key: "runtime-logs",
+      label: labels.runtimeLogsTabTitle,
     },
     ...args.backends.map((backend) => ({
       key: toBackendTabKey(backend.id),
@@ -672,6 +749,65 @@ async function buildDashboardSnapshot(args: {
       state: args.state,
       backends: args.backends,
     });
+    return snapshot;
+  }
+
+  if (selectedTabKey === "runtime-logs") {
+    const { getRuntimeLogDiagnosticMode, snapshotRuntimeLogs } = await import(
+      "./runtimeLogManager"
+    );
+    const diagnosticMode = getRuntimeLogDiagnosticMode();
+    const logSnapshot = snapshotRuntimeLogs();
+    const rawLogs = listRuntimeLogs({
+      ...(args.state.runtimeLogFilters as any),
+      order: "desc",
+      limit: 300,
+    });
+    const uniqueBackends = new Set<string>();
+    const uniqueWorkflows = new Set<string>();
+    for (const entry of logSnapshot.entries) {
+      if (entry.backendId) uniqueBackends.add(entry.backendId);
+      if (entry.workflowId) uniqueWorkflows.add(entry.workflowId);
+    }
+
+    const { getLoadedWorkflowEntries } = await import("./workflowRuntime");
+    const loadedWorkflows = getLoadedWorkflowEntries();
+
+    const mappedBackends = Array.from(uniqueBackends).sort().map((bId) => {
+      const foundBackend = args.backends.find(b => b.id === bId);
+      return {
+        value: bId,
+        label: foundBackend ? resolveBackendDisplayName(bId, foundBackend.displayName) : bId,
+      };
+    });
+
+    const mappedWorkflows = Array.from(uniqueWorkflows).sort().map((wId) => {
+      const match = loadedWorkflows.find(w => w.manifest.id === wId);
+      return {
+        value: wId,
+        label: match ? match.manifest.label : wId,
+      };
+    });
+
+    snapshot.runtimeLogsView = {
+      filters: args.state.runtimeLogFilters,
+      diagnosticMode,
+      totalEntries: logSnapshot.entries.length,
+      budget: {
+        maxEntries: logSnapshot.maxEntries,
+        maxBytes: logSnapshot.maxBytes,
+        estimatedBytes: logSnapshot.estimatedBytes,
+        droppedEntries: logSnapshot.droppedEntries,
+        droppedByReason: logSnapshot.droppedByReason,
+        retentionMode: logSnapshot.retentionMode,
+      },
+      logs: rawLogs.map((entry) => mapLogRow(entry)),
+      selectedEntryIds: Array.from(args.state.runtimeLogSelectedIdSet),
+      filterOptions: {
+        backends: mappedBackends,
+        workflows: mappedWorkflows,
+      },
+    };
     return snapshot;
   }
 
@@ -796,6 +932,8 @@ export async function openTaskManagerDialog(args?: {
     workflowSettingsSaveStateById: new Map(),
     workflowSettingsSaveErrorById: new Map(),
     workflowSettingsSaveTimerById: new Map(),
+    runtimeLogFilters: {},
+    runtimeLogSelectedIdSet: new Set(),
   };
 
   cleanupTaskDashboardHistory();
@@ -1016,26 +1154,28 @@ export async function openTaskManagerDialog(args?: {
       }).map((entry) => mapTaskRow(entry));
       const selected = rows.find((row) => row.id === taskId);
       if (!selected) {
-        await openLogViewerDialogWithArgs({
-          initialFilters: {
-            backendId: backend.id,
-            backendType: backend.type,
-          },
-          focusDiagnostic: true,
-        });
-        return;
-      }
-      await openLogViewerDialogWithArgs({
-        initialFilters: {
+        state.selectedTabKey = "runtime-logs";
+        state.runtimeLogFilters = {
           backendId: backend.id,
           backendType: backend.type,
-          workflowId: selected.workflowId,
-          requestId: selected.requestId,
-          jobId: selected.jobId,
-          runId: selected.runId,
-        },
-        focusDiagnostic: true,
-      });
+        };
+        const { setRuntimeLogDiagnosticMode } = await import("./runtimeLogManager");
+        setRuntimeLogDiagnosticMode(true);
+        refresh("user-action");
+        return;
+      }
+      state.selectedTabKey = "runtime-logs";
+      state.runtimeLogFilters = {
+        backendId: backend.id,
+        backendType: backend.type,
+        workflowId: selected.workflowId,
+        requestId: selected.requestId,
+        jobId: selected.jobId,
+        runId: selected.runId,
+      };
+      const { setRuntimeLogDiagnosticMode } = await import("./runtimeLogManager");
+      setRuntimeLogDiagnosticMode(true);
+      refresh("user-action");
       return;
     }
     if (action === "select-log-entry") {
@@ -1121,6 +1261,115 @@ export async function openTaskManagerDialog(args?: {
         );
       }
       refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-toggle-diagnostic") {
+      const { setRuntimeLogDiagnosticMode } = await import("./runtimeLogManager");
+      setRuntimeLogDiagnosticMode(Boolean(payload.enabled));
+      refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-set-filters") {
+      const incomingFilters = payload.filters;
+      if (incomingFilters && typeof incomingFilters === "object") {
+        state.runtimeLogFilters = { ...state.runtimeLogFilters, ...incomingFilters };
+      }
+      refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-clear-context") {
+      const levels = state.runtimeLogFilters.levels;
+      state.runtimeLogFilters = { levels };
+      refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-clear") {
+      const { clearRuntimeLogs } = await import("./runtimeLogManager");
+      clearRuntimeLogs();
+      state.runtimeLogSelectedIdSet.clear();
+      refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-select-entries") {
+      const entryIds = Array.isArray(payload.entryIds) ? payload.entryIds : [];
+      state.runtimeLogSelectedIdSet.clear();
+      for (const id of entryIds) {
+        if (typeof id === "string" && id) {
+          state.runtimeLogSelectedIdSet.add(id);
+        }
+      }
+      refresh("user-action");
+      return;
+    }
+    if (action === "runtime-logs-copy-selected") {
+      const format = String(payload.format || "pretty-json").trim();
+      const entries = listRuntimeLogs({ order: "desc" }).filter(e => state.runtimeLogSelectedIdSet.has(e.id));
+      if (entries.length === 0) {
+         taskManagerDialog?.window?.alert?.(
+           localize("task-dashboard-runtime-logs-copy-empty", "No log entries selected to copy.")
+         );
+         return;
+      }
+      try {
+        const { buildLogCopyPayload } = await import("./runtimeLogManager");
+        const { copyText } = await import("../utils/ztoolkit");
+        const textToCopy = buildLogCopyPayload({ entries, format: format as any });
+        
+        const helper = (Components as any).classes?.["@mozilla.org/widget/clipboardhelper;1"]?.getService(
+          Components.interfaces.nsIClipboardHelper,
+        ) as { copyString?: (value: string) => void };
+        if (helper?.copyString) {
+          helper.copyString(textToCopy);
+        }
+      } catch (error) {
+         taskManagerDialog?.window?.alert?.(
+           localize("task-dashboard-runtime-logs-copy-failed", "Failed to copy logs: {error}", {
+             args: { error: compactError(error) },
+           }),
+         );
+      }
+    }
+    if (action === "runtime-logs-copy-diagnostic-bundle") {
+      try {
+        const { buildRuntimeDiagnosticBundle } = await import("./runtimeLogManager");
+        const bundle = buildRuntimeDiagnosticBundle({
+          filters: { ...state.runtimeLogFilters, levels: ["debug", "info", "warn", "error"] }
+        });
+        const textToCopy = JSON.stringify(bundle, null, 2);
+        const helper = (Components as any).classes?.["@mozilla.org/widget/clipboardhelper;1"]?.getService(
+          Components.interfaces.nsIClipboardHelper,
+        ) as { copyString?: (value: string) => void };
+        if (helper?.copyString) {
+          helper.copyString(textToCopy);
+        }
+      } catch (error) {
+         taskManagerDialog?.window?.alert?.(
+           localize("task-dashboard-runtime-logs-copy-failed", "Failed to copy logs: {error}", {
+             args: { error: compactError(error) },
+           }),
+         );
+      }
+      return;
+    }
+    if (action === "runtime-logs-copy-issue-summary") {
+      try {
+        const { buildRuntimeIssueSummary } = await import("./runtimeLogManager");
+        const textToCopy = buildRuntimeIssueSummary({
+          filters: { ...state.runtimeLogFilters, levels: ["debug", "info", "warn", "error"] }
+        });
+        const helper = (Components as any).classes?.["@mozilla.org/widget/clipboardhelper;1"]?.getService(
+          Components.interfaces.nsIClipboardHelper,
+        ) as { copyString?: (value: string) => void };
+        if (helper?.copyString) {
+          helper.copyString(textToCopy);
+        }
+      } catch (error) {
+         taskManagerDialog?.window?.alert?.(
+           localize("task-dashboard-runtime-logs-copy-failed", "Failed to copy logs: {error}", {
+             args: { error: compactError(error) },
+           }),
+         );
+      }
       return;
     }
   };

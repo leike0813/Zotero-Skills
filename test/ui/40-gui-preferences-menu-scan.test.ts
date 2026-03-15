@@ -253,6 +253,8 @@ function createPrefsWindow(args?: {
   const workflowDirInput = document.createXULElement("input");
   workflowDirInput.id = `zotero-prefpane-${config.addonRef}-workflow-dir`;
 
+  const workflowBrowseButton = document.createXULElement("button");
+  workflowBrowseButton.id = `zotero-prefpane-${config.addonRef}-workflow-browse`;
   const scanButton = document.createXULElement("button");
   scanButton.id = `zotero-prefpane-${config.addonRef}-workflow-scan`;
   const workflowSettingsButton = document.createXULElement("button");
@@ -305,6 +307,9 @@ function createPrefsWindow(args?: {
   const localRuntimeUninstallOptionsCancelButton = document.createXULElement("button");
   localRuntimeUninstallOptionsCancelButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-uninstall-options-cancel`;
+  const localRuntimeProgressRow = document.createXULElement("hbox");
+  localRuntimeProgressRow.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-progress-row`;
   const localRuntimeProgressmeterContainer = document.createXULElement("div");
   localRuntimeProgressmeterContainer.className = "custom-progress-container";
   localRuntimeProgressmeterContainer.id = "mock-progress-container";
@@ -335,6 +340,7 @@ function createPrefsWindow(args?: {
       },
     } as unknown as Window,
     workflowDirInput,
+    workflowBrowseButton,
     scanButton,
     workflowSettingsButton,
     backendManageButton,
@@ -432,6 +438,7 @@ describe("gui: preference scripts", function () {
     const {
       window,
       workflowDirInput,
+      workflowBrowseButton,
       scanButton,
       workflowSettingsButton,
       backendManageButton,
@@ -453,6 +460,40 @@ describe("gui: preference scripts", function () {
       Zotero.Prefs.get(workflowDirPrefKey, true),
       "D:/tmp/workflows-custom",
     );
+
+    const runtime = globalThis as { ztoolkit?: unknown };
+    const previousZtoolkit = runtime.ztoolkit;
+    let pickerInitialDirectory = "";
+    try {
+      runtime.ztoolkit = {
+        FilePicker: class {
+          constructor(
+            _title: string,
+            _mode: string,
+            _filters: [string, string][],
+            _suggestion: string,
+            _window: Window,
+            _filterMask?: string,
+            directory?: string,
+          ) {
+            pickerInitialDirectory = String(directory || "");
+          }
+          async open() {
+            return "D:/tmp/workflows-picked";
+          }
+        },
+      };
+      workflowBrowseButton.dispatch("command");
+      await flushTasks();
+      assert.equal(pickerInitialDirectory, "D:/tmp/workflows-custom");
+      assert.equal(workflowDirInput.value, "D:/tmp/workflows-picked");
+      assert.equal(
+        Zotero.Prefs.get(workflowDirPrefKey, true),
+        "D:/tmp/workflows-picked",
+      );
+    } finally {
+      runtime.ztoolkit = previousZtoolkit;
+    }
 
     const directScanWorkflowDir = "D:/tmp/workflows-scan-direct";
     workflowDirInput.value = directScanWorkflowDir;
@@ -753,6 +794,7 @@ describe("gui: preference scripts", function () {
 
     const {
       window,
+      localRuntimeProgressRow,
       localRuntimeProgressmeter,
       localRuntimeProgressText,
     } = createPrefsWindow();

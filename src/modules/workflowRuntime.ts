@@ -4,7 +4,7 @@ import { resolveRuntimeAddon } from "../utils/runtimeBridge";
 import { loadWorkflowManifests } from "../workflows/loader";
 import type { LoadedWorkflow, LoadedWorkflows } from "../workflows/types";
 
-function getDefaultWorkflowDir() {
+export function getDefaultWorkflowDir() {
   const runtime = globalThis as {
     Zotero?: { DataDirectory?: { dir?: string } };
     process?: { cwd?: () => string };

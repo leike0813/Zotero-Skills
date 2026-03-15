@@ -21,6 +21,37 @@ export type RuntimeLogScope =
   | "hook"
   | "system";
 
+export function createDefaultLogViewerLevelFilter(): Record<RuntimeLogLevel, boolean> {
+  return {
+    debug: true,
+    info: true,
+    warn: true,
+    error: true,
+  };
+}
+
+export function filterLogsByLevels(
+  entries: RuntimeLogEntry[],
+  levelFilter: Record<RuntimeLogLevel, boolean>,
+) {
+  const active = new Set(
+    (["debug", "info", "warn", "error"] as RuntimeLogLevel[]).filter(
+      (level) => levelFilter[level]
+    )
+  );
+  return entries.filter((entry) => active.has(entry.level));
+}
+
+export function buildLogCopyPayload(args: {
+  entries: RuntimeLogEntry[];
+  format?: "pretty-json" | "ndjson";
+}) {
+  if (args.format === "ndjson") {
+    return formatRuntimeLogsAsNDJSON(args.entries);
+  }
+  return formatRuntimeLogsAsPrettyJson(args.entries);
+}
+
 export type RuntimeLogTransportSummary = {
   method?: string;
   url?: string;
@@ -77,10 +108,10 @@ export type RuntimeLogInput = Omit<
 export type RuntimeLogListFilters = {
   levels?: RuntimeLogLevel[];
   scopes?: RuntimeLogScope[];
-  backendId?: string;
+  backendId?: string | string[];
   backendType?: string;
   providerId?: string;
-  workflowId?: string;
+  workflowId?: string | string[];
   runId?: string;
   requestId?: string;
   jobId?: string;
@@ -794,10 +825,14 @@ export function listRuntimeLogs(filters: RuntimeLogListFilters = {}) {
   hydrateRuntimeLogsIfNeeded();
   const levels = Array.isArray(filters.levels) ? new Set(filters.levels) : null;
   const scopes = Array.isArray(filters.scopes) ? new Set(filters.scopes) : null;
-  const backendId = normalizeId(filters.backendId);
+  const backendIds = Array.isArray(filters.backendId) 
+    ? new Set(filters.backendId.map(id => normalizeId(id))) 
+    : filters.backendId ? new Set([normalizeId(filters.backendId)]) : null;
   const backendType = normalizeId(filters.backendType);
   const providerId = normalizeId(filters.providerId);
-  const workflowId = normalizeId(filters.workflowId);
+  const workflowIds = Array.isArray(filters.workflowId)
+    ? new Set(filters.workflowId.map(id => normalizeId(id)))
+    : filters.workflowId ? new Set([normalizeId(filters.workflowId)]) : null;
   const runId = normalizeId(filters.runId);
   const requestId = normalizeId(filters.requestId);
   const jobId = normalizeId(filters.jobId);
@@ -814,7 +849,7 @@ export function listRuntimeLogs(filters: RuntimeLogListFilters = {}) {
     if (scopes && !scopes.has(entry.scope)) {
       return false;
     }
-    if (backendId && entry.backendId !== backendId) {
+    if (backendIds && !backendIds.has(entry.backendId)) {
       return false;
     }
     if (backendType && entry.backendType !== backendType) {
@@ -823,7 +858,7 @@ export function listRuntimeLogs(filters: RuntimeLogListFilters = {}) {
     if (providerId && entry.providerId !== providerId) {
       return false;
     }
-    if (workflowId && entry.workflowId !== workflowId) {
+    if (workflowIds && !workflowIds.has(entry.workflowId)) {
       return false;
     }
     if (runId && entry.runId !== runId) {

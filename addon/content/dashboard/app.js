@@ -1,6 +1,10 @@
 (function () {
   const state = {
     snapshot: null,
+    logsActiveReadingId: null,
+    logsScrollTop: 0,
+    logsDetailScrollTop: 0,
+    previousTabKey: null,
   };
 
   function sendAction(action, payload) {
@@ -56,6 +60,26 @@
     return parsed.toLocaleString();
   }
 
+  function formatMillis(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return "-";
+    }
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) {
+      return text;
+    }
+    const pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    const padMs = function (n) { return (n < 100 ? "0" : "") + (n < 10 ? "0" : "") + n; };
+    return parsed.getFullYear() + "-" +
+      pad(parsed.getMonth() + 1) + "-" +
+      pad(parsed.getDate()) + " " +
+      pad(parsed.getHours()) + ":" +
+      pad(parsed.getMinutes()) + ":" +
+      pad(parsed.getSeconds()) + "." +
+      padMs(parsed.getMilliseconds());
+  }
+
   function isTerminalStatus(status, semantics) {
     if (semantics && typeof semantics === "object") {
       if (typeof semantics.terminal === "boolean") {
@@ -64,6 +88,23 @@
     }
     const normalized = String(status || "").trim().toLowerCase();
     return normalized === "succeeded" || normalized === "failed" || normalized === "canceled";
+  }
+
+  let toastTimer;
+  function showToast(msg) {
+    let t = document.getElementById("zs-toast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "zs-toast";
+      t.className = "zs-toast";
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add("show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() {
+      t.classList.remove("show");
+    }, 3000);
   }
 
   function renderStatusBadge(stateValue, label) {
@@ -822,12 +863,432 @@
     main.appendChild(shell);
   }
 
+  function renderRuntimeLogs(main, snapshot) {
+    const labels = snapshot.labels || {};
+    const view = snapshot.runtimeLogsView;
+    if (!view) {
+      return;
+    }
+
+    const filters = view.filters || {};
+    const selectedIds = new Set(view.selectedEntryIds || []);
+
+    main.appendChild(
+      el(
+        "h2",
+        "page-title",
+        labels.runtimeLogsTabTitle || "Runtime Logs",
+      ),
+    );
+
+    const toolbar = el("div", "toolbar logs-toolbar");
+
+    // Filter Controls
+    const filterWrap = el("div", "logs-filter-wrap");
+    
+    // Level Filters
+    const levelWrap = el("div", "logs-filter-levels");
+    const levels = ["Debug", "Info", "Warn", "Error"];
+    const currentLevels = filters.levels || ["debug", "info", "warn", "error"];
+    levels.forEach(function (levelTitle) {
+      const level = String(levelTitle).toLowerCase();
+      const labelNode = el("label", "logs-filter-checkbox-label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = currentLevels.indexOf(level) !== -1;
+      checkbox.addEventListener("change", function () {
+        const nextLevels = levels.map(function(l) { return String(l).toLowerCase(); }).filter(function(l) {
+          if (l === level) { return checkbox.checked; }
+          return currentLevels.indexOf(l) !== -1;
+        });
+        sendAction("runtime-logs-set-filters", {
+          filters: { levels: nextLevels }
+        });
+      });
+      labelNode.appendChild(checkbox);
+      labelNode.appendChild(el("span", "logs-filter-text", levelTitle));
+      levelWrap.appendChild(labelNode);
+    });
+    filterWrap.appendChild(levelWrap);
+
+    // Backend/Workflow Dropdown Filters
+    const backendOptions = (view.filterOptions?.backends || []);
+    if (backendOptions.length > 0) {
+      const bWrap = el("div", "logs-filter-dropdown-wrap");
+      bWrap.appendChild(el("span", "logs-filter-label", labels.runtimeLogsFilterBackend || "Backend"));
+      const defaultBackends = backendOptions.map(function(o) { return o.value; });
+      let currentBackends = defaultBackends;
+      if (filters.backendId !== undefined && filters.backendId !== null) {
+        currentBackends = Array.isArray(filters.backendId) ? filters.backendId : [filters.backendId];
+      }
+      const bSelect = window.createMultiSelect(backendOptions, currentBackends, function(nextVals) {
+        const payloadIds = nextVals.length >= backendOptions.length ? undefined : nextVals;
+        sendAction("runtime-logs-set-filters", { filters: { backendId: payloadIds } });
+      }, labels.runtimeLogsFilterAll || "All");
+      bWrap.appendChild(bSelect.element);
+      filterWrap.appendChild(bWrap);
+    }
+
+    const workflowOptions = (view.filterOptions?.workflows || []);
+    if (workflowOptions.length > 0) {
+      const wWrap = el("div", "logs-filter-dropdown-wrap");
+      wWrap.appendChild(el("span", "logs-filter-label", labels.runtimeLogsFilterWorkflow || "Workflow"));
+      const defaultWorkflows = workflowOptions.map(function(o) { return o.value; });
+      let currentWorkflows = defaultWorkflows;
+      if (filters.workflowId !== undefined && filters.workflowId !== null) {
+        currentWorkflows = Array.isArray(filters.workflowId) ? filters.workflowId : [filters.workflowId];
+      }
+      const wSelect = window.createMultiSelect(workflowOptions, currentWorkflows, function(nextVals) {
+        const payloadIds = nextVals.length >= workflowOptions.length ? undefined : nextVals;
+        sendAction("runtime-logs-set-filters", { filters: { workflowId: payloadIds } });
+      }, labels.runtimeLogsFilterAll || "All");
+      wWrap.appendChild(wSelect.element);
+      filterWrap.appendChild(wWrap);
+    }
+
+    // Diagnostic Toggle
+    const diagWrap = el("div", "logs-filter-diagnostic");
+    const diagLabelNode = el("label", "logs-filter-checkbox-label");
+    const diagCheckbox = document.createElement("input");
+    diagCheckbox.type = "checkbox";
+    diagCheckbox.checked = view.diagnosticMode === true;
+    diagCheckbox.addEventListener("change", function () {
+      sendAction("runtime-logs-toggle-diagnostic", {
+        enabled: diagCheckbox.checked
+      });
+    });
+    diagLabelNode.appendChild(diagCheckbox);
+    diagLabelNode.appendChild(el("span", "logs-filter-text", labels.runtimeLogsDiagnosticMode || "Diagnostic Mode"));
+    diagWrap.appendChild(diagLabelNode);
+    filterWrap.appendChild(diagWrap);
+
+    toolbar.appendChild(filterWrap);
+
+    // Context Filters Display
+    const contextKeys = ["workflowId", "requestId", "jobId", "backendId", "runId"];
+    const activeContextAttrs = contextKeys.filter(function(k) { return typeof filters[k] === "string" && filters[k]; });
+    
+    const contextWrap = el("div", "logs-context-wrap");
+    if (activeContextAttrs.length > 0) {
+      contextWrap.appendChild(el("span", "logs-context-label", labels.runtimeLogsContextScope || "Active Context Filters: "));
+      activeContextAttrs.forEach(function(k) {
+        contextWrap.appendChild(el("span", "logs-context-badge mono", k + "=" + filters[k]));
+      });
+      const clearCtxBtn = el("button", "btn clear", labels.runtimeLogsClearContext || "Clear Context");
+      clearCtxBtn.addEventListener("click", function() {
+        sendAction("runtime-logs-clear-context");
+      });
+      contextWrap.appendChild(clearCtxBtn);
+    }
+    toolbar.appendChild(contextWrap);
+
+    // Action Buttons
+    const actionWrap = el("div", "logs-action-wrap");
+
+    const copyGroup = el("div", "logs-copy-group");
+    const copySelectedBtn = el("button", "btn", labels.runtimeLogsCopySelected || "Copy Selected");
+    copySelectedBtn.disabled = selectedIds.size === 0;
+    copySelectedBtn.addEventListener("click", function() {
+      sendAction("runtime-logs-copy-selected", { format: "pretty-json" });
+      const msg = labels.runtimeLogsCopySuccess ? labels.runtimeLogsCopySuccess.replace("{ $count }", selectedIds.size) : "Copied " + selectedIds.size + " entries!";
+      showToast(msg);
+    });
+    copyGroup.appendChild(copySelectedBtn);
+
+    const copyNdjsonBtn = el("button", "btn", labels.runtimeLogsCopyVisibleNDJSON || "Copy Visible (NDJSON)");
+    copyNdjsonBtn.disabled = view.logs.length === 0;
+    copyNdjsonBtn.addEventListener("click", function() {
+      const ids = view.logs.map(function(l) { return l.id; });
+      sendAction("runtime-logs-select-entries", { entryIds: ids });
+      setTimeout(function() {
+        sendAction("runtime-logs-copy-selected", { format: "ndjson" });
+        const msg = labels.runtimeLogsCopySuccess ? labels.runtimeLogsCopySuccess.replace("{ $count }", ids.length) : "Copied " + ids.length + " entries!";
+        showToast(msg);
+      }, 50);
+    });
+    copyGroup.appendChild(copyNdjsonBtn);
+
+    const copySystemDiagBtn = el("button", "btn", labels.runtimeLogsCopyDiagnosticBundle || "Copy Diagnostic Bundle");
+    copySystemDiagBtn.disabled = view.logs.length === 0;
+    copySystemDiagBtn.addEventListener("click", function() {
+      sendAction("runtime-logs-copy-diagnostic-bundle");
+      showToast(labels.runtimeLogsCopySuccessBundle || "Diagnostic bundle copied!");
+    });
+    copyGroup.appendChild(copySystemDiagBtn);
+
+    const copyIssueBtn = el("button", "btn", labels.runtimeLogsCopyIssueSummary || "Copy Issue Summary");
+    copyIssueBtn.disabled = view.logs.length === 0;
+    copyIssueBtn.addEventListener("click", function() {
+      sendAction("runtime-logs-copy-issue-summary");
+      showToast(labels.runtimeLogsCopySuccessIssue || "Issue summary copied!");
+    });
+    copyGroup.appendChild(copyIssueBtn);
+
+    actionWrap.appendChild(copyGroup);
+
+    const clearLogsBtn = el("button", "btn clear", labels.runtimeLogsClear || "Clear Logs");
+    clearLogsBtn.addEventListener("click", function() {
+      if (confirm("Are you sure you want to clear all runtime logs?")) {
+        sendAction("runtime-logs-clear");
+      }
+    });
+    actionWrap.appendChild(clearLogsBtn);
+    toolbar.appendChild(actionWrap);
+    main.appendChild(toolbar);
+
+    // Split View layout
+    const splitView = el("div", "logs-split-view");
+    
+    // Left: List
+    const listPane = el("div", "logs-list-pane");
+    
+    // Table rendering for Logs
+    const isAllSelected = view.logs.length > 0 && view.logs.every(function(l) { return selectedIds.has(l.id); });
+    const selectAllObj = { checked: isAllSelected };
+    
+    const tableWrap = el("div", "table-wrap logs-table-wrap");
+    tableWrap.addEventListener("scroll", function() {
+      state.logsScrollTop = tableWrap.scrollTop || 0;
+    });
+
+    const table = document.createElement("table");
+    table.className = "logs-table";
+    
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    
+    const thCheck = document.createElement("th");
+    thCheck.className = "col-check";
+    const selectAllCb = document.createElement("input");
+    selectAllCb.type = "checkbox";
+    selectAllCb.checked = selectAllObj.checked;
+    selectAllCb.addEventListener("change", function() {
+      const isChecked = selectAllCb.checked;
+      const nextIds = isChecked ? view.logs.map(function(l) { return l.id; }) : [];
+      sendAction("runtime-logs-select-entries", { entryIds: nextIds });
+    });
+    thCheck.appendChild(selectAllCb);
+    headRow.appendChild(thCheck);
+    
+    const columns = [
+      labels.colTime || "Time",
+      labels.colLevel || "Level",
+      labels.colStage || "Stage",
+      labels.colScope || "Scope",
+      labels.colMessage || "Message"
+    ];
+    columns.forEach(function (title) {
+      const th = document.createElement("th");
+      th.textContent = title;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    if (view.logs.length === 0) {
+      const emptyTr = document.createElement("tr");
+      const emptyTd = document.createElement("td");
+      emptyTd.colSpan = columns.length + 1;
+      emptyTd.className = "empty";
+      emptyTd.textContent = labels.logsEmpty || "No runtime logs captured.";
+      emptyTr.appendChild(emptyTd);
+      tbody.appendChild(emptyTr);
+    }
+
+    let rowToAutoSelectDetails = null;
+
+    view.logs.forEach(function (row) {
+      const tr = document.createElement("tr");
+      tr.className = "log-row";
+      if (selectedIds.has(row.id)) {
+        tr.classList.add("selected");
+      }
+      if (state.logsActiveReadingId === row.id) {
+        tr.classList.add("reading");
+        rowToAutoSelectDetails = row;
+      }
+      
+      const checkCell = document.createElement("td");
+      checkCell.className = "col-check";
+      checkCell.addEventListener("click", function(e) {
+         e.stopPropagation(); // prevent row click
+      });
+      const rowCb = document.createElement("input");
+      rowCb.type = "checkbox";
+      rowCb.checked = selectedIds.has(row.id);
+      rowCb.addEventListener("change", function(e) {
+        e.stopPropagation();
+        const nextIds = new Set(selectedIds);
+        if (rowCb.checked) {
+          nextIds.add(row.id);
+        } else {
+          nextIds.delete(row.id);
+        }
+        sendAction("runtime-logs-select-entries", { entryIds: Array.from(nextIds) });
+      });
+      checkCell.appendChild(rowCb);
+      tr.appendChild(checkCell);
+
+      [
+        { node: el("td", "mono", formatMillis(row.ts)) },
+        { node: el("td", "", "").appendChild(renderStatusBadge(row.level, String(row.level || "").toUpperCase())).parentNode },
+        { node: el("td", "", row.stage || "-") },
+        { node: el("td", "", row.scope || "-") },
+        { node: el("td", "log-message-cell", row.message || "-") }
+      ].forEach(function(item) {
+        tr.appendChild(item.node);
+      });
+
+      tr.addEventListener("click", function() {
+        // Toggle reading panel
+        const siblings = tbody.querySelectorAll("tr");
+        siblings.forEach(function(sib) { sib.classList.remove("reading"); });
+        tr.classList.add("reading");
+        if (state.logsActiveReadingId !== row.id) {
+          state.logsDetailScrollTop = 0;
+        }
+        state.logsActiveReadingId = row.id;
+
+        // Render detail panel
+        renderDetailPanel(row);
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    listPane.appendChild(tableWrap);
+    splitView.appendChild(listPane);
+
+    // Right: Detail Panel
+    const detailPane = el("div", "logs-detail-pane");
+    
+    function renderDetailPanel(rowEntry) {
+      clearNode(detailPane);
+      if (!rowEntry) {
+        detailPane.appendChild(el("div", "logs-detail-empty", labels.runtimeLogsSelectToView || "Select a log entry to view details."));
+        return;
+      }
+      detailPane.classList.add("visible");
+      
+      const header = el("div", "logs-detail-header");
+      header.appendChild(el("h3", "", `${labels.logsDetailTitle || "Log Details"} `));
+      const closeBtn = el("button", "btn clear logs-detail-close", "Close");
+      closeBtn.addEventListener("click", function() {
+        clearNode(detailPane);
+        detailPane.classList.remove("visible");
+        const actNode = tbody.querySelector("tr.reading");
+        if(actNode) actNode.classList.remove("reading");
+        state.logsActiveReadingId = null;
+        state.logsDetailScrollTop = 0;
+      });
+      header.appendChild(closeBtn);
+      detailPane.appendChild(header);
+      
+      const contentWrap = el("div", "logs-detail-content");
+
+      if (rowEntry.error && rowEntry.error.message) {
+         contentWrap.appendChild(el("h4", "error-title", "Exception"));
+         contentWrap.appendChild(el("pre", "log-error mono", rowEntry.error.message));
+         if (rowEntry.error.stack) {
+            contentWrap.appendChild(el("pre", "log-stack mono", rowEntry.error.stack));
+         }
+      }
+      
+      const preObj = el("pre", "log-view mono");
+      preObj.className = "log-view mono payload-view";
+      preObj.textContent = JSON.stringify(rowEntry.detailPayload, null, 2);
+      contentWrap.appendChild(preObj);
+      
+      preObj.addEventListener("scroll", function() {
+        state.logsDetailScrollTop = preObj.scrollTop || 0;
+      });
+      
+      detailPane.appendChild(contentWrap);
+      
+      if (state.logsDetailScrollTop > 0) {
+        setTimeout(function() {
+          preObj.scrollTop = state.logsDetailScrollTop;
+        }, 0);
+      }
+    }
+    
+    renderDetailPanel(rowToAutoSelectDetails); // initial empty state or restored state
+    splitView.appendChild(detailPane);
+
+    main.appendChild(splitView);
+
+  }
+
   function render() {
     const app = document.getElementById("app");
     if (!app) {
       return;
     }
     const snapshot = state.snapshot;
+    
+    // Fast path: Incremental DOM replacement for logs to prevent scroll flicker
+    if (snapshot && snapshot.selectedTabKey === "runtime-logs" && state.previousTabKey === "runtime-logs") {
+      const main = app.querySelector("main");
+      const tableWrap = main ? main.querySelector(".logs-table-wrap") : null;
+      if (main && tableWrap) {
+        const currentScroll = tableWrap.scrollTop;
+        
+        const tempMain = document.createElement("main");
+        renderRuntimeLogs(tempMain, snapshot);
+        
+        const oldToolbar = main.querySelector(".logs-toolbar");
+        const newToolbar = tempMain.querySelector(".logs-toolbar");
+        if (oldToolbar && newToolbar) {
+          // Replace specific sub-sections instead of wiping the entire logs-toolbar. This retains .logs-filter-wrap DOM so custom-select isn't closed aggressively.
+          const oldContextWrap = oldToolbar.querySelector(".logs-context-wrap");
+          const newContextWrap = newToolbar.querySelector(".logs-context-wrap");
+          if (oldContextWrap && newContextWrap) oldToolbar.replaceChild(newContextWrap, oldContextWrap);
+          else if (!oldContextWrap && newContextWrap) oldToolbar.appendChild(newContextWrap);
+          else if (oldContextWrap && !newContextWrap) oldContextWrap.remove();
+
+          const oldActionWrap = oldToolbar.querySelector(".logs-action-wrap");
+          const newActionWrap = newToolbar.querySelector(".logs-action-wrap");
+          if (oldActionWrap && newActionWrap) oldToolbar.replaceChild(newActionWrap, oldActionWrap);
+          else if (!oldActionWrap && newActionWrap) oldToolbar.appendChild(newActionWrap);
+          else if (oldActionWrap && !newActionWrap) oldActionWrap.remove();
+        }
+        
+        const oldTable = main.querySelector(".logs-table");
+        const newTable = tempMain.querySelector(".logs-table");
+        if (oldTable && newTable) {
+          const oldThead = oldTable.querySelector("thead");
+          const newThead = newTable.querySelector("thead");
+          if (oldThead && newThead) oldTable.replaceChild(newThead, oldThead);
+          
+          const oldTbody = oldTable.querySelector("tbody");
+          const newTbody = newTable.querySelector("tbody");
+          if (oldTbody && newTbody) oldTable.replaceChild(newTbody, oldTbody);
+        }
+        
+        const oldDetail = main.querySelector(".logs-detail-pane");
+        const newDetail = tempMain.querySelector(".logs-detail-pane");
+        if (oldDetail && newDetail) {
+          const oldPayloadView = oldDetail.querySelector(".payload-view");
+          const detailScroll = oldPayloadView ? oldPayloadView.scrollTop : 0;
+          oldDetail.parentNode.replaceChild(newDetail, oldDetail);
+          const newPayloadView = newDetail.querySelector(".payload-view");
+          if (newPayloadView) {
+            newPayloadView.scrollTop = detailScroll;
+            state.logsDetailScrollTop = detailScroll;
+          }
+        }
+        
+        tableWrap.scrollTop = currentScroll;
+        state.logsScrollTop = currentScroll;
+        return;
+      }
+    }
+    
+    state.previousTabKey = snapshot ? snapshot.selectedTabKey : null;
+
     const shouldRestoreWorkflowOptionsScroll = Boolean(
       snapshot && snapshot.selectedTabKey === "workflow-options",
     );
@@ -891,13 +1352,32 @@
         });
         sidebar.appendChild(btn);
       }
+      const runtimeLogsTab = tabs.find(
+        (tab) => tab.key === "runtime-logs",
+      );
+      if (runtimeLogsTab) {
+        const btn = el(
+          "button",
+          "tab-btn",
+          runtimeLogsTab.label || runtimeLogsTab.key,
+        );
+        if (runtimeLogsTab.key === snapshot.selectedTabKey) {
+          btn.classList.add("active");
+        }
+        btn.addEventListener("click", function () {
+          sendAction("select-tab", {
+            tabKey: runtimeLogsTab.key,
+          });
+        });
+        sidebar.appendChild(btn);
+      }
       const divider = el("div", "tab-divider");
       sidebar.appendChild(divider);
       sidebar.appendChild(
         el("h3", "sidebar-title", snapshot.labels.tabBackends || "Backends"),
       );
       tabs
-        .filter((tab) => tab.key !== "home" && tab.key !== "workflow-options")
+        .filter((tab) => tab.key !== "home" && tab.key !== "workflow-options" && tab.key !== "runtime-logs")
         .forEach(function (tab) {
         const btn = el("button", "tab-btn", tab.label || tab.key);
         if (tab.key === snapshot.selectedTabKey) {
@@ -923,6 +1403,9 @@
       renderSummary(main, snapshot);
     } else if (snapshot.selectedTabKey === "workflow-options") {
       renderWorkflowOptions(main, snapshot);
+    } else if (snapshot.selectedTabKey === "runtime-logs") {
+      main.classList.add("skillrunner-fill"); // reuse the full-height flex config
+      renderRuntimeLogs(main, snapshot);
     } else if (snapshot.backendView && snapshot.backendView.backendType === "skillrunner") {
       main.classList.add("skillrunner-fill");
       renderSkillRunnerBackend(main, snapshot);
@@ -932,6 +1415,14 @@
     app.appendChild(main);
     if (shouldRestoreWorkflowOptionsScroll && previousMainScrollTop > 0) {
       main.scrollTop = previousMainScrollTop;
+    }
+    
+    // Synchronously restore scroll layout in the same frame for runtime logs
+    if (snapshot.selectedTabKey === "runtime-logs" && state.logsScrollTop > 0) {
+      const logsTableWrap = main.querySelector('.logs-table-wrap');
+      if (logsTableWrap) {
+        logsTableWrap.scrollTop = state.logsScrollTop;
+      }
     }
   }
 

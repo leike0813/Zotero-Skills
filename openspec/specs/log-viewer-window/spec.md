@@ -21,6 +21,21 @@ The log viewer SHALL show all available levels in its visible filter state by de
 - **WHEN** user applies level filter to `error` only
 - **THEN** the log list SHALL only display entries whose level is `error`
 
+### Requirement: Log Viewer Window SHALL Support Multi-select Backend and Workflow Filtering
+The log viewer SHALL allow users to select multiple backends and workflows simultaneously using checkbox-based filters.
+
+#### Scenario: Multi-select filtering
+- **WHEN** user selects multiple backends via checkboxes
+- **THEN** the log list SHALL display entries matching any of the selected backends
+- **AND** the trigger labels SHALL reflect selection count or "All" if no filter is applied
+
+### Requirement: Log Viewer UI Interaction SHALL Be Stable During Background Updates
+Interactive components like filter dropdowns SHALL NOT be closed or reset when the log list or dashboard state refreshes in the background.
+
+#### Scenario: Background refresh stability
+- **WHEN** a background log update occurs while a filter dropdown is open
+- **THEN** the dropdown SHALL remain open and maintain its current selection state
+
 ### Requirement: Log Viewer Window SHALL Support Copy/Export for Debug Feedback
 The log viewer MUST provide user actions to copy diagnostics for issue reporting and agent debugging, including structured bundle export.
 
@@ -41,6 +56,10 @@ The log viewer MUST provide user actions to copy diagnostics for issue reporting
 #### Scenario: Copy issue summary markdown
 - **WHEN** user triggers `Copy Issue Summary`
 - **THEN** the output SHALL include environment summary, repro window, top errors, and correlated request/job identifiers
+
+#### Scenario: Copy success feedback
+- **WHEN** any copy action is successfully completed
+- **THEN** the viewer SHALL display a non-obstructive success notification (toast)
 
 ### Requirement: Log Viewer Window SHALL Include Internationalized Labels
 The log window MUST use locale strings for labels, actions, and status messages, including newly added diagnostic controls.

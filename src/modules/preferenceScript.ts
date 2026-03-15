@@ -1,6 +1,6 @@
 import { config } from "../../package.json";
 import { getPref, setPref } from "../utils/prefs";
-import { getEffectiveWorkflowDir } from "./workflowRuntime";
+import { getDefaultWorkflowDir, getEffectiveWorkflowDir } from "./workflowRuntime";
 import { getString } from "../utils/locale";
 import { subscribeManagedLocalRuntimeStateChange } from "./skillRunnerLocalRuntimeManager";
 
@@ -28,6 +28,9 @@ function bindPrefEvents() {
   const workflowDirInput = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-dir`,
   ) as HTMLInputElement | null;
+  const browseWorkflowDirButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-workflow-browse`,
+  ) as XUL.Button | null;
   const scanButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-scan`,
   ) as XUL.Button | null;
@@ -628,16 +631,115 @@ function bindPrefEvents() {
     }
   };
 
+  const persistWorkflowDir = (rawValue: string) => {
+    const nextValue = rawValue.trim() || getEffectiveWorkflowDir();
+    setPref("workflowDir", nextValue);
+    if (workflowDirInput) {
+      workflowDirInput.value = nextValue;
+    }
+    return nextValue;
+  };
+
+  const pathExists = async (path: string) => {
+    const candidate = String(path || "").trim();
+    if (!candidate) {
+      return false;
+    }
+
+    const runtime = globalThis as {
+      IOUtils?: { exists?: (path: string) => Promise<boolean> };
+      OS?: { File?: { exists?: (path: string) => Promise<boolean> } };
+    };
+
+    if (typeof runtime.IOUtils?.exists === "function") {
+      try {
+        return await runtime.IOUtils.exists(candidate);
+      } catch {
+        return false;
+      }
+    }
+
+    if (typeof runtime.OS?.File?.exists === "function") {
+      try {
+        return await runtime.OS.File.exists(candidate);
+      } catch {
+        return false;
+      }
+    }
+
+    // If existence APIs are unavailable (e.g., lightweight tests), keep the first candidate.
+    return true;
+  };
+
+  const getHomeDir = () => {
+    const runtime = globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+      Services?: { env?: { get?: (key: string) => string } };
+    };
+    const fromProcess =
+      runtime.process?.env?.USERPROFILE || runtime.process?.env?.HOME || "";
+    if (fromProcess && fromProcess.trim()) {
+      return fromProcess.trim();
+    }
+    const readEnv = runtime.Services?.env?.get;
+    if (typeof readEnv === "function") {
+      try {
+        const fromServices = readEnv("USERPROFILE") || readEnv("HOME") || "";
+        if (fromServices && fromServices.trim()) {
+          return fromServices.trim();
+        }
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  };
+
+  const resolveWorkflowBrowseStartDir = async () => {
+    const currentWorkflowDir =
+      String(workflowDirInput?.value || "").trim() ||
+      String(getPref("workflowDir") || "").trim();
+    const defaultWorkflowDir = String(getDefaultWorkflowDir() || "").trim();
+    const homeDir = getHomeDir();
+    const candidates = [currentWorkflowDir, defaultWorkflowDir, homeDir].filter(
+      (value, index, array) => Boolean(value) && array.indexOf(value) === index,
+    );
+    for (const candidate of candidates) {
+      if (await pathExists(candidate)) {
+        return candidate;
+      }
+    }
+    return currentWorkflowDir || defaultWorkflowDir || homeDir || "";
+  };
+
   if (workflowDirInput) {
     const workflowDir = String(getPref("workflowDir") || "").trim();
-    const normalizedWorkflowDir = workflowDir || getEffectiveWorkflowDir();
-    workflowDirInput.value = normalizedWorkflowDir;
-    setPref("workflowDir", normalizedWorkflowDir);
+    persistWorkflowDir(workflowDir);
     workflowDirInput.addEventListener("change", (event: Event) => {
-      const value = (event.target as HTMLInputElement).value.trim();
-      const nextValue = value || getEffectiveWorkflowDir();
-      setPref("workflowDir", nextValue);
-      workflowDirInput.value = nextValue;
+      persistWorkflowDir((event.target as HTMLInputElement).value);
+    });
+  }
+
+  if (browseWorkflowDirButton) {
+    browseWorkflowDirButton.addEventListener("command", () => {
+      void (async () => {
+        if (typeof ztoolkit?.FilePicker !== "function") {
+          return;
+        }
+        const initialDirectory = await resolveWorkflowBrowseStartDir();
+        const selectedPath = await new ztoolkit.FilePicker(
+          getString("pref-workflow-dir" as any),
+          "folder",
+          [],
+          "",
+          addon.data.prefs?.window,
+          undefined,
+          initialDirectory,
+        ).open();
+        if (typeof selectedPath === "string" && selectedPath.trim()) {
+          persistWorkflowDir(selectedPath);
+        }
+      })();
     });
   }
 
@@ -646,9 +748,7 @@ function bindPrefEvents() {
       const rawWorkflowDir = workflowDirInput?.value || "";
       const normalizedWorkflowDir = rawWorkflowDir.trim();
       if (workflowDirInput) {
-        const nextWorkflowDir = normalizedWorkflowDir || getEffectiveWorkflowDir();
-        setPref("workflowDir", nextWorkflowDir);
-        workflowDirInput.value = nextWorkflowDir;
+        persistWorkflowDir(normalizedWorkflowDir);
       }
       void addon.hooks.onPrefsEvent("scanWorkflows", {
         window: addon.data.prefs?.window,

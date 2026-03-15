@@ -9,7 +9,6 @@ import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/wor
 import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
 import { openBackendManagerDialog } from "./modules/backendManager";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
-import { openLogViewerDialog } from "./modules/logViewerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
 import {
   ensureDashboardToolbarButton,
@@ -347,7 +346,9 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       await openTaskManagerDialog();
       break;
     case "openLogViewer":
-      await openLogViewerDialog();
+      await openTaskManagerDialog({
+        initialTabKey: "runtime-logs",
+      });
       break;
     case "openSkillRunnerLocalDeployDebugConsole":
       await openSkillRunnerLocalDeployDebugDialog();

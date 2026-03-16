@@ -8,11 +8,34 @@ async function makeWorkflow(
   manifest: Record<string, unknown>,
   hooks: Record<string, string>,
 ) {
+  const normalizedManifest = JSON.parse(
+    JSON.stringify(manifest),
+  ) as Record<string, unknown> & {
+    request?: { kind?: unknown };
+    provider?: unknown;
+    execution?: Record<string, unknown>;
+    __test_skip_skillrunner_mode_autofill?: unknown;
+  };
+  const skipSkillRunnerModeAutoFill =
+    normalizedManifest.__test_skip_skillrunner_mode_autofill === true;
+  delete normalizedManifest.__test_skip_skillrunner_mode_autofill;
+  const provider = String(normalizedManifest.provider || "").trim();
+  const requestKind = String(normalizedManifest.request?.kind || "").trim();
+  const isSkillRunnerWorkflow =
+    provider === "skillrunner" || requestKind === "skillrunner.job.v1";
+  if (isSkillRunnerWorkflow && !skipSkillRunnerModeAutoFill) {
+    normalizedManifest.execution = {
+      ...(normalizedManifest.execution || {}),
+      skillrunner_mode:
+        String(normalizedManifest.execution?.skillrunner_mode || "").trim() ||
+        "auto",
+    };
+  }
   const workflowDir = joinPath(rootDir, id);
   const hooksDir = joinPath(workflowDir, "hooks");
   await writeUtf8(
     joinPath(workflowDir, "workflow.json"),
-    JSON.stringify(manifest, null, 2),
+    JSON.stringify(normalizedManifest, null, 2),
   );
   for (const [name, content] of Object.entries(hooks)) {
     await writeUtf8(joinPath(hooksDir, name), content);
@@ -444,6 +467,77 @@ describe("workflow loader validation", function () {
       loaded.workflows,
       1,
       `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+    );
+  });
+
+  it("accepts skillrunner workflow manifest when execution.skillrunner_mode is declared", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "skillrunner-mode-valid",
+      {
+        id: "skillrunner-mode-valid",
+        label: "SkillRunner Mode Valid",
+        request: { kind: "skillrunner.job.v1" },
+        execution: {
+          skillrunner_mode: "interactive",
+        },
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(
+      loaded.workflows,
+      1,
+      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+    );
+    assert.equal(
+      loaded.workflows[0].manifest.execution?.skillrunner_mode,
+      "interactive",
+    );
+  });
+
+  it("rejects skillrunner workflow manifest when execution.skillrunner_mode is missing", async function () {
+    const tmpRoot = await mkTempDir("zotero-skills-wf");
+    await makeWorkflow(
+      tmpRoot,
+      "skillrunner-mode-missing",
+      {
+        id: "skillrunner-mode-missing",
+        label: "SkillRunner Mode Missing",
+        request: { kind: "skillrunner.job.v1" },
+        __test_skip_skillrunner_mode_autofill: true,
+        hooks: { applyResult: "hooks/applyResult.js" },
+      },
+      {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      },
+    );
+
+    const loaded = await loadWorkflowManifests(tmpRoot);
+    assert.lengthOf(loaded.workflows, 0);
+    const diagnostic = (loaded.diagnostics || []).find(
+      (entry) =>
+        entry.category === "manifest_validation_error" &&
+        entry.entry === "skillrunner-mode-missing",
+    );
+    assert.isOk(
+      diagnostic,
+      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+    );
+    assert.include(
+      String(diagnostic?.reason || ""),
+      "missing required property",
+    );
+    assert.match(
+      String(diagnostic?.reason || ""),
+      /execution|skillrunner_mode/i,
     );
   });
 

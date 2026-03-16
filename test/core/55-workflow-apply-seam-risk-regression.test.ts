@@ -8,6 +8,7 @@ function createMessageFormatter() {
     overflow: (count: number) => `...and ${count} more`,
     unknownError: "unknown error",
     startToast: () => "",
+    waitingToast: () => "",
     jobToastSuccess: () => "",
     jobToastFailed: () => "",
   };
@@ -152,5 +153,81 @@ describe("workflow apply seam risk regression", function () {
     );
     assert.equal(applyCalls, 0);
     assert.include(runtimeStages, "provider-result-missing-request-id");
+  });
+
+  it("marks deferred backend job as pending instead of failed", async function () {
+    const runtimeStages: string[] = [];
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [{ taskName: "interactive.md", targetParentID: 3 }],
+          jobIds: ["job-4"],
+          jobsById: {
+            "job-4": {
+              id: "job-4",
+              state: "waiting_user",
+              meta: {
+                requestId: "req-deferred-4",
+                targetParentID: 3,
+              },
+              result: {
+                status: "deferred",
+                requestId: "req-deferred-4",
+                backendStatus: "waiting_user",
+              },
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        appendRuntimeLog: (entry) => {
+          runtimeStages.push(entry.stage);
+        },
+      },
+    );
+
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.pending, 1);
+    assert.lengthOf(summary.failureReasons, 0);
+    assert.include(runtimeStages, "job-pending");
+  });
+
+  it("propagates explicit bundle-entry path error into failureReasons", async function () {
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [{ taskName: "path-resolution.md", targetParentID: 7 }],
+          jobIds: ["job-path-1"],
+          jobsById: {
+            "job-path-1": {
+              id: "job-path-1",
+              state: "succeeded",
+              meta: {
+                targetParentID: 7,
+              },
+              result: {
+                requestId: "req-path-1",
+              },
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        executeApplyResult: async () => {
+          throw new Error(
+            "[digest_path] bundle entry not found; raw_path=uploads/inputs/source_path/artifacts/digest.md; candidates=[\"uploads/inputs/source_path/artifacts/digest.md\",\"artifacts/digest.md\"]",
+          );
+        },
+      },
+    );
+
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 1);
+    assert.notInclude(summary.failureReasons[0], "unknown error");
+    assert.include(summary.failureReasons[0], "[digest_path] bundle entry not found");
+    assert.include(summary.failureReasons[0], "uploads/inputs/source_path/artifacts/digest.md");
   });
 });

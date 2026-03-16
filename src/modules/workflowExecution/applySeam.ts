@@ -14,11 +14,18 @@ import {
   resolveTargetParentIDFromRequest,
   resolveTaskNameFromRequest,
 } from "./requestMeta";
+import { isActive } from "../skillRunnerProviderStateMachine";
 
 type RunResultLike = {
+  status?: string;
+  backendStatus?: string;
   bundleBytes?: Uint8Array;
   requestId?: string;
 };
+
+function isPendingWorkflowJobState(state: string) {
+  return isActive(state);
+}
 
 type ApplySeamDeps = {
   appendRuntimeLog: typeof appendRuntimeLog;
@@ -52,6 +59,7 @@ export async function runWorkflowApplySeam(args: {
   };
   let succeeded = 0;
   let failed = 0;
+  let pending = 0;
   const failureReasons: string[] = [];
   const jobOutcomes: WorkflowApplySummary["jobOutcomes"] = [];
 
@@ -81,6 +89,23 @@ export async function runWorkflowApplySeam(args: {
           details: { index: i, taskLabel },
         });
       } else {
+        const isDeferredResult =
+          (job.result as RunResultLike | undefined)?.status === "deferred";
+        if (isDeferredResult && isPendingWorkflowJobState(job.state)) {
+          pending += 1;
+          failed -= 1;
+          resolved.appendRuntimeLog({
+            level: "info",
+            scope: "job",
+            workflowId: args.runState.workflow.manifest.id,
+            jobId: job.id,
+            requestId: String(job.meta.requestId || "").trim() || undefined,
+            stage: "job-pending",
+            message: "job pending backend state reconciler",
+            details: { index: i, taskLabel, state: job.state },
+          });
+          continue;
+        }
         const reason = job.error || `state=${job.state}`;
         failureReasons.push(`job-${i}: ${reason}`);
         jobOutcomes.push({
@@ -245,6 +270,7 @@ export async function runWorkflowApplySeam(args: {
   return {
     succeeded,
     failed,
+    pending,
     failureReasons,
     jobOutcomes,
   };

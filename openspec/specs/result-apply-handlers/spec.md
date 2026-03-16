@@ -4,20 +4,23 @@
 TBD - created by archiving change m2-baseline. Update Purpose after archive.
 ## Requirements
 ### Requirement: 系统必须通过 applyResult + handlers 执行结果回写
-系统 MUST 将业务写入动作集中在 workflow `applyResult` 与 handlers 层，保持 Provider 与业务落库解耦。
+系统 MUST 将 SkillRunner 成功结果通过标准化 `applyResult + handlers` 路径回写到 Zotero 数据层。
 
-#### Scenario: 回写成功
-- **WHEN** Provider 返回可消费结果
-- **THEN** `applyResult` 调用 handlers 完成 note/field/tag/collection 等写入
+#### Scenario: literature-explainer note_path 以 bundle entry 语义消费
+- **WHEN** `literature-explainer` 返回 `note_path`
+- **THEN** applyResult MUST 从 bundle entry 读取 markdown
+- **AND** 允许将绝对路径映射到 `artifacts|result|bundle` 后缀后再读取
+
+#### Scenario: note_path 无效时安全跳过
+- **WHEN** `note_path` 为空或无法在 bundle 中读取
+- **THEN** applyResult MUST 返回 `skipped=true` 与可解释 reason
+- **AND** 系统 MUST NOT 创建空 note
 
 ### Requirement: 结果回写必须具备幂等与安全语义
-系统 MUST 避免重复创建或误写入，并在异常时返回可解释错误。
+结果回写链路 MUST 在重试与异常场景下保持幂等、安全且可诊断。
 
-#### Scenario: 目标已存在
-- **WHEN** 目标数据已存在且可更新
-- **THEN** 系统采用 upsert 或等价策略保持幂等
-
-#### Scenario: 非法写入目标
-- **WHEN** 写入目标无效或不存在
-- **THEN** 系统拒绝写入并保留原状态
+#### Scenario: deferred terminal apply transient failure retries with backoff
+- **WHEN** backend terminal state is `succeeded` but applyResult fails transiently
+- **THEN** reconciler MUST retry apply with exponential backoff (max 5 attempts)
+- **AND** retries MUST stop with `deferred-apply-exhausted` log after limit
 

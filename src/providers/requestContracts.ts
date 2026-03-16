@@ -72,8 +72,68 @@ function validateSkillRunnerJobPayload(request: unknown) {
   if (!isNonEmptyString(request.skill_id)) {
     return "payload.skill_id must be non-empty string";
   }
-  if (!Array.isArray(request.upload_files) || request.upload_files.length === 0) {
-    return "payload.upload_files must be non-empty array";
+  if (!Object.prototype.hasOwnProperty.call(request, "upload_files")) {
+    return null;
+  }
+  if (!Array.isArray(request.upload_files)) {
+    return "payload.upload_files must be array when provided";
+  }
+  if (request.upload_files.length === 0) {
+    return null;
+  }
+
+  if (!isObject(request.input)) {
+    return "payload.input must be object when payload.upload_files is non-empty";
+  }
+
+  const seenKeys = new Set<string>();
+  const seenRelativePaths = new Set<string>();
+  for (let i = 0; i < request.upload_files.length; i++) {
+    const entry = request.upload_files[i];
+    if (!isObject(entry)) {
+      return `payload.upload_files[${i}] must be object`;
+    }
+    const key = String(entry.key || "").trim();
+    const localPath = String(entry.path || "").trim();
+    if (!key) {
+      return `payload.upload_files[${i}].key must be non-empty string`;
+    }
+    if (!localPath) {
+      return `payload.upload_files[${i}].path must be non-empty string`;
+    }
+    if (seenKeys.has(key)) {
+      return `payload.upload_files contains duplicated key: ${key}`;
+    }
+    seenKeys.add(key);
+
+    if (!Object.prototype.hasOwnProperty.call(request.input, key)) {
+      return `payload.input.${key} must be declared for upload mapping`;
+    }
+    const relativePath = String((request.input as Record<string, unknown>)[key] || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\.\/+/, "");
+    if (!relativePath) {
+      return `payload.input.${key} must be non-empty upload relative path`;
+    }
+    if (/^[A-Za-z]:\//.test(relativePath) || relativePath.startsWith("/")) {
+      return `payload.input.${key} must be relative path under uploads root`;
+    }
+    if (relativePath.startsWith("uploads/")) {
+      return `payload.input.${key} must not include uploads/ prefix`;
+    }
+    const segments = relativePath.split("/").filter(Boolean);
+    if (
+      segments.length === 0 ||
+      segments.some((segment) => segment === "." || segment === "..")
+    ) {
+      return `payload.input.${key} must not contain '.' or '..' path segments`;
+    }
+    const normalizedRelativePath = segments.join("/");
+    if (seenRelativePaths.has(normalizedRelativePath)) {
+      return `payload.input maps duplicated upload target path: ${normalizedRelativePath}`;
+    }
+    seenRelativePaths.add(normalizedRelativePath);
   }
   return null;
 }

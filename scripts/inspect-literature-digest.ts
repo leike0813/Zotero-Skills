@@ -209,7 +209,7 @@ async function main() {
   // Keep loader input relative to project root to stay compatible with
   // runtime-specific path join behavior.
   process.chdir(projectRoot);
-  const workflowsDir = "workflows";
+  const workflowsDir = "workflows_builtin";
   const loaded = await loadWorkflowManifests(workflowsDir);
   const workflow = loaded.workflows.find(
     (entry) => entry.manifest.id === "literature-digest",

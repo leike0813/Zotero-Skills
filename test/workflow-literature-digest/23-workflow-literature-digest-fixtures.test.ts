@@ -19,6 +19,7 @@ type BuiltRequest = {
   targetParentID: number;
   skill_id?: string;
   parameter?: { language?: string };
+  input?: { source_path?: string };
   upload_files?: Array<{ key: string; path: string }>;
 };
 
@@ -76,13 +77,22 @@ async function clearExistingNotesForFixtureParents(context: unknown) {
     if (!parent || typeof parent.getNotes !== "function") {
       continue;
     }
-    const noteIDs = parent.getNotes() || [];
+    let noteIDs: number[] = [];
+    try {
+      noteIDs = parent.getNotes() || [];
+    } catch {
+      continue;
+    }
     for (const noteID of noteIDs) {
       const note = Zotero.Items.get(noteID);
       if (!note || typeof note.isNote !== "function" || !note.isNote()) {
         continue;
       }
-      await note.eraseTx();
+      try {
+        await note.eraseTx();
+      } catch {
+        // Best-effort cleanup for fixture stability in real Zotero DB.
+      }
     }
   }
 }
@@ -148,6 +158,7 @@ describeFixtureMatrixSuite("workflow: literature-digest fixture matrix", functio
         assert.equal(request.parameter?.language, languageDefault);
         assert.equal(request.upload_files?.[0].key, "source_path");
         assert.equal(request.upload_files?.[0].path, expected.uploadPath);
+        assert.match(String(request.input?.source_path || ""), /^inputs\/source_path\//);
       }
     });
   }

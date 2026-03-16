@@ -2,6 +2,9 @@ import { JobQueueManager } from "../../jobQueue/manager";
 import { executeWithProvider } from "../../providers/registry";
 import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
+import { recordTaskDashboardHistoryFromJob } from "../taskDashboardHistory";
+import { ensureSkillRunnerRecoverableContext } from "../skillRunnerTaskReconciler";
+import { openSkillRunnerRunDialog } from "../skillRunnerRunDialog";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
   resolveInputUnitIdentityFromRequest,
@@ -11,10 +14,15 @@ import {
 } from "./requestMeta";
 
 type RunSeamDeps = {
-  createQueue: (config: ConstructorParameters<typeof JobQueueManager>[0]) => JobQueueManager;
+  createQueue: (
+    config: ConstructorParameters<typeof JobQueueManager>[0],
+  ) => JobQueueManager;
   executeWithProvider: typeof executeWithProvider;
   appendRuntimeLog: typeof appendRuntimeLog;
   recordWorkflowTaskUpdate: typeof recordWorkflowTaskUpdate;
+  recordTaskDashboardHistoryFromJob: typeof recordTaskDashboardHistoryFromJob;
+  ensureSkillRunnerRecoverableContext: typeof ensureSkillRunnerRecoverableContext;
+  openSkillRunnerRunDialog: typeof openSkillRunnerRunDialog;
 };
 
 const defaultRunSeamDeps: RunSeamDeps = {
@@ -22,11 +30,17 @@ const defaultRunSeamDeps: RunSeamDeps = {
   executeWithProvider,
   appendRuntimeLog,
   recordWorkflowTaskUpdate,
+  recordTaskDashboardHistoryFromJob,
+  ensureSkillRunnerRecoverableContext,
+  openSkillRunnerRunDialog,
 };
 
-export function runWorkflowExecutionSeam(args: {
-  prepared: PreparedWorkflowExecution;
-}, deps: Partial<RunSeamDeps> = {}): WorkflowRunState {
+export function runWorkflowExecutionSeam(
+  args: {
+    prepared: PreparedWorkflowExecution;
+  },
+  deps: Partial<RunSeamDeps> = {},
+): WorkflowRunState {
   const resolved = {
     ...defaultRunSeamDeps,
     ...deps,
@@ -36,15 +50,81 @@ export function runWorkflowExecutionSeam(args: {
     .slice(2, 10)}`;
   const queue = resolved.createQueue({
     concurrency: 1,
-    executeJob: (job) =>
+    executeJob: (job, runtime) =>
       resolved.executeWithProvider({
         requestKind: args.prepared.executionContext.requestKind,
         request: job.request,
         backend: args.prepared.executionContext.backend,
         providerOptions: args.prepared.executionContext.providerOptions,
+        onProgress: (event) => {
+          runtime.reportProgress(event);
+        },
       }),
+    onJobProgress: (job, event) => {
+      if (event.type === "request-created") {
+        const requestId = String(event.requestId || "").trim();
+        if (requestId) {
+          job.meta.requestId = requestId;
+        }
+        const requestIndex =
+          typeof job.meta.index === "number" && Number.isFinite(job.meta.index)
+            ? Math.floor(job.meta.index)
+            : -1;
+        const request =
+          requestIndex >= 0 && requestIndex < args.prepared.requests.length
+            ? args.prepared.requests[requestIndex]
+            : undefined;
+        if (request) {
+          resolved.ensureSkillRunnerRecoverableContext({
+            workflowId: args.prepared.workflow.manifest.id,
+            workflowLabel: args.prepared.workflow.manifest.label,
+            requestKind: args.prepared.executionContext.requestKind,
+            request,
+            backend: args.prepared.executionContext.backend,
+            providerId: args.prepared.executionContext.providerId,
+            providerOptions: args.prepared.executionContext.providerOptions,
+            job,
+          });
+        }
+
+        const executionContext = args.prepared.executionContext;
+        const skillrunnerMode =
+          args.prepared.workflow.manifest.execution?.skillrunner_mode;
+        if (
+          executionContext.providerId === "skillrunner" &&
+          skillrunnerMode === "interactive" &&
+          requestId
+        ) {
+          resolved.openSkillRunnerRunDialog({
+            backend: executionContext.backend,
+            requestId,
+          });
+        }
+      }
+    },
     onJobUpdated: (job) => {
       resolved.recordWorkflowTaskUpdate(job);
+      resolved.recordTaskDashboardHistoryFromJob(job);
+      const requestIndex =
+        typeof job.meta.index === "number" && Number.isFinite(job.meta.index)
+          ? Math.floor(job.meta.index)
+          : -1;
+      const request =
+        requestIndex >= 0 && requestIndex < args.prepared.requests.length
+          ? args.prepared.requests[requestIndex]
+          : undefined;
+      if (request) {
+        resolved.ensureSkillRunnerRecoverableContext({
+          workflowId: args.prepared.workflow.manifest.id,
+          workflowLabel: args.prepared.workflow.manifest.label,
+          requestKind: args.prepared.executionContext.requestKind,
+          request,
+          backend: args.prepared.executionContext.backend,
+          providerId: args.prepared.executionContext.providerId,
+          providerOptions: args.prepared.executionContext.providerOptions,
+          job,
+        });
+      }
     },
   });
 
@@ -52,6 +132,9 @@ export function runWorkflowExecutionSeam(args: {
     const taskName = resolveTaskNameFromRequest(request, index);
     const inputUnitIdentity = resolveInputUnitIdentityFromRequest(request);
     const inputUnitLabel = resolveInputUnitLabelFromRequest(request, index);
+    const engine = String(
+      args.prepared.executionContext.providerOptions?.engine || "",
+    ).trim();
     const jobId = queue.enqueue({
       workflowId: args.prepared.workflow.manifest.id,
       request,
@@ -63,6 +146,11 @@ export function runWorkflowExecutionSeam(args: {
         inputUnitIdentity,
         inputUnitLabel,
         targetParentID: resolveTargetParentIDFromRequest(request),
+        providerId: args.prepared.executionContext.providerId,
+        backendId: args.prepared.executionContext.backend.id,
+        backendType: args.prepared.executionContext.backend.type,
+        backendBaseUrl: args.prepared.executionContext.backend.baseUrl,
+        engine: engine || undefined,
       },
     });
     resolved.appendRuntimeLog({

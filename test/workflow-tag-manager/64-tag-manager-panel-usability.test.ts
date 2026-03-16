@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { __tagManagerTestOnly } from "../../workflows/tag-manager/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
 
 type TagEntry = {
   tag: string;
@@ -281,6 +281,8 @@ function createRendererHarness(entries: TagEntry[]) {
     },
     listScrollTop: 0,
     listScrollMode: "keep",
+    activePanel: "controlled",
+    stagedPanelState: null,
     editorFocus: {
       active: false,
       rowIndex: -1,
@@ -290,8 +292,12 @@ function createRendererHarness(entries: TagEntry[]) {
     },
     corrupted: false,
   };
+  const footerVisibilityHistory: boolean[] = [];
 
   const host = {
+    setFooterVisible: (visible: boolean) => {
+      footerVisibilityHistory.push(Boolean(visible));
+    },
     patchState: (updater: (draft: Record<string, unknown>) => void) => {
       const draft = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
       updater(draft);
@@ -306,6 +312,7 @@ function createRendererHarness(entries: TagEntry[]) {
     root,
     state,
     host,
+    footerVisibilityHistory,
     rerender: () => renderer.render({ doc, root, state, host }),
   };
 }
@@ -354,6 +361,9 @@ describe("workflow: tag-manager panel usability", function () {
     const rows = findNodesByRole(harness.root, "tag-row");
     assert.lengthOf(rows, 3);
 
+    const stagedBtn = findButtonByText(harness.root, "Staged Tags");
+    assert.isOk(stagedBtn);
+
     const filterBtn = findButtonByText(harness.root, "Filter");
     assert.isOk(filterBtn);
     filterBtn!.click();
@@ -363,6 +373,26 @@ describe("workflow: tag-manager panel usability", function () {
     for (const toggle of toggles) {
       assert.equal(toggle.checked, true);
     }
+  });
+
+  it("switches to staged panel in same window and can return to controlled panel", function () {
+    const harness = createRendererHarness(sampleEntries);
+    const stagedBtn = findButtonByText(harness.root, "Staged Tags");
+    assert.isOk(stagedBtn);
+    stagedBtn!.click();
+
+    const backBtn = findNodeByRole(harness.root, "staged-back-btn");
+    assert.isOk(backBtn);
+    const stagedTable = findNodeByRole(harness.root, "staged-table-scroll");
+    assert.isOk(stagedTable);
+    assert.equal(harness.state.activePanel, "staged");
+    assert.include(harness.footerVisibilityHistory, false);
+
+    backBtn!.click();
+    const controlledRows = findNodesByRole(harness.root, "tag-row");
+    assert.isAtLeast(controlledRows.length, 1);
+    assert.equal(harness.state.activePanel, "controlled");
+    assert.include(harness.footerVisibilityHistory, true);
   });
 
   it("applies facet visibility filtering instantly without action buttons", function () {

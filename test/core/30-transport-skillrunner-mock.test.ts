@@ -219,20 +219,31 @@ describe("transport: skillrunner mock", function () {
 
       assert.equal(result.status, "succeeded");
       assert.isUndefined(result.bundleBytes);
-      assert.deepEqual(result.resultJson, {
-        request_id: result.requestId,
-        result: {
-          status: "success",
-          data: {
-            digest_path: "digest.md",
-            references_path: "references.json",
-            citation_analysis_path: "citation_analysis.json",
-          },
-          artifacts: [],
-          validation_warnings: [],
-          error: null,
-        },
-      });
+      const resultEnvelope = result.resultJson as {
+        request_id?: string;
+        result?: {
+          status?: string;
+          data?: {
+            digest_path?: string;
+            references_path?: string;
+            citation_analysis_path?: string;
+          };
+        };
+      };
+      assert.equal(resultEnvelope.request_id, result.requestId);
+      assert.equal(resultEnvelope.result?.status, "success");
+      assert.match(
+        String(resultEnvelope.result?.data?.digest_path || ""),
+        /digest\.md$/,
+      );
+      assert.match(
+        String(resultEnvelope.result?.data?.references_path || ""),
+        /references\.json$/,
+      );
+      assert.match(
+        String(resultEnvelope.result?.data?.citation_analysis_path || ""),
+        /citation_analysis\.json$/,
+      );
     } catch (error) {
       console.error(
         `[transport: skillrunner mock] supports result fetch step failed\n${formatError(error)}`,

@@ -2206,10 +2206,7 @@ const fieldIdByTypeAndBase = new Map<number, Map<number, number>>([
 ]);
 
 function createZoteroMock(): ZoteroMock {
-  prefsStore.set(
-    `${config.prefsPrefix}.workflowDir`,
-    path.join(process.cwd(), "workflows"),
-  );
+  prefsStore.set(`${config.prefsPrefix}.workflowDir`, "");
 
   const mock: ZoteroMock = {
     Promise: {

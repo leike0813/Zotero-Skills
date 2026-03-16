@@ -18,7 +18,7 @@ function initLocale() {
     throw new Error("Localization is not available");
   }
   const l10n = new localizationCtor(
-    [`${config.addonRef}-addon.ftl`],
+    [`${config.addonRef}-addon.ftl`, `${config.addonRef}-preferences.ftl`],
     true,
   );
   addon.data.locale = {

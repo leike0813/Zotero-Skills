@@ -4,6 +4,13 @@ import type {
   SkillRunnerHttpStepsRequest,
   SkillRunnerJobRequestV1,
 } from "../contracts";
+import type { ProviderProgressEvent } from "../types";
+import { appendRuntimeLog } from "../../modules/runtimeLogManager";
+import {
+  isWaiting,
+  normalizeStatus,
+  normalizeStatusWithGuard,
+} from "../../modules/skillRunnerProviderStateMachine";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type DynamicImport = (specifier: string) => Promise<any>;
@@ -36,10 +43,129 @@ function resolveJsonPath(root: unknown, pathExpr: string) {
   return cursor;
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toBooleanOption(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function toPositiveIntegerOption(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return undefined;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function normalizeExecutionMode(value: unknown): "auto" | "interactive" {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "interactive" ? "interactive" : "auto";
+}
+
+function normalizeUploadRelativePath(value: unknown) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+/, "");
+}
+
+function ensureUploadRelativePath(args: { value: unknown; field: string }) {
+  const normalized = normalizeUploadRelativePath(args.value);
+  if (!normalized) {
+    throw new Error(
+      `SkillRunner upload mapping missing relative path for input field '${args.field}'`,
+    );
+  }
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+    throw new Error(
+      `SkillRunner upload mapping for '${args.field}' must be relative path under uploads root`,
+    );
+  }
+  if (normalized.startsWith("uploads/")) {
+    throw new Error(
+      `SkillRunner upload mapping for '${args.field}' must not include uploads/ prefix`,
+    );
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (
+    segments.length === 0 ||
+    segments.some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error(
+      `SkillRunner upload mapping for '${args.field}' contains invalid path segments`,
+    );
+  }
+  return segments.join("/");
+}
+
 function basename(filePath: string) {
   const normalized = filePath.replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "upload.bin";
+}
+
+function resolveUploadEntriesFromRequest(request: SkillRunnerJobRequestV1) {
+  const declaredFiles = Array.isArray(request.upload_files)
+    ? request.upload_files
+    : [];
+  if (declaredFiles.length === 0) {
+    return [] as Array<{ key: string; path: string }>;
+  }
+  if (!isObjectRecord(request.input)) {
+    throw new Error(
+      "SkillRunner request with upload_files requires input object mapping",
+    );
+  }
+  const input = request.input as Record<string, unknown>;
+  const seenTargets = new Set<string>();
+  return declaredFiles.map((file, index) => {
+    const fieldKey = String(file?.key || "").trim();
+    const localPath = String(file?.path || "").trim();
+    if (!fieldKey) {
+      throw new Error(
+        `SkillRunner upload_files[${index}].key must be non-empty string`,
+      );
+    }
+    if (!localPath) {
+      throw new Error(
+        `SkillRunner upload_files[${index}].path must be non-empty string`,
+      );
+    }
+    const targetPath = ensureUploadRelativePath({
+      value: input[fieldKey],
+      field: fieldKey,
+    });
+    if (seenTargets.has(targetPath)) {
+      throw new Error(
+        `SkillRunner upload target path duplicated for input mapping: ${targetPath}`,
+      );
+    }
+    seenTargets.add(targetPath);
+    return {
+      key: targetPath,
+      path: localPath,
+    };
+  });
 }
 
 const CRC32_TABLE = (() => {
@@ -106,6 +232,7 @@ function createMultipartZipPayload(args: { zipBytes: Uint8Array; filename: strin
 }
 
 function createZipFromNamedFiles(entries: Array<{ name: string; data: Uint8Array }>) {
+  const ZIP_UTF8_FILENAME_FLAG = 0x0800;
   const localChunks: Uint8Array[] = [];
   const centralChunks: Uint8Array[] = [];
   let offset = 0;
@@ -115,7 +242,7 @@ function createZipFromNamedFiles(entries: Array<{ name: string; data: Uint8Array
     const localHeader: number[] = [];
     writeUint32LE(0x04034b50, localHeader);
     writeUint16LE(20, localHeader);
-    writeUint16LE(0, localHeader);
+    writeUint16LE(ZIP_UTF8_FILENAME_FLAG, localHeader);
     writeUint16LE(0, localHeader);
     writeUint16LE(0, localHeader);
     writeUint16LE(0, localHeader);
@@ -136,7 +263,7 @@ function createZipFromNamedFiles(entries: Array<{ name: string; data: Uint8Array
     writeUint32LE(0x02014b50, centralHeader);
     writeUint16LE(20, centralHeader);
     writeUint16LE(20, centralHeader);
-    writeUint16LE(0, centralHeader);
+    writeUint16LE(ZIP_UTF8_FILENAME_FLAG, centralHeader);
     writeUint16LE(0, centralHeader);
     writeUint16LE(0, centralHeader);
     writeUint16LE(0, centralHeader);
@@ -232,6 +359,46 @@ export class SkillRunnerClient {
     }
   }
 
+  private appendTransportLog(args: {
+    level: "debug" | "info" | "warn" | "error";
+    stage: string;
+    message: string;
+    method?: string;
+    path?: string;
+    url?: string;
+    status?: number;
+    duration?: number;
+    retry?: number;
+    stepId?: string;
+    requestId?: string;
+    phase?: string;
+    details?: unknown;
+    error?: unknown;
+  }) {
+    appendRuntimeLog({
+      level: args.level,
+      scope: "provider",
+      providerId: "skillrunner",
+      requestId: args.requestId,
+      component: "skillrunner-client",
+      operation: "http",
+      phase: args.phase || "running",
+      stage: args.stage,
+      message: args.message,
+      transport: {
+        method: args.method,
+        path: args.path,
+        url: args.url,
+        status: args.status,
+        duration: args.duration,
+        retry: args.retry,
+        stepId: args.stepId,
+      },
+      details: args.details,
+      error: args.error,
+    });
+  }
+
   private buildUrl(path: string) {
     return `${this.baseUrl}${ensureLeadingSlash(path)}`;
   }
@@ -241,12 +408,25 @@ export class SkillRunnerClient {
   }
 
   private async executeCreateStep(step: SkillRunnerHttpStepDefinition) {
-    const response = await this.fetchImpl(this.buildUrl(step.request.path), {
+    const url = this.buildUrl(step.request.path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
       method: step.request.method,
       headers: {
         "content-type": "application/json",
       },
       body: JSON.stringify(step.request.json || {}),
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-create-response",
+      message: "skillrunner create step responded",
+      method: step.request.method,
+      path: step.request.path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      stepId: step.id,
     });
     const body = await readJsonOrThrow(response);
     const pathExpr = step.extract?.request_id || "$.request_id";
@@ -300,14 +480,29 @@ export class SkillRunnerClient {
       body = multipart.body;
     }
 
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-        headers,
-        body,
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+      headers,
+      body,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-upload-response",
+      message: "skillrunner upload step responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      stepId: step.id,
+      requestId,
+      details: {
+        multipart: true,
       },
-    );
+    });
     await readJsonOrThrow(response);
   }
 
@@ -316,24 +511,23 @@ export class SkillRunnerClient {
     step: SkillRunnerHttpStepDefinition,
     requestId: string,
   ) {
-    const startedAt = Date.now();
+    let timeoutAnchorAt = Date.now();
     const intervalMs = Math.max(0, request.poll?.interval_ms ?? 2000);
-    const timeoutMs = Math.max(1, request.poll?.timeout_ms ?? 600000);
+    const timeoutRaw = request.poll?.timeout_ms;
+    const timeoutMs =
+      typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw)
+        ? timeoutRaw
+        : 600000;
+    const timeoutEnabled = timeoutMs > 0;
+    let pollRetry = 0;
     while (true) {
-      const response = await this.fetchImpl(
-        this.buildUrl(
-          interpolatePath(step.request.path, { request_id: requestId }),
-        ),
-        {
-          method: step.request.method,
-        },
-      );
-      const body = (await readJsonOrThrow(response)) as {
-        request_id?: string;
-        status?: string;
-        error?: string;
-      };
-      const status = body.status || "";
+      const pollStartedAt = Date.now();
+      const body = await this.getJobState({
+        requestPath: step.request.path,
+        requestMethod: step.request.method,
+        requestId,
+      });
+      const status = normalizeStatus(body.status, "running");
       if (status === "succeeded") {
         return body;
       }
@@ -345,23 +539,87 @@ export class SkillRunnerClient {
           `SkillRunner job terminal failure: request_id=${normalizedRequestId}, status=${terminalStatus}, error=${terminalError}`,
         );
       }
-      if (Date.now() - startedAt > timeoutMs) {
+      if (isWaiting(status)) {
+        this.appendTransportLog({
+          level: "debug",
+          stage: "provider-http-poll-waiting",
+          message: `skillrunner poll waiting: ${status}`,
+          method: step.request.method,
+          path: step.request.path,
+          requestId,
+          duration: Date.now() - pollStartedAt,
+          retry: pollRetry,
+          stepId: step.id,
+          details: {
+            status,
+          },
+        });
+        pollRetry += 1;
+        await sleep(intervalMs);
+        continue;
+      }
+      if (timeoutEnabled && Date.now() - timeoutAnchorAt > timeoutMs) {
         throw new Error(`SkillRunner polling timeout after ${timeoutMs}ms`);
       }
+      timeoutAnchorAt = Date.now();
+      pollRetry += 1;
       await sleep(intervalMs);
     }
+  }
+
+  private async getJobState(args: {
+    requestPath: string;
+    requestMethod: string;
+    requestId: string;
+  }) {
+    const path = interpolatePath(args.requestPath, { request_id: args.requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: args.requestMethod,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-get-state-response",
+      message: "skillrunner get-state responded",
+      method: args.requestMethod,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId: args.requestId,
+      stepId: "poll",
+    });
+    return (await readJsonOrThrow(response)) as {
+      request_id?: string;
+      status?: string;
+      error?: string;
+      [key: string]: unknown;
+    };
   }
 
   private async executeBundleStep(
     step: SkillRunnerHttpStepDefinition,
     requestId: string,
   ) {
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-      },
-    );
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-bundle-response",
+      message: "skillrunner bundle fetch responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId,
+      stepId: step.id,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Bundle fetch failed: HTTP ${response.status} ${text}`);
@@ -374,13 +632,83 @@ export class SkillRunnerClient {
     step: SkillRunnerHttpStepDefinition,
     requestId: string,
   ) {
-    const response = await this.fetchImpl(
-      this.buildUrl(interpolatePath(step.request.path, { request_id: requestId })),
-      {
-        method: step.request.method,
-      },
-    );
+    const path = interpolatePath(step.request.path, { request_id: requestId });
+    const url = this.buildUrl(path);
+    const startedAt = Date.now();
+    const response = await this.fetchImpl(url, {
+      method: step.request.method,
+    });
+    this.appendTransportLog({
+      level: response.ok ? "debug" : "error",
+      stage: "provider-http-result-response",
+      message: "skillrunner result fetch responded",
+      method: step.request.method,
+      path,
+      url,
+      status: response.status,
+      duration: Date.now() - startedAt,
+      requestId,
+      stepId: step.id,
+    });
     return readJsonOrThrow(response);
+  }
+
+  async getRunState(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    return this.getJobState({
+      requestPath: "/v1/jobs/{request_id}",
+      requestMethod: "GET",
+      requestId,
+    });
+  }
+
+  async getRunPending(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    return this.getJobState({
+      requestPath: "/v1/jobs/{request_id}/interaction/pending",
+      requestMethod: "GET",
+      requestId,
+    });
+  }
+
+  async fetchRunBundle(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    return this.executeBundleStep(
+      {
+        id: "bundle",
+        request: {
+          method: "GET",
+          path: "/v1/jobs/{request_id}/bundle",
+        },
+      },
+      requestId,
+    );
+  }
+
+  async fetchRunResult(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    return this.executeResultStep(
+      {
+        id: "result",
+        request: {
+          method: "GET",
+          path: "/v1/jobs/{request_id}/result",
+        },
+      },
+      requestId,
+    );
   }
 
   private toHttpStepsRequest(
@@ -389,68 +717,102 @@ export class SkillRunnerClient {
   ): SkillRunnerHttpStepsRequest {
     const engine = String(providerOptions.engine || "").trim();
     const model = String(providerOptions.model || "").trim();
-    const runtimeOptions: Record<string, unknown> = {};
+    const runtimeOptions: Record<string, unknown> = isObjectRecord(
+      request.runtime_options,
+    )
+      ? { ...request.runtime_options }
+      : {};
+    const executionMode = normalizeExecutionMode(runtimeOptions.execution_mode);
+    runtimeOptions.execution_mode = executionMode;
+    if (executionMode === "interactive") {
+      delete runtimeOptions.no_cache;
+    } else {
+      delete runtimeOptions.interactive_auto_reply;
+    }
     if (
-      providerOptions.no_cache === true ||
-      String(providerOptions.no_cache || "").toLowerCase() === "true"
+      executionMode === "auto" &&
+      (providerOptions.no_cache === true ||
+        String(providerOptions.no_cache || "").toLowerCase() === "true")
     ) {
       runtimeOptions.no_cache = true;
     }
+    if (executionMode === "interactive") {
+      const interactiveAutoReply = toBooleanOption(
+        providerOptions.interactive_auto_reply,
+      );
+      if (typeof interactiveAutoReply === "boolean") {
+        runtimeOptions.interactive_auto_reply = interactiveAutoReply;
+      }
+    }
+    const hardTimeoutSeconds = toPositiveIntegerOption(
+      providerOptions.hard_timeout_seconds,
+    );
+    if (typeof hardTimeoutSeconds === "number") {
+      runtimeOptions.hard_timeout_seconds = hardTimeoutSeconds;
+    } else {
+      delete runtimeOptions.hard_timeout_seconds;
+    }
     const fetchType = request.fetch_type === "result" ? "result" : "bundle";
+    const uploadFiles = resolveUploadEntriesFromRequest(request);
+    const steps: SkillRunnerHttpStepDefinition[] = [
+      {
+        id: "create",
+        request: {
+          method: "POST",
+          path: "/v1/jobs",
+          json: {
+            skill_id: request.skill_id,
+            ...(engine ? { engine } : {}),
+            ...(model ? { model } : {}),
+            ...(request.input ? { input: request.input } : {}),
+            parameter: request.parameter || {},
+            ...(Object.keys(runtimeOptions).length > 0
+              ? { runtime_options: runtimeOptions }
+              : {}),
+          },
+        },
+        extract: {
+          request_id: "$.request_id",
+        },
+      },
+    ];
+    if (uploadFiles.length > 0) {
+      steps.push({
+        id: "upload",
+        request: {
+          method: "POST",
+          path: "/v1/jobs/{request_id}/upload",
+          multipart: true,
+        },
+        files: uploadFiles,
+      });
+    }
+    steps.push(
+      {
+        id: "poll",
+        request: {
+          method: "GET",
+          path: "/v1/jobs/{request_id}",
+        },
+        repeat_until: "status in ['succeeded','failed','canceled']",
+      },
+      {
+        id: fetchType,
+        request: {
+          method: "GET",
+          path:
+            fetchType === "result"
+              ? "/v1/jobs/{request_id}/result"
+              : "/v1/jobs/{request_id}/bundle",
+        },
+      },
+    );
     return {
       kind: "http.steps",
       targetParentID: request.targetParentID,
       taskName: request.taskName,
       sourceAttachmentPaths: request.sourceAttachmentPaths,
-      steps: [
-        {
-          id: "create",
-          request: {
-            method: "POST",
-            path: "/v1/jobs",
-            json: {
-              skill_id: request.skill_id,
-              ...(engine ? { engine } : {}),
-              ...(model ? { model } : {}),
-              ...(request.input ? { input: request.input } : {}),
-              parameter: request.parameter || {},
-              ...(Object.keys(runtimeOptions).length > 0
-                ? { runtime_options: runtimeOptions }
-                : {}),
-            },
-          },
-          extract: {
-            request_id: "$.request_id",
-          },
-        },
-        {
-          id: "upload",
-          request: {
-            method: "POST",
-            path: "/v1/jobs/{request_id}/upload",
-            multipart: true,
-          },
-          files: request.upload_files,
-        },
-        {
-          id: "poll",
-          request: {
-            method: "GET",
-            path: "/v1/jobs/{request_id}",
-          },
-          repeat_until: "status in ['succeeded','failed']",
-        },
-        {
-          id: fetchType,
-          request: {
-            method: "GET",
-            path:
-              fetchType === "result"
-                ? "/v1/jobs/{request_id}/result"
-                : "/v1/jobs/{request_id}/bundle",
-          },
-        },
-      ],
+      steps,
       poll: {
         interval_ms: request.poll?.interval_ms,
         timeout_ms: request.poll?.timeout_ms,
@@ -460,6 +822,9 @@ export class SkillRunnerClient {
 
   async executeHttpSteps(
     request: SkillRunnerHttpStepsRequest,
+    options?: {
+      onProgress?: (event: ProviderProgressEvent) => void;
+    },
   ): Promise<ProviderExecutionResult> {
     if (request.kind !== "http.steps") {
       throw new Error(`Unsupported transport request kind: ${request.kind}`);
@@ -470,15 +835,21 @@ export class SkillRunnerClient {
     const pollStep = this.findStep(request, "poll");
     const bundleStep = this.findStep(request, "bundle");
     const resultStep = this.findStep(request, "result");
-    if (!createStep || !uploadStep || !pollStep) {
-      throw new Error("http.steps request missing create/upload/poll step");
+    if (!createStep || !pollStep) {
+      throw new Error("http.steps request missing create/poll step");
     }
     if (!bundleStep && !resultStep) {
       throw new Error("http.steps request missing terminal fetch step (bundle or result)");
     }
 
     const requestId = await this.executeCreateStep(createStep);
-    await this.executeUploadStep(uploadStep, requestId);
+    options?.onProgress?.({
+      type: "request-created",
+      requestId,
+    });
+    if (uploadStep) {
+      await this.executeUploadStep(uploadStep, requestId);
+    }
     const pollResult = await this.executePollStep(request, pollStep, requestId);
     if (bundleStep) {
       const bundleBytes = await this.executeBundleStep(bundleStep, requestId);
@@ -503,9 +874,87 @@ export class SkillRunnerClient {
   async executeSkillRunnerJob(
     request: SkillRunnerJobRequestV1,
     providerOptions: Record<string, unknown>,
-  ) {
-    return this.executeHttpSteps(
-      this.toHttpStepsRequest(request, providerOptions),
-    );
+    options?: {
+      onProgress?: (event: ProviderProgressEvent) => void;
+    },
+  ): Promise<ProviderExecutionResult> {
+    const httpStepsRequest = this.toHttpStepsRequest(request, providerOptions);
+    const executionMode = String(
+      request.runtime_options?.execution_mode || "",
+    ).trim();
+    if (executionMode !== "interactive") {
+      return this.executeHttpSteps(httpStepsRequest, options);
+    }
+
+    const createStep = this.findStep(httpStepsRequest, "create");
+    const uploadStep = this.findStep(httpStepsRequest, "upload");
+    const pollStep = this.findStep(httpStepsRequest, "poll");
+    const bundleStep = this.findStep(httpStepsRequest, "bundle");
+    const resultStep = this.findStep(httpStepsRequest, "result");
+    if (!createStep || !pollStep) {
+      throw new Error("http.steps request missing create/poll step");
+    }
+    if (!bundleStep && !resultStep) {
+      throw new Error("http.steps request missing terminal fetch step (bundle or result)");
+    }
+
+    const requestId = await this.executeCreateStep(createStep);
+    options?.onProgress?.({
+      type: "request-created",
+      requestId,
+    });
+    if (uploadStep) {
+      await this.executeUploadStep(uploadStep, requestId);
+    }
+
+    const runState = await this.getJobState({
+      requestPath: pollStep.request.path,
+      requestMethod: pollStep.request.method,
+      requestId,
+    });
+    const backendStatus = normalizeStatusWithGuard({
+      value: runState.status,
+      fallback: "running",
+      requestId,
+    }).status;
+    if (backendStatus === "failed" || backendStatus === "canceled") {
+      const terminalError =
+        String(runState.error || "").trim() || "unknown error";
+      throw new Error(
+        `SkillRunner job terminal failure: request_id=${requestId}, status=${backendStatus}, error=${terminalError}`,
+      );
+    }
+    if (backendStatus === "succeeded") {
+      if (bundleStep) {
+        const bundleBytes = await this.executeBundleStep(bundleStep, requestId);
+        return {
+          status: "succeeded" as const,
+          requestId,
+          fetchType: "bundle" as const,
+          bundleBytes,
+          responseJson: runState,
+        };
+      }
+      const resultJson = await this.executeResultStep(resultStep!, requestId);
+      return {
+        status: "succeeded" as const,
+        requestId,
+        fetchType: "result" as const,
+        resultJson,
+        responseJson: runState,
+      };
+    }
+
+    return {
+      status: "deferred" as const,
+      requestId,
+      fetchType: (bundleStep ? "bundle" : "result") as "bundle" | "result",
+      backendStatus: isWaiting(backendStatus)
+        ? backendStatus
+        : backendStatus === "queued"
+          ? "queued"
+          : "running",
+      responseJson: runState,
+    };
   }
 }

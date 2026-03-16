@@ -4,7 +4,7 @@ import {
   buildLogCopyPayload,
   createDefaultLogViewerLevelFilter,
   filterLogsByLevels,
-} from "../../src/modules/logViewerDialog";
+} from "../../src/modules/runtimeLogManager";
 
 function makeEntry(args: {
   id: string;
@@ -18,6 +18,8 @@ function makeEntry(args: {
     ts: "2026-02-12T12:00:00.000Z",
     level: args.level,
     scope: args.scope || "system",
+    schemaVersion: 1,
+    diagnosticMode: false,
     stage: args.stage || "stage",
     message: args.message || "message",
   };

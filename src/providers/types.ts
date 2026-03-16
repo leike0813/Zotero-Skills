@@ -1,6 +1,18 @@
 import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
 
+export type ProviderProgressEventRequestCreated = {
+  type: "request-created";
+  requestId: string;
+};
+
+export type ProviderProgressEvent =
+  | ProviderProgressEventRequestCreated
+  | {
+      type: string;
+      [key: string]: unknown;
+    };
+
 export type ProviderSupportsArgs = {
   requestKind: string;
   backend: BackendInstance;
@@ -11,6 +23,7 @@ export type ProviderExecuteArgs = {
   request: unknown;
   backend: BackendInstance;
   providerOptions?: Record<string, unknown>;
+  onProgress?: (event: ProviderProgressEvent) => void;
 };
 
 export type ProviderRuntimeOptionType = "string" | "number" | "boolean";
@@ -37,8 +50,10 @@ export type Provider = {
   getRuntimeOptionEnumValues?: (args: {
     key: string;
     options: Record<string, unknown>;
+    backend?: BackendInstance;
   }) => string[];
   normalizeRuntimeOptions?: (
     options: unknown,
+    backend?: BackendInstance,
   ) => Record<string, unknown>;
 };

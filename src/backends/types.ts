@@ -1,5 +1,12 @@
+export type BackendManagementAuth = {
+  kind?: "none" | "basic";
+  username?: string;
+  password?: string;
+};
+
 export type BackendInstance = {
   id: string;
+  displayName?: string;
   type: string;
   baseUrl: string;
   auth?: {
@@ -10,6 +17,7 @@ export type BackendInstance = {
     headers?: Record<string, string>;
     timeout_ms?: number;
   };
+  management_auth?: BackendManagementAuth;
 };
 
 export type LoadedBackends = {

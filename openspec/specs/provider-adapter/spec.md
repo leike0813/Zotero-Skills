@@ -25,9 +25,42 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 ### Requirement: Provider 执行结果必须统一为标准模型
 系统 MUST 将不同 Provider 的执行输出归一为统一结果结构，供 runtime 与 `applyResult` 消费。
 
-#### Scenario: skillrunner Auto polling fails fast on terminal canceled
-- **WHEN** skillrunner poll endpoint returns terminal `status=canceled`
-- **THEN** provider SHALL stop polling immediately
-- **AND** provider SHALL raise a deterministic error message containing `request_id` and terminal `status`
-- **AND** provider SHALL NOT continue to `/result` or `/bundle` fetch
+#### Scenario: skillrunner file-input mapping follows input-relative-path protocol
+- **WHEN** request kind is `skillrunner.job.v1` and payload contains non-empty `upload_files`
+- **THEN** provider contract SHALL require `input` to be object
+- **AND** each `upload_files[].key` SHALL resolve to `input.<key>` relative path under uploads root
+- **AND** upload zip entries SHALL use that resolved relative path instead of legacy key name
 
+#### Scenario: inline-only skillrunner payload skips upload step
+- **WHEN** request kind is `skillrunner.job.v1` and `upload_files` is missing or empty
+- **THEN** execution chain SHALL skip `/upload`
+- **AND** provider SHALL continue with `create -> poll -> result|bundle`
+
+### Requirement: SkillRunner interactive execution SHALL defer terminal ownership to backend state machine
+SkillRunner interactive 执行 SHALL 将终态裁决权交给后端状态机，插件侧仅负责同步与收敛。
+
+#### Scenario: managed local backend ensures runtime before dispatch
+- **WHEN** provider dispatch targets managed local backend `skillrunner-local`
+- **THEN** provider chain SHALL ensure local runtime is running before sending job create request
+- **AND** ensure failure SHALL surface as provider error without mutating unrelated backend profiles
+
+### Requirement: SkillRunner provider chain SHALL consume a single plugin-side state machine SSOT
+SkillRunner provider/client/reconciler 全链路 SHALL 复用同一个插件侧状态机语义，避免分散判定导致漂移。
+
+#### Scenario: non-managed skillrunner backend skips local runtime management
+- **WHEN** provider dispatch targets a non-managed SkillRunner backend profile
+- **THEN** provider chain SHALL NOT invoke local ctl/lease management
+- **AND** request dispatch semantics SHALL remain unchanged from existing behavior
+
+### Requirement: SkillRunner task ledger reconciliation SHALL run at startup and managed-local up boundaries
+插件 MUST 在关键生命周期边界执行 SkillRunner 任务账本对账，避免展示后端已不存在的任务。
+
+#### Scenario: startup reconcile covers all non-managed SkillRunner backends
+- **WHEN** 插件启动完成并加载 backend registry
+- **THEN** 插件 SHALL 对所有 `type=skillrunner` 且 `id != local-skillrunner-backend` 的 backend 执行一次后台对账
+- **AND** 对账失败 SHALL 写入 error 级运行日志并弹出“与后端 <displayName> 通信失败”提示
+
+#### Scenario: managed local backend reconciles only after each successful up
+- **WHEN** 托管本地后端完成一次成功 `up` 链路（手动或自动）
+- **THEN** 插件 SHALL 立即对该托管后端执行一次后台对账
+- **AND** 插件启动阶段 SHALL NOT 对托管本地后端执行该一次性启动对账

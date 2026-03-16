@@ -15,12 +15,13 @@ The project MUST provide a standalone schema file that describes how users shoul
 - **THEN** required core fields (`id`, `label`, `hooks.applyResult`) are explicitly enforced
 
 ### Requirement: Schema contract SHALL align with current loader-visible constraints
-The standalone schema MUST align with the current runtime-visible manifest constraints for critical fields and deprecated-field rejection.
+系统 MUST 使用单一 schema 校验 workflow manifest，确保作者声明与运行时消费一致。
 
-#### Scenario: skillrunner mixed-input declaration remains representable
-- **WHEN** a workflow declares `request.kind = "skillrunner.job.v1"` and provides `request.input` with inline payload fields together with `request.input.upload.files`
-- **THEN** workflow manifest schema SHALL accept that declaration as valid authoring input
-- **AND** schema SHALL keep `request.input` extensible for backend-evolving inline fields while preserving typed upload structure checks
+#### Scenario: declarative skillrunner upload selector compiles to input file path mapping
+- **WHEN** workflow uses declarative `request.kind=skillrunner.job.v1` and declares `request.input.upload.files[]`
+- **THEN** compiler SHALL generate `input.<key>` relative file path for each declared upload entry
+- **AND** generated request SHALL keep `upload_files[].key=<key>` as mapping key
+- **AND** resulting payload SHALL satisfy provider file-input contract without hook-side manual duplication
 
 ### Requirement: Runtime loader manifest validation SHALL use the standalone schema as SSOT
 The loader MUST validate workflow manifests against the standalone schema during workflow scan.

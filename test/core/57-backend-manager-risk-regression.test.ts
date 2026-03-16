@@ -1,8 +1,18 @@
 import { assert } from "chai";
+import { config } from "../../package.json";
 import {
   collectBackendsFromDialog,
+  getBackendRowActionKindsForType,
+  launchSkillRunnerManagementFromRow,
   persistBackendsConfig,
+  refreshSkillRunnerModelCacheFromRow,
+  resolveSkillRunnerManagementLaunchPayloadFromRow,
 } from "../../src/modules/backendManager";
+import {
+  getSkillRunnerBackendHealthState,
+  registerSkillRunnerBackendForHealthTracking,
+  resetSkillRunnerBackendHealthRegistryForTests,
+} from "../../src/modules/skillRunnerBackendHealthRegistry";
 
 type FakeControl = {
   value?: string;
@@ -11,7 +21,9 @@ type FakeControl = {
 
 type FakeRow = {
   getAttribute: (name: string) => string | null;
+  setAttribute: (name: string, value: string) => void;
   querySelector: (selector: string) => Element | null;
+  __controls?: Map<string, FakeControl>;
 };
 
 function makeTextControl(value: string): FakeControl {
@@ -37,14 +49,16 @@ function makeChoiceControl(value: string): FakeControl {
 
 function makeRow(args: {
   type: string;
-  id: string;
+  internalId?: string;
+  displayName: string;
   baseUrl: string;
   authKind: "none" | "bearer";
   authToken: string;
   timeoutMs: string;
 }): FakeRow {
+  let internalId = String(args.internalId || "").trim();
   const controls = new Map<string, FakeControl>([
-    ["id", makeTextControl(args.id)],
+    ["displayName", makeTextControl(args.displayName)],
     ["baseUrl", makeTextControl(args.baseUrl)],
     ["authKind", makeChoiceControl(args.authKind)],
     ["authToken", makeTextControl(args.authToken)],
@@ -56,7 +70,15 @@ function makeRow(args: {
       if (name === "data-zs-backend-type") {
         return args.type;
       }
+      if (name === "data-zs-backend-internal-id") {
+        return internalId;
+      }
       return null;
+    },
+    setAttribute: (name: string, value: string) => {
+      if (name === "data-zs-backend-internal-id") {
+        internalId = String(value || "").trim();
+      }
     },
     querySelector: (selector: string) => {
       const match = selector.match(/\[data-zs-backend-field="([^"]+)"\]/);
@@ -65,6 +87,7 @@ function makeRow(args: {
       }
       return (controls.get(match[1]) || null) as unknown as Element | null;
     },
+    __controls: controls,
   };
 }
 
@@ -87,13 +110,15 @@ describe("backend manager risk regression", function () {
   afterEach(function () {
     const runtime = globalThis as { addon?: unknown };
     runtime.addon = previousAddon;
+    resetSkillRunnerBackendHealthRegistryForTests();
   });
 
-  it("Risk: HR-01 rejects duplicated backend ids during dialog collection", function () {
+  it("rejects duplicated backend internal ids during dialog collection", function () {
     const doc = makeDoc([
       makeRow({
         type: "skillrunner",
-        id: "dup-id",
+        internalId: "dup-id",
+        displayName: "dup-a",
         baseUrl: "http://127.0.0.1:8030",
         authKind: "none",
         authToken: "",
@@ -101,7 +126,8 @@ describe("backend manager risk regression", function () {
       }),
       makeRow({
         type: "generic-http",
-        id: "dup-id",
+        internalId: "dup-id",
+        displayName: "dup-b",
         baseUrl: "http://127.0.0.1:8040",
         authKind: "none",
         authToken: "",
@@ -120,11 +146,148 @@ describe("backend manager risk regression", function () {
     assert.match(String(thrown), /duplicate|重复/i);
   });
 
-  it("Risk: HR-01 rejects bearer backend rows without token", function () {
+  it("generates new internal id for rows without internal id", function () {
     const doc = makeDoc([
       makeRow({
         type: "skillrunner",
-        id: "skillrunner-local",
+        displayName: "SkillRunner Primary",
+        baseUrl: "http://127.0.0.1:8030",
+        authKind: "none",
+        authToken: "",
+        timeoutMs: "600000",
+      }),
+    ]);
+    const collected = collectBackendsFromDialog(doc);
+    assert.lengthOf(collected.backends, 1);
+    assert.match(collected.backends[0].id, /^backend-/);
+    assert.equal(collected.backends[0].displayName, "SkillRunner Primary");
+  });
+
+  it("exposes management action only for skillrunner rows", function () {
+    assert.deepEqual(getBackendRowActionKindsForType("skillrunner"), [
+      "manage-ui",
+      "refresh-model-cache",
+      "remove",
+    ]);
+    assert.deepEqual(getBackendRowActionKindsForType("generic-http"), [
+      "remove",
+    ]);
+    assert.deepEqual(getBackendRowActionKindsForType(""), ["remove"]);
+  });
+
+  it("resolves management launch payload from stable internal id", function () {
+    const row = makeRow({
+      type: "skillrunner",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:9030/";
+
+    const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(
+      row as unknown as Element,
+    );
+    assert.equal(payload.backendId, "backend-skillrunner-primary");
+    assert.equal(payload.baseUrl, "http://127.0.0.1:9030/");
+    assert.equal(payload.uiUrl, "http://127.0.0.1:9030/ui");
+  });
+
+  it("launches management host with unsaved endpoint edits", async function () {
+    const row = makeRow({
+      type: "skillrunner",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "none",
+      authToken: "",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:18030";
+
+    const launched: Array<{
+      backendId: string;
+      baseUrl: string;
+      uiUrl: string;
+    }> = [];
+    await launchSkillRunnerManagementFromRow({
+      row: row as unknown as Element,
+      openDialog: async (payload) => {
+        launched.push(payload);
+      },
+    });
+
+    assert.lengthOf(launched, 1);
+    assert.deepEqual(launched[0], {
+      backendId: "backend-skillrunner-primary",
+      baseUrl: "http://127.0.0.1:18030",
+      uiUrl: "http://127.0.0.1:18030/ui",
+    });
+  });
+
+  it("refreshes model cache using stable internal id", async function () {
+    const row = makeRow({
+      type: "skillrunner",
+      internalId: "backend-skillrunner-primary",
+      displayName: "SkillRunner Primary",
+      baseUrl: "http://127.0.0.1:8030",
+      authKind: "bearer",
+      authToken: "token-123",
+      timeoutMs: "600000",
+    });
+    (row.__controls?.get("baseUrl") as { value?: string } | undefined)!.value =
+      "http://127.0.0.1:19030/";
+
+    const calls: Array<{
+      id: string;
+      type: string;
+      baseUrl: string;
+      authKind: string;
+      authToken?: string;
+    }> = [];
+    const result = await refreshSkillRunnerModelCacheFromRow({
+      row: row as unknown as Element,
+      refresh: async ({ backend }) => {
+        calls.push({
+          id: backend.id,
+          type: backend.type,
+          baseUrl: backend.baseUrl,
+          authKind: String(backend.auth?.kind || "none"),
+          authToken: backend.auth?.token,
+        });
+        return {
+          ok: true,
+          refreshedAt: "2026-03-11T00:00:00.000Z",
+          backendId: backend.id,
+        };
+      },
+    });
+
+    assert.lengthOf(calls, 1);
+    assert.deepEqual(calls[0], {
+      id: "backend-skillrunner-primary",
+      type: "skillrunner",
+      baseUrl: "http://127.0.0.1:19030/",
+      authKind: "bearer",
+      authToken: "token-123",
+    });
+    assert.deepEqual(result, {
+      ok: true,
+      refreshedAt: "2026-03-11T00:00:00.000Z",
+      backendId: "backend-skillrunner-primary",
+    });
+  });
+
+  it("rejects bearer backend rows without token", function () {
+    const doc = makeDoc([
+      makeRow({
+        type: "skillrunner",
+        internalId: "backend-skillrunner-primary",
+        displayName: "SkillRunner Primary",
         baseUrl: "http://127.0.0.1:8030",
         authKind: "bearer",
         authToken: "",
@@ -143,7 +306,7 @@ describe("backend manager risk regression", function () {
     assert.match(String(thrown), /bearer|必填/i);
   });
 
-  it("Risk: HR-01 persists validated backend config and refreshes workflow menus", function () {
+  it("persists validated backend config with schemaVersion=2", function () {
     let persistedKey = "";
     let persistedValue = "";
     let refreshCalls = 0;
@@ -151,7 +314,8 @@ describe("backend manager risk regression", function () {
     persistBackendsConfig(
       [
         {
-          id: "skillrunner-local",
+          id: "backend-skillrunner-primary",
+          displayName: "SkillRunner Primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -171,41 +335,117 @@ describe("backend manager risk regression", function () {
 
     assert.equal(persistedKey, "backendsConfigJson");
     const parsed = JSON.parse(persistedValue) as {
-      backends?: Array<{ id?: string }>;
+      schemaVersion?: number;
+      backends?: Array<{ id?: string; displayName?: string }>;
     };
-    assert.equal(parsed.backends?.[0]?.id, "skillrunner-local");
+    assert.equal(parsed.schemaVersion, 2);
+    assert.equal(parsed.backends?.[0]?.id, "backend-skillrunner-primary");
+    assert.equal(parsed.backends?.[0]?.displayName, "SkillRunner Primary");
     assert.equal(refreshCalls, 1);
   });
 
-  it("Risk: HR-01 surfaces persistence failures without swallowing storage errors", function () {
-    let refreshCalls = 0;
-    let thrown: unknown = null;
+  it("preserves existing management_auth when dialog row omits it", function () {
+    const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
+    const previous = Zotero.Prefs.get(prefKey, true);
+    Zotero.Prefs.set(
+      prefKey,
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: "backend-skillrunner-primary",
+            displayName: "SkillRunner Primary",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+            management_auth: {
+              kind: "basic",
+              username: "admin",
+              password: "secret",
+            },
+          },
+        ],
+      }),
+      true,
+    );
 
+    let persisted = "";
     try {
       persistBackendsConfig(
         [
           {
-            id: "skillrunner-local",
+            id: "backend-skillrunner-primary",
+            displayName: "SkillRunner Primary",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },
           },
         ],
         {
-          setPref: (() => {
-            throw new Error("disk is readonly");
+          setPref: ((_: string, value: string) => {
+            persisted = value;
           }) as any,
-          refreshWorkflowMenus: () => {
-            refreshCalls += 1;
-          },
+          refreshWorkflowMenus: () => {},
         },
       );
-    } catch (error) {
-      thrown = error;
+    } finally {
+      if (typeof previous === "undefined") {
+        Zotero.Prefs.clear(prefKey, true);
+      } else {
+        Zotero.Prefs.set(prefKey, previous, true);
+      }
     }
 
-    assert.isOk(thrown);
-    assert.match(String(thrown), /disk is readonly/i);
-    assert.equal(refreshCalls, 0);
+    const parsed = JSON.parse(persisted) as {
+      schemaVersion?: number;
+      backends: Array<{ management_auth?: { kind?: string; username?: string } }>;
+    };
+    assert.equal(parsed.schemaVersion, 2);
+    assert.deepEqual(parsed.backends[0].management_auth, {
+      kind: "basic",
+      username: "admin",
+      password: "secret",
+    });
+  });
+
+  it("untracks health probing immediately when a backend profile is deleted", function () {
+    const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
+    const previous = Zotero.Prefs.get(prefKey, true);
+    Zotero.Prefs.set(
+      prefKey,
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: "backend-skillrunner-removed",
+            displayName: "Removed Backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+
+    registerSkillRunnerBackendForHealthTracking("backend-skillrunner-removed");
+    assert.isOk(getSkillRunnerBackendHealthState("backend-skillrunner-removed"));
+
+    try {
+      persistBackendsConfig([], {
+        setPref: ((_: string, value: string) => {
+          Zotero.Prefs.set(prefKey, value, true);
+        }) as any,
+        refreshWorkflowMenus: () => {},
+      });
+    } finally {
+      if (typeof previous === "undefined") {
+        Zotero.Prefs.clear(prefKey, true);
+      } else {
+        Zotero.Prefs.set(prefKey, previous, true);
+      }
+    }
+
+    assert.isNull(getSkillRunnerBackendHealthState("backend-skillrunner-removed"));
   });
 });

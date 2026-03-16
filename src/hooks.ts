@@ -1,21 +1,101 @@
-import {
-  BasicExampleFactory,
-} from "./modules/examples";
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { registerSelectionSampleMenu } from "./modules/selectionSample";
 import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
-import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
+import {
+  ensureDefaultWorkflowDirExistsOnStartup,
+  rescanWorkflowRegistry,
+} from "./modules/workflowRuntime";
+import { syncBuiltinWorkflowsOnStartup } from "./modules/builtinWorkflowSync";
 import { openBackendManagerDialog } from "./modules/backendManager";
-import { openWorkflowSettingsDialog } from "./modules/workflowSettingsDialog";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
-import { openLogViewerDialog } from "./modules/logViewerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
+import {
+  ensureDashboardToolbarButton,
+  removeDashboardToolbarButton,
+} from "./modules/dashboardToolbarButton";
 import { resolveRuntimeToolkit } from "./utils/runtimeBridge";
+import {
+  startSkillRunnerModelCacheAutoRefresh,
+  stopSkillRunnerModelCacheAutoRefresh,
+} from "./providers/skillrunner/modelCache";
+import {
+  reconcileSkillRunnerBackendTaskLedgerOnce,
+  startSkillRunnerTaskReconciler,
+  stopSkillRunnerTaskReconciler,
+} from "./modules/skillRunnerTaskReconciler";
+import {
+  deployAndConfigureLocalSkillRunner,
+  getManagedLocalRuntimeStateSnapshot,
+  hydrateLocalRuntimeAutoStartSessionStateFromPersistedState,
+  isLocalRuntimeAutoStartPaused,
+  planLocalRuntimeOneclick,
+  previewLocalRuntimeUninstall,
+  releaseManagedLocalRuntimeLeaseOnShutdown,
+  runManagedRuntimeStartupPreflightProbe,
+  resolveManagedLocalSkillsFolderPath,
+  startManagedLocalRuntimeAutoEnsureLoop,
+  stopManagedLocalRuntimeAutoEnsureLoop,
+  stopLocalRuntime,
+  uninstallLocalRuntime,
+} from "./modules/skillRunnerLocalRuntimeManager";
+import { openSkillRunnerLocalDeployDebugDialog } from "./modules/skillRunnerLocalDeployDebugDialog";
+import { loadBackendsRegistry } from "./backends/registry";
+import { openSkillRunnerManagementDialog } from "./modules/skillRunnerManagementDialog";
+import { refreshSkillRunnerModelCacheForBackend } from "./providers/skillrunner/modelCache";
+import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConstants";
+import { isDebugModeEnabled } from "./modules/debugMode";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
+
+function registerPrefsPane() {
+  const runtimeRootURI =
+    typeof rootURI === "string" && rootURI
+      ? rootURI
+      : `chrome://${addon.data.config.addonRef}/`;
+  Zotero.PreferencePanes.register({
+    pluginID: addon.data.config.addonID,
+    src: runtimeRootURI + "content/preferences.xhtml",
+    label: getString("prefs-title"),
+    image: `chrome://${addon.data.config.addonRef}/content/icons/favicon.png`,
+  });
+}
+
+async function reconcileSkillRunnerBackendsOnStartup() {
+  try {
+    const loaded = await loadBackendsRegistry();
+    if (loaded.fatalError) {
+      return;
+    }
+    for (const backend of loaded.backends) {
+      if (String(backend.type || "").trim() !== "skillrunner") {
+        continue;
+      }
+      if (String(backend.id || "").trim() === MANAGED_LOCAL_BACKEND_ID) {
+        continue;
+      }
+      await reconcileSkillRunnerBackendTaskLedgerOnce({
+        backend,
+        source: "startup",
+        emitFailureToast: true,
+      });
+    }
+  } catch {
+    // keep startup reconcile fully background/non-blocking
+  }
+}
+
+let startupSkillRunnerBackendReconcileRunner: () => Promise<void> =
+  reconcileSkillRunnerBackendsOnStartup;
+
+export function setSkillRunnerStartupBackendReconcileRunnerForTests(
+  runner?: () => Promise<void>,
+) {
+  startupSkillRunnerBackendReconcileRunner =
+    runner || reconcileSkillRunnerBackendsOnStartup;
+}
 
 async function delayMs(ms: number) {
   const runtime = globalThis as {
@@ -103,9 +183,32 @@ async function onStartup() {
   initLocale();
   installWorkflowEditorHostBridge();
 
-  await rescanWorkflowRegistry();
+  const runtimeRootURI =
+    typeof rootURI === "string" && rootURI
+      ? rootURI
+      : `chrome://${addon.data.config.addonRef}/`;
+  try {
+    await syncBuiltinWorkflowsOnStartup({
+      rootURI: runtimeRootURI,
+    });
+  } catch (error) {
+    if (typeof console !== "undefined") {
+      console.error("[workflow-builtin-sync] failed to sync builtin workflows", error);
+    }
+  }
 
-  BasicExampleFactory.registerPrefs();
+  await ensureDefaultWorkflowDirExistsOnStartup();
+  await rescanWorkflowRegistry();
+  startSkillRunnerModelCacheAutoRefresh();
+  startSkillRunnerTaskReconciler();
+  void startupSkillRunnerBackendReconcileRunner();
+  hydrateLocalRuntimeAutoStartSessionStateFromPersistedState();
+  if (!isLocalRuntimeAutoStartPaused()) {
+    await runManagedRuntimeStartupPreflightProbe();
+  }
+  startManagedLocalRuntimeAutoEnsureLoop();
+
+  registerPrefsPane();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -121,10 +224,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   addon.data.ztoolkit = createZToolkit();
 
   await ensureWorkflowRegistryAndMenu(win);
-
-  win.MozXULElement.insertFTLIfNeeded(
-    `${addon.data.config.addonRef}-mainWindow.ftl`,
-  );
+  ensureDashboardToolbarButton(win);
 
   const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
   const popupWin = ProgressWindow
@@ -148,7 +248,9 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     });
   }
 
-  registerSelectionSampleMenu();
+  if (isDebugModeEnabled()) {
+    registerSelectionSampleMenu();
+  }
 
   if (popupWin) {
     await Zotero.Promise.delay(1000);
@@ -163,11 +265,19 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  removeDashboardToolbarButton(win);
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
 }
 
 function onShutdown(): void {
+  stopManagedLocalRuntimeAutoEnsureLoop();
+  void releaseManagedLocalRuntimeLeaseOnShutdown();
+  stopSkillRunnerModelCacheAutoRefresh();
+  stopSkillRunnerTaskReconciler();
+  for (const win of Zotero.getMainWindows?.() || []) {
+    removeDashboardToolbarButton(win);
+  }
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
   // Remove addon object
@@ -188,6 +298,56 @@ async function onNotify(
 ) {
   getRuntimeToolkit()?.log?.("notify", event, type, ids, extraData);
   return;
+}
+
+async function resolveManagedLocalBackend() {
+  const snapshot = getManagedLocalRuntimeStateSnapshot();
+  const backendId = String(snapshot.details?.managedBackendId || "").trim();
+  if (!backendId || backendId !== MANAGED_LOCAL_BACKEND_ID) {
+    throw new Error("managed local backend is not configured");
+  }
+  const loaded = await loadBackendsRegistry();
+  if (loaded.fatalError) {
+    throw new Error(loaded.fatalError);
+  }
+  const backend = loaded.backends.find((entry) => entry.id === backendId);
+  if (!backend) {
+    throw new Error(`managed backend "${backendId}" is not found`);
+  }
+  return backend;
+}
+
+function openFolderInSystemFileManager(pathValue: string) {
+  const normalizedPath = String(pathValue || "").trim();
+  if (!normalizedPath) {
+    throw new Error("skills folder path is empty");
+  }
+  const pathToFile = Zotero?.File?.pathToFile;
+  if (typeof pathToFile !== "function") {
+    throw new Error("Zotero.File.pathToFile is unavailable");
+  }
+  const file = pathToFile(normalizedPath) as
+    | {
+        exists?: () => boolean;
+        launch?: () => unknown;
+        reveal?: () => unknown;
+      }
+    | undefined;
+  if (!file) {
+    throw new Error(`failed to resolve skills folder path: ${normalizedPath}`);
+  }
+  if (typeof file.exists === "function" && !file.exists()) {
+    throw new Error(`skills folder does not exist: ${normalizedPath}`);
+  }
+  if (typeof file.launch === "function") {
+    file.launch();
+    return;
+  }
+  if (typeof file.reveal === "function") {
+    file.reveal();
+    return;
+  }
+  throw new Error("nsIFile launch/reveal is unavailable");
 }
 
 /**
@@ -237,17 +397,128 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       });
       break;
     case "openWorkflowSettings":
-      await openWorkflowSettingsDialog({
-        window: data.window,
-        workflowId: typeof data.workflowId === "string" ? data.workflowId : undefined,
+      await openTaskManagerDialog({
+        initialTabKey: "workflow-options",
+        initialWorkflowId:
+          typeof data.workflowId === "string" ? data.workflowId : undefined,
       });
       break;
     case "openTaskManager":
+    case "openDashboard":
       await openTaskManagerDialog();
       break;
     case "openLogViewer":
-      await openLogViewerDialog();
+      await openTaskManagerDialog({
+        initialTabKey: "runtime-logs",
+      });
       break;
+    case "openSkillRunnerLocalDeployDebugConsole":
+      if (!isDebugModeEnabled()) {
+        return {
+          ok: false,
+          stage: "open-debug-console-disabled",
+          message: "debug mode is disabled",
+        };
+      }
+      await openSkillRunnerLocalDeployDebugDialog();
+      return {
+        ok: true,
+        stage: "open-debug-console",
+        message: "local deploy debug console opened",
+      };
+    case "deploySkillRunnerLocalRuntime":
+      return deployAndConfigureLocalSkillRunner({
+        version: typeof data.version === "string" ? data.version : undefined,
+        forcedBranch:
+          data.forcedBranch === "deploy" || data.forcedBranch === "start"
+            ? data.forcedBranch
+            : undefined,
+      });
+    case "planSkillRunnerLocalRuntimeOneclick":
+      return planLocalRuntimeOneclick({
+        version: typeof data.version === "string" ? data.version : undefined,
+      });
+    case "previewSkillRunnerLocalRuntimeUninstall":
+      return previewLocalRuntimeUninstall({
+        clearData: data.clearData === true,
+        clearAgentHome: data.clearAgentHome === true,
+      });
+    case "stateSkillRunnerLocalRuntime":
+      return getManagedLocalRuntimeStateSnapshot();
+    case "openSkillRunnerManagedBackendPage": {
+      try {
+        const backend = await resolveManagedLocalBackend();
+        await openSkillRunnerManagementDialog({
+          backendId: backend.id,
+          baseUrl: backend.baseUrl,
+        });
+        return {
+          ok: true,
+          stage: "open-managed-backend-page",
+          message: "managed backend page opened",
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "open-managed-backend-page",
+          message: String(error),
+        };
+      }
+    }
+    case "refreshSkillRunnerManagedModelCache": {
+      try {
+        const backend = await resolveManagedLocalBackend();
+        const refreshed = await refreshSkillRunnerModelCacheForBackend({ backend });
+        return {
+          ok: true,
+          stage: "refresh-managed-model-cache",
+          message: "managed backend model cache refreshed",
+          details: refreshed as Record<string, unknown>,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "refresh-managed-model-cache",
+          message: String(error),
+        };
+      }
+    }
+    case "openSkillRunnerManagedSkillsFolder": {
+      try {
+        const resolved = resolveManagedLocalSkillsFolderPath();
+        if (!resolved.ok) {
+          return {
+            ok: false,
+            stage: "open-managed-skills-folder",
+            message: resolved.reason,
+            details: resolved.details,
+          };
+        }
+        openFolderInSystemFileManager(resolved.skillsFolder);
+        return {
+          ok: true,
+          stage: "open-managed-skills-folder",
+          message: "managed local backend skills folder opened",
+          details: {
+            localRoot: resolved.localRoot,
+            skillsFolder: resolved.skillsFolder,
+          },
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "open-managed-skills-folder",
+          message: String(error),
+        };
+      }
+    }
+    case "stopSkillRunnerLocalRuntime":
+      return stopLocalRuntime();
+    case "uninstallSkillRunnerLocalRuntime":
+      return uninstallLocalRuntime({
+        clearData: data.clearData === true,
+        clearAgentHome: data.clearAgentHome === true,
+      });
     default:
       return;
   }

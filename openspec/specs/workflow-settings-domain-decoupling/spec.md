@@ -20,12 +20,17 @@ The system MUST keep existing behavior where run-once defaults are re-initialize
 - **THEN** run-once defaults reflect latest persisted values
 
 ### Requirement: Execution settings resolution SHALL remain behavior-equivalent
-Execution context consumed by workflow runtime MUST preserve existing precedence and normalization semantics.
+Execution context consumed by workflow runtime MUST be resolved by merging persisted settings with an optional submit-time override.
 
-#### Scenario: Run-once overrides merged with persisted settings
-- **WHEN** run-once settings are applied for a workflow execution
-- **THEN** produced execution settings match current behavior for `profileId`, `workflowParams`, and `providerOptions`
-- **AND** existing validation fallback behavior remains unchanged
+#### Scenario: Submit override merged with persisted settings
+- **WHEN** submit-time execution options override is provided for a workflow execution
+- **THEN** produced execution settings SHALL merge override onto persisted values for `backendId`, `workflowParams`, and `providerOptions`
+- **AND** persisted settings SHALL NOT be mutated unless explicitly saved
+
+#### Scenario: Persisted-only resolution remains stable
+- **WHEN** no submit-time override is provided
+- **THEN** execution settings SHALL be resolved from persisted settings only
+- **AND** existing normalization fallback behavior SHALL remain unchanged
 
 ### Requirement: Settings domain SHALL be independently testable
 Domain contracts MUST support regression testing without requiring dialog rendering.

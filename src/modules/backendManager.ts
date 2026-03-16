@@ -5,10 +5,28 @@ import {
 } from "../config/defaults";
 import { refreshWorkflowMenus } from "./workflowMenu";
 import { getPref, setPref } from "../utils/prefs";
-import { loadBackendsRegistry } from "../backends/registry";
+import {
+  createBackendsPrefsDocument,
+  loadBackendsRegistry,
+  syncBackendReferenceState,
+} from "../backends/registry";
 import { isWindowAlive } from "../utils/window";
 import { getString } from "../utils/locale";
+import {
+  buildSkillRunnerManagementUiUrl,
+  openSkillRunnerManagementDialog,
+} from "./skillRunnerManagementDialog";
 import type { BackendInstance } from "../backends/types";
+import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner/modelCache";
+import {
+  generateBackendInternalId,
+  isManagedLocalBackendId,
+  normalizeBackendDisplayName,
+} from "../backends/identity";
+import { MANAGED_LOCAL_BACKEND_ID } from "./skillRunnerLocalRuntimeConstants";
+import { stopSessionSync } from "./skillRunnerSessionSyncManager";
+import { untrackSkillRunnerBackendHealth } from "./skillRunnerBackendHealthRegistry";
+import { purgeSkillRunnerBackendReconcileState } from "./skillRunnerTaskReconciler";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const PROVIDER_SECTIONS = [
@@ -28,12 +46,19 @@ type BackendPersistenceDeps = {
 };
 
 type EditableBackendRow = {
-  id: string;
+  internalId: string;
+  displayName: string;
   type: string;
   baseUrl: string;
   authKind: "none" | "bearer";
   authToken: string;
   timeoutMs: string;
+};
+
+export type SkillRunnerManagementLaunchPayload = {
+  backendId: string;
+  baseUrl: string;
+  uiUrl: string;
 };
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -260,7 +285,8 @@ function createChoiceControl(args: {
 
 function buildFallbackBackendRow(): EditableBackendRow {
   return {
-    id: DEFAULT_BACKEND_ID,
+    internalId: DEFAULT_BACKEND_ID,
+    displayName: DEFAULT_BACKEND_ID,
     type: DEFAULT_BACKEND_TYPE,
     baseUrl: String(
       getPref("skillRunnerEndpoint") || DEFAULT_SKILLRUNNER_ENDPOINT,
@@ -273,7 +299,8 @@ function buildFallbackBackendRow(): EditableBackendRow {
 
 function normalizeRowFromBackend(backend: BackendInstance): EditableBackendRow {
   return {
-    id: backend.id,
+    internalId: backend.id,
+    displayName: normalizeBackendDisplayName(backend.displayName, backend.id),
     type: backend.type,
     baseUrl: backend.baseUrl,
     authKind: backend.auth?.kind === "bearer" ? "bearer" : "none",
@@ -324,13 +351,54 @@ function appendSelectCell(
   cell.appendChild(control);
 }
 
-function appendRemoveCell(row: HTMLElement) {
-  const cell = appendCell(row);
-  const button = createHtmlElement(row.ownerDocument!, "button");
+export function getBackendRowActionKindsForType(type: string) {
+  const normalizedType = String(type || "").trim();
+  if (normalizedType === DEFAULT_BACKEND_TYPE) {
+    return ["manage-ui", "refresh-model-cache", "remove"] as const;
+  }
+  return ["remove"] as const;
+}
+
+function appendActionCell(args: {
+  row: HTMLElement;
+  backendType: string;
+  onOpenManagement?: (row: HTMLElement) => void;
+  onRefreshModelCache?: (row: HTMLElement) => void;
+}) {
+  const cell = appendCell(args.row);
+  if (String(args.backendType || "").trim() === DEFAULT_BACKEND_TYPE) {
+    const manageButton = createHtmlElement(args.row.ownerDocument!, "button");
+    manageButton.type = "button";
+    manageButton.textContent = getString("backend-manager-open-management" as any);
+    manageButton.setAttribute("data-zs-backend-action", "open-management");
+    manageButton.addEventListener("click", () => {
+      if (typeof args.onOpenManagement === "function") {
+        args.onOpenManagement(args.row);
+      }
+    });
+    manageButton.style.marginRight = "6px";
+    cell.appendChild(manageButton);
+
+    const refreshButton = createHtmlElement(args.row.ownerDocument!, "button");
+    refreshButton.type = "button";
+    refreshButton.textContent = getString(
+      "backend-manager-refresh-model-cache" as any,
+    );
+    refreshButton.setAttribute("data-zs-backend-action", "refresh-model-cache");
+    refreshButton.addEventListener("click", () => {
+      if (typeof args.onRefreshModelCache === "function") {
+        args.onRefreshModelCache(args.row);
+      }
+    });
+    refreshButton.style.marginRight = "6px";
+    cell.appendChild(refreshButton);
+  }
+  const button = createHtmlElement(args.row.ownerDocument!, "button");
   button.type = "button";
   button.textContent = getString("backend-manager-remove" as any);
+  button.setAttribute("data-zs-backend-action", "remove");
   button.addEventListener("click", () => {
-    row.remove();
+    args.row.remove();
   });
   cell.appendChild(button);
 }
@@ -338,12 +406,15 @@ function appendRemoveCell(row: HTMLElement) {
 function appendBackendRow(args: {
   tbody: HTMLElement;
   backend: EditableBackendRow;
+  onOpenManagement?: (row: HTMLElement) => void;
+  onRefreshModelCache?: (row: HTMLElement) => void;
 }) {
   const row = createHtmlElement(args.tbody.ownerDocument!, "tr");
   row.setAttribute("data-zs-backend-row", "1");
   row.setAttribute("data-zs-backend-type", args.backend.type);
+  row.setAttribute("data-zs-backend-internal-id", args.backend.internalId);
 
-  appendTextCell(row, "id", args.backend.id, "190px");
+  appendTextCell(row, "displayName", args.backend.displayName, "190px");
   appendTextCell(row, "baseUrl", args.backend.baseUrl, "320px");
   appendSelectCell(
     row,
@@ -362,7 +433,12 @@ function appendBackendRow(args: {
   );
   appendTextCell(row, "authToken", args.backend.authToken, "220px");
   appendTextCell(row, "timeoutMs", args.backend.timeoutMs, "110px");
-  appendRemoveCell(row);
+  appendActionCell({
+    row,
+    backendType: args.backend.type,
+    onOpenManagement: args.onOpenManagement,
+    onRefreshModelCache: args.onRefreshModelCache,
+  });
   args.tbody.appendChild(row);
 }
 
@@ -463,6 +539,102 @@ function readRowField(row: Element, field: string) {
   return getElementValue(control);
 }
 
+function readRowInternalId(row: Element) {
+  return String(row.getAttribute("data-zs-backend-internal-id") || "").trim();
+}
+
+export function resolveSkillRunnerManagementLaunchPayloadFromRow(
+  row: Element,
+): SkillRunnerManagementLaunchPayload {
+  const backendId = readRowInternalId(row);
+  const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
+  const uiUrl = buildSkillRunnerManagementUiUrl(baseUrl);
+  return {
+    backendId: backendId || DEFAULT_BACKEND_ID,
+    baseUrl,
+    uiUrl,
+  };
+}
+
+function resolveSkillRunnerBackendFromRow(
+  row: Element,
+): BackendInstance {
+  const type = String(row.getAttribute("data-zs-backend-type") || "").trim();
+  if (type !== DEFAULT_BACKEND_TYPE) {
+    throw new Error(
+      getString("backend-manager-error-unsupported-provider" as any, {
+        args: { row: "?", type },
+      }),
+    );
+  }
+  const backendId = readRowInternalId(row);
+  if (!backendId) {
+    throw new Error(
+      getString("backend-manager-error-model-cache-id-required" as any),
+    );
+  }
+  const displayName = String(readRowField(row, "displayName") || "").trim();
+  const baseUrl = String(readRowField(row, "baseUrl") || "").trim();
+  if (!baseUrl) {
+    throw new Error(
+      getString("backend-manager-error-management-base-url-required" as any),
+    );
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("protocol");
+    }
+  } catch {
+    throw new Error(
+      getString("backend-manager-error-management-base-url-invalid" as any),
+    );
+  }
+  const authKind = String(readRowField(row, "authKind") || "none").trim();
+  const authToken = String(readRowField(row, "authToken") || "").trim();
+  if (authKind === "bearer" && !authToken) {
+    throw new Error(
+      getString("backend-manager-error-model-cache-bearer-required" as any),
+    );
+  }
+  return {
+    id: backendId,
+    displayName: normalizeBackendDisplayName(displayName, backendId),
+    type: DEFAULT_BACKEND_TYPE,
+    baseUrl,
+    auth:
+      authKind === "bearer"
+        ? {
+            kind: "bearer",
+            token: authToken,
+          }
+        : {
+            kind: "none",
+          },
+  };
+}
+
+export async function launchSkillRunnerManagementFromRow(args: {
+  row: Element;
+  openDialog?: (payload: SkillRunnerManagementLaunchPayload) => Promise<void>;
+}) {
+  const payload = resolveSkillRunnerManagementLaunchPayloadFromRow(args.row);
+  const openDialog = args.openDialog || openSkillRunnerManagementDialog;
+  await openDialog(payload);
+  return payload;
+}
+
+export async function refreshSkillRunnerModelCacheFromRow(args: {
+  row: Element;
+  refresh?: (args: { backend: BackendInstance }) => Promise<unknown>;
+}) {
+  const backend = resolveSkillRunnerBackendFromRow(args.row);
+  const refresh = args.refresh || refreshSkillRunnerModelCacheForBackend;
+  return refresh({
+    backend,
+  });
+}
+
 export function collectBackendsFromDialog(doc: Document): {
   backends: BackendInstance[];
 } {
@@ -474,24 +646,35 @@ export function collectBackendsFromDialog(doc: Document): {
   }
 
   const seen = new Set<string>();
+  const usedIds = new Set<string>();
   const supportedTypes = new Set(PROVIDER_SECTIONS.map((entry) => entry.type));
   const backends: BackendInstance[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const type = String(row.getAttribute("data-zs-backend-type") || "").trim();
-    const id = readRowField(row, "id");
+    let id = readRowInternalId(row);
+    const displayName = String(readRowField(row, "displayName") || "").trim();
     const baseUrl = readRowField(row, "baseUrl");
     const authKind = readRowField(row, "authKind") || "none";
     const authToken = readRowField(row, "authToken");
     const timeoutText = readRowField(row, "timeoutMs");
 
-    if (!id) {
+    if (!displayName) {
       throw new Error(
         getString("backend-manager-error-id-required" as any, {
           args: { row: i + 1 },
         }),
       );
     }
+    if (!id) {
+      id = generateBackendInternalId({
+        displayName,
+        type,
+        usedIds,
+      });
+      row.setAttribute("data-zs-backend-internal-id", id);
+    }
+    usedIds.add(id);
     if (seen.has(id)) {
       throw new Error(
         getString("backend-manager-error-duplicate-id" as any, {
@@ -547,6 +730,7 @@ export function collectBackendsFromDialog(doc: Document): {
 
     backends.push({
       id,
+      displayName: normalizeBackendDisplayName(displayName, id),
       type,
       baseUrl,
       auth:
@@ -578,6 +762,53 @@ const defaultBackendPersistenceDeps: BackendPersistenceDeps = {
   refreshWorkflowMenus,
 };
 
+function readPersistedManagementAuthByBackendId() {
+  const map = new Map<string, BackendInstance["management_auth"]>();
+  const raw = String(getPref(BACKENDS_CONFIG_PREF_KEY) || "").trim();
+  if (!raw) {
+    return map;
+  }
+  try {
+    const parsed = JSON.parse(raw) as {
+      backends?: Array<{ id?: unknown; management_auth?: unknown }>;
+    };
+    const entries = Array.isArray(parsed?.backends) ? parsed.backends : [];
+    for (const entry of entries) {
+      const id = String(entry?.id || "").trim();
+      if (!id) {
+        continue;
+      }
+      const managementAuth = entry?.management_auth;
+      if (!managementAuth || typeof managementAuth !== "object") {
+        continue;
+      }
+      const typed = managementAuth as {
+        kind?: unknown;
+        username?: unknown;
+        password?: unknown;
+      };
+      const kind = String(typed.kind || "").trim();
+      if (kind === "basic") {
+        const username = String(typed.username || "").trim();
+        const password = String(typed.password || "").trim();
+        if (!username || !password) {
+          continue;
+        }
+        map.set(id, {
+          kind: "basic",
+          username,
+          password,
+        });
+        continue;
+      }
+      map.set(id, { kind: "none" });
+    }
+  } catch {
+    return map;
+  }
+  return map;
+}
+
 export function persistBackendsConfig(
   backends: BackendInstance[],
   deps: Partial<BackendPersistenceDeps> = {},
@@ -586,12 +817,85 @@ export function persistBackendsConfig(
     ...defaultBackendPersistenceDeps,
     ...deps,
   };
+  const existingManagementAuth = readPersistedManagementAuthByBackendId();
+  const mergedBackends = backends.map((backend) => {
+    const explicit = backend.management_auth;
+    if (explicit && typeof explicit === "object") {
+      return backend;
+    }
+    const persisted = existingManagementAuth.get(backend.id);
+    if (!persisted) {
+      return backend;
+    }
+    return {
+      ...backend,
+      management_auth: persisted,
+    };
+  });
+  const idMapping = new Map<string, string>();
+  const removedIds = new Set<string>();
+  const raw = String(getPref(BACKENDS_CONFIG_PREF_KEY) || "").trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { backends?: BackendInstance[] };
+      const existing = Array.isArray(parsed?.backends) ? parsed.backends : [];
+      const managed = existing.find((entry) =>
+        isManagedLocalBackendId(entry.id),
+      );
+      const existingIds = new Set(
+        existing
+          .map((entry) => String(entry.id || "").trim())
+          .filter((id) => id && !isManagedLocalBackendId(id)),
+      );
+      const nextIds = new Set(
+        mergedBackends
+          .map((entry) => String(entry.id || "").trim())
+          .filter((id) => id && !isManagedLocalBackendId(id)),
+      );
+      for (const existingId of existingIds) {
+        if (!nextIds.has(existingId)) {
+          removedIds.add(existingId);
+        }
+      }
+      if (
+        managed &&
+        !mergedBackends.some(
+          (entry) => isManagedLocalBackendId(entry.id),
+        )
+      ) {
+        const normalizedManaged = {
+          ...managed,
+          id: MANAGED_LOCAL_BACKEND_ID,
+          displayName: normalizeBackendDisplayName(
+            managed.displayName,
+            "Local Backend",
+          ),
+        };
+        const legacyManagedId = String(managed.id || "").trim();
+        if (legacyManagedId && legacyManagedId !== MANAGED_LOCAL_BACKEND_ID) {
+          idMapping.set(legacyManagedId, MANAGED_LOCAL_BACKEND_ID);
+        }
+        mergedBackends.push(normalizedManaged);
+      }
+    } catch {
+      // ignore parse failures and keep current mergedBackends
+    }
+  }
   resolved.setPref(
     BACKENDS_CONFIG_PREF_KEY,
-    JSON.stringify({
-      backends,
-    }),
+    JSON.stringify(createBackendsPrefsDocument(mergedBackends)),
   );
+  syncBackendReferenceState({
+    idMapping,
+    removedIds,
+  });
+  for (const removedId of removedIds.values()) {
+    stopSessionSync({
+      backendId: removedId,
+    });
+    purgeSkillRunnerBackendReconcileState(removedId);
+    untrackSkillRunnerBackendHealth(removedId);
+  }
   resolved.refreshWorkflowMenus();
 }
 
@@ -612,7 +916,9 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
   const loaded = await loadBackendsRegistry();
   const initialRows = loaded.fatalError
     ? [buildFallbackBackendRow()]
-    : loaded.backends.map((entry) => normalizeRowFromBackend(entry));
+    : loaded.backends
+        .filter((entry) => !isManagedLocalBackendId(entry.id))
+        .map((entry) => normalizeRowFromBackend(entry));
 
   if (loaded.fatalError) {
     alertWindow?.alert?.(
@@ -647,6 +953,48 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
         }
       });
 
+      const openManagementFromRow = (row: HTMLElement) => {
+        void launchSkillRunnerManagementFromRow({
+          row,
+        }).catch((error) => {
+          alertWindow?.alert?.(
+            getString("backend-manager-open-management-failed" as any, {
+              args: { error: String(error) },
+            }),
+          );
+        });
+      };
+      const refreshModelCacheFromRow = (row: HTMLElement) => {
+        void refreshSkillRunnerModelCacheFromRow({
+          row,
+        })
+          .then((result) => {
+            const typed = (result || {}) as {
+              ok?: boolean;
+              refreshedAt?: string;
+              error?: string;
+            };
+            if (typed.ok === true) {
+              alertWindow?.alert?.(
+                getString("backend-manager-refresh-model-cache-success" as any, {
+                  args: {
+                    refreshedAt: String(typed.refreshedAt || ""),
+                  },
+                }),
+              );
+              return;
+            }
+            throw new Error(String(typed.error || "unknown error"));
+          })
+          .catch((error) => {
+            alertWindow?.alert?.(
+              getString("backend-manager-refresh-model-cache-failed" as any, {
+                args: { error: String(error) },
+              }),
+            );
+          });
+      };
+
       initialRows.forEach((backend) => {
         const tbody = bodyMap.get(backend.type);
         if (!tbody) {
@@ -655,6 +1003,8 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
         appendBackendRow({
           tbody,
           backend,
+          onOpenManagement: openManagementFromRow,
+          onRefreshModelCache: refreshModelCacheFromRow,
         });
       });
 
@@ -675,13 +1025,16 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
           appendBackendRow({
             tbody,
             backend: {
-              id: "",
+              internalId: "",
+              displayName: "",
               type: providerType,
               baseUrl: "",
               authKind: "none",
               authToken: "",
               timeoutMs: "",
             },
+            onOpenManagement: openManagementFromRow,
+            onRefreshModelCache: refreshModelCacheFromRow,
           });
         });
       });

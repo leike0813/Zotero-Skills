@@ -11,21 +11,8 @@ export function isZoteroRuntime() {
   const runtime = globalThis as {
     IOUtils?: unknown;
     PathUtils?: unknown;
-    Services?: {
-      io?: { newFileURI?: unknown };
-      scriptloader?: { loadSubScript?: unknown };
-    };
-    Cc?: unknown;
-    Ci?: unknown;
   };
-  return (
-    !!runtime.IOUtils &&
-    !!runtime.PathUtils &&
-    typeof runtime.Services?.io?.newFileURI === "function" &&
-    typeof runtime.Services?.scriptloader?.loadSubScript === "function" &&
-    typeof runtime.Cc !== "undefined" &&
-    typeof runtime.Ci !== "undefined"
-  );
+  return !!runtime.IOUtils && !!runtime.PathUtils;
 }
 
 function getPathSeparator() {
@@ -116,7 +103,7 @@ export function fixturePath(...segments: string[]) {
 }
 
 export function workflowsPath(...segments: string[]) {
-  return joinPath(getProjectRoot(), "workflows", ...segments);
+  return joinPath(getProjectRoot(), "workflows_builtin", ...segments);
 }
 
 function dirnamePath(targetPath: string) {

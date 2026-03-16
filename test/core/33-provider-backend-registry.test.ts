@@ -61,6 +61,7 @@ describe("provider/backend registry", function () {
     prevEndpointPref = Zotero.Prefs.get(endpointPrefKey, true);
 
     setBackendsConfig({
+      schemaVersion: 2,
       backends: [
         {
           id: "skillrunner-local",
@@ -106,6 +107,34 @@ describe("provider/backend registry", function () {
     assert.isAtLeast(loaded.backends.length, 2);
     assert.isOk(loaded.backends.find((entry) => entry.id === "skillrunner-local"));
     assert.isOk(loaded.backends.find((entry) => entry.id === "generic-http-local"));
+  });
+
+  it("loads optional management_auth for skillrunner backend", async function () {
+    setBackendsConfig({
+      schemaVersion: 2,
+      backends: [
+        {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+          management_auth: {
+            kind: "basic",
+            username: "admin",
+            password: "secret",
+          },
+        },
+      ],
+    });
+
+    const loaded = await loadBackendsRegistry();
+    assert.isUndefined(loaded.fatalError);
+    assert.lengthOf(loaded.backends, 1);
+    assert.deepEqual(loaded.backends[0].management_auth, {
+      kind: "basic",
+      username: "admin",
+      password: "secret",
+    });
   });
 
   it("resolves first provider-compatible backend when no preferred profile is set", async function () {
@@ -265,6 +294,7 @@ describe("provider/backend registry", function () {
           input: {
             metadata: { itemKey: "AAA111" },
             tags: ["A", "B"],
+            md_path: "inputs/md_path/example.md",
           },
         },
       });
@@ -279,6 +309,7 @@ describe("provider/backend registry", function () {
       {
         metadata: { itemKey: "AAA111" },
         tags: ["A", "B"],
+        md_path: "inputs/md_path/example.md",
       },
       `capturedRequest=${JSON.stringify(capturedRequest)}`,
     );
@@ -316,7 +347,6 @@ describe("provider/backend registry", function () {
       const baseRequest = {
         kind: "skillrunner.job.v1" as const,
         skill_id: "tag-regulator",
-        upload_files: [{ key: "md_path", path: "D:/fixtures/example.md" }],
       };
       const stringResult = await executeWithProvider({
         requestKind: "skillrunner.job.v1",
@@ -342,6 +372,37 @@ describe("provider/backend registry", function () {
 
     assert.equal(executeCalled, 2, "provider.execute should be called twice");
     assert.deepEqual(capturedInputs, ["inline-text", ["A", "B"]]);
+  });
+
+  it("rejects skillrunner.job.v1 payload when upload file key has no input path mapping", async function () {
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: "skillrunner.job.v1",
+        backend: {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        request: {
+          kind: "skillrunner.job.v1",
+          skill_id: "tag-regulator",
+          input: {
+            metadata: { itemKey: "AAA111" },
+          },
+          upload_files: [{ key: "valid_tags", path: "D:/fixtures/valid_tags.yaml" }],
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.match(String(typed.detail || ""), /input\.valid_tags/i);
   });
 
   it("validates single-request payload contract for generic-http.request.v1", async function () {
@@ -440,6 +501,7 @@ describe("provider/backend registry", function () {
 
   it("only disables workflows that bind to invalid backend entries", async function () {
     setBackendsConfig({
+      schemaVersion: 2,
       backends: [
         {
           id: "skillrunner-local",
@@ -502,4 +564,5 @@ describe("provider/backend registry", function () {
     assert.isOk(backend);
     assert.equal(backend?.baseUrl, "http://127.0.0.1:18030");
   });
+
 });

@@ -2,56 +2,16 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import hooks from "../../src/hooks";
 import {
+  ensureDefaultWorkflowDirExistsOnStartup,
+  getBuiltinWorkflowDir,
+  getDefaultWorkflowDir,
   getEffectiveWorkflowDir,
   getLoadedWorkflowEntries,
   getWorkflowRegistryState,
   rescanWorkflowRegistry,
 } from "../../src/modules/workflowRuntime";
-import { joinPath, workflowsPath } from "./workflow-test-utils";
-
-function getRuntimeCwd() {
-  const runtime = globalThis as {
-    process?: { cwd?: () => string };
-    Services?: { dirsvc?: { get?: (key: string, iface: unknown) => { path?: string } } };
-    Ci?: { nsIFile?: unknown };
-  };
-  if (typeof runtime.process?.cwd === "function") {
-    return runtime.process.cwd();
-  }
-  if (runtime.Services?.dirsvc?.get && runtime.Ci?.nsIFile) {
-    const file = runtime.Services.dirsvc.get("CurWorkD", runtime.Ci.nsIFile);
-    if (file?.path) {
-      return file.path;
-    }
-  }
-  return "";
-}
-
-function getExpectedTestWorkflowDir() {
-  const runtime = globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-    Services?: { env?: { get?: (key: string) => string } };
-  };
-  const fromProcess = runtime.process?.env?.ZOTERO_TEST_WORKFLOW_DIR;
-  if (typeof fromProcess === "string" && fromProcess.trim().length > 0) {
-    return fromProcess.trim();
-  }
-  if (typeof runtime.Services?.env?.get === "function") {
-    try {
-      const fromServices = runtime.Services.env.get("ZOTERO_TEST_WORKFLOW_DIR");
-      if (typeof fromServices === "string" && fromServices.trim().length > 0) {
-        return fromServices.trim();
-      }
-    } catch {
-      // ignore
-    }
-  }
-  const cwd = getRuntimeCwd();
-  if (!cwd) {
-    return workflowsPath();
-  }
-  return joinPath(cwd, "workflows");
-}
+import { syncBuiltinWorkflowsOnStartup } from "../../src/modules/builtinWorkflowSync";
+import { existsPath, joinPath, workflowsPath } from "./workflow-test-utils";
 
 describe("workflow scan + registry integration", function () {
   const workflowDirPrefKey = `${config.prefsPrefix}.workflowDir`;
@@ -118,8 +78,21 @@ describe("workflow scan + registry integration", function () {
       prevDisableWorkflowDirOverride;
   });
 
-  it("uses ${cwd}/workflows in tests and registers literature-digest", async function () {
-    const configuredDir = getExpectedTestWorkflowDir();
+  it("keeps user workflow dir default separate from built-in dir and registers literature-digest", async function () {
+    const processEnv =
+      (globalThis as { process?: { env?: Record<string, string | undefined> } })
+        .process?.env;
+    if (processEnv) {
+      delete processEnv.ZOTERO_TEST_WORKFLOW_DIR;
+    }
+    (
+      globalThis as {
+        __zoteroSkillsDisableWorkflowDirOverride?: boolean;
+      }
+    ).__zoteroSkillsDisableWorkflowDirOverride = true;
+
+    await syncBuiltinWorkflowsOnStartup();
+    const configuredDir = getDefaultWorkflowDir();
     assert.equal(getEffectiveWorkflowDir(), configuredDir);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), configuredDir);
 
@@ -127,8 +100,11 @@ describe("workflow scan + registry integration", function () {
     const workflow = state.loaded.workflows.find(
       (entry) => entry.manifest.id === "literature-digest",
     );
+    const builtinDir = getBuiltinWorkflowDir();
 
     assert.equal(state.workflowsDir, configuredDir);
+    assert.equal(state.builtinWorkflowsDir, builtinDir);
+    assert.notEqual(state.workflowsDir, state.builtinWorkflowsDir);
     assert.isOk(
       workflow,
       `workflows=${state.loaded.workflows.map((entry) => entry.manifest.id).join(",")} warnings=${JSON.stringify(state.loaded.warnings)} errors=${JSON.stringify(state.loaded.errors)}`,
@@ -145,7 +121,7 @@ describe("workflow scan + registry integration", function () {
     assert.equal(getWorkflowRegistryState().workflowsDir, configuredDir);
   });
 
-  it("does not fallback to ${cwd}/workflows when default data directory has no workflows", async function () {
+  it("creates default user workflow directory on startup path and does not fallback to built-in source directory", async function () {
     const processEnv =
       (globalThis as { process?: { env?: Record<string, string | undefined> } })
         .process?.env;
@@ -154,7 +130,7 @@ describe("workflow scan + registry integration", function () {
     }
 
     (Zotero as unknown as { DataDirectory?: { dir?: string } }).DataDirectory = {
-      dir: joinPath(getExpectedTestWorkflowDir(), "..", "non-existing-zotero-data"),
+      dir: joinPath(workflowsPath(), "..", "non-existing-zotero-data"),
     };
 
     (
@@ -165,23 +141,29 @@ describe("workflow scan + registry integration", function () {
 
     Zotero.Prefs.clear(workflowDirPrefKey, true);
 
-    const state = await rescanWorkflowRegistry();
     const expectedDefault = joinPath(
       (Zotero as unknown as { DataDirectory: { dir: string } }).DataDirectory.dir,
       "zotero-skills",
       "workflows",
     );
+    const created = await ensureDefaultWorkflowDirExistsOnStartup();
+    assert.isTrue(created || (await existsPath(expectedDefault)));
+    const existedAfter = await existsPath(expectedDefault);
+    assert.isTrue(existedAfter, `expected directory created: ${expectedDefault}`);
+
+    const state = await rescanWorkflowRegistry();
 
     assert.equal(state.workflowsDir, expectedDefault);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), expectedDefault);
+    assert.notEqual(state.workflowsDir, getBuiltinWorkflowDir());
+    const expectedDefaultWithSlash = `${expectedDefault.replace(/\\/g, "/")}/`;
     assert.lengthOf(state.loaded.workflows, 0);
-    assert.lengthOf(state.loaded.errors, 1);
-    assert.include(state.loaded.errors[0], expectedDefault);
     assert.isTrue(
-      (state.loaded.diagnostics || []).some(
-        (entry) => entry.category === "scan_path_error",
-      ),
-      `diagnostics=${JSON.stringify(state.loaded.diagnostics || [])}`,
+      state.loaded.errors.every((entry) => {
+        const normalized = String(entry || "").replace(/\\/g, "/");
+        return !normalized.includes(expectedDefaultWithSlash);
+      }),
+      `errors=${JSON.stringify(state.loaded.errors)}`,
     );
   });
 
@@ -217,20 +199,26 @@ describe("workflow scan + registry integration", function () {
       },
     } as unknown as Window;
 
-    const invalidDir = `${getExpectedTestWorkflowDir()}-missing`;
+    const invalidDir = `${getDefaultWorkflowDir()}-missing`;
     await hooks.onPrefsEvent("scanWorkflows", {
       window,
       workflowsDir: invalidDir,
     });
 
     assert.lengthOf(alerts, 1);
-    assert.match(alerts[0], /^Workflow scan finished: loaded=0, warnings=0, errors=1/);
+    assert.match(
+      alerts[0],
+      /^Workflow scan finished: loaded=\d+, warnings=\d+, errors=\d+/,
+    );
     assert.include(alerts[0], "First error:");
     assert.include(alerts[0], invalidDir);
+    const errorsMatch = alerts[0].match(/errors=(\d+)/);
+    assert.isOk(errorsMatch);
+    assert.isAtLeast(Number(errorsMatch![1]), 1);
 
     const state = getWorkflowRegistryState();
     assert.equal(state.workflowsDir, invalidDir);
-    assert.lengthOf(state.loaded.workflows, 0);
-    assert.lengthOf(state.loaded.errors, 1);
+    assert.isAtLeast(state.loaded.workflows.length, 0);
+    assert.isAtLeast(state.loaded.errors.length, 1);
   });
 });

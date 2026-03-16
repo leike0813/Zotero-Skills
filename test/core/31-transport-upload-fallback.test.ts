@@ -13,7 +13,95 @@ function createJsonResponse(payload: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
+function findFirstZipLocalHeaderOffset(bytes: Uint8Array) {
+  for (let i = 0; i <= bytes.length - 4; i++) {
+    if (
+      bytes[i] === 0x50 &&
+      bytes[i + 1] === 0x4b &&
+      bytes[i + 2] === 0x03 &&
+      bytes[i + 3] === 0x04
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function readZipGeneralPurposeFlagFromMultipart(bytes: Uint8Array) {
+  const offset = findFirstZipLocalHeaderOffset(bytes);
+  if (offset < 0 || offset + 8 > bytes.length) {
+    throw new Error("zip local header not found in multipart body");
+  }
+  return bytes[offset + 6] | (bytes[offset + 7] << 8);
+}
+
 describe("transport: upload fallback without FormData", function () {
+  it("emits request-created progress right after create step", async function () {
+    const progressEvents: Array<{ type: string; requestId?: string }> = [];
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-progress-1" });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1")) {
+          return createJsonResponse({
+            request_id: "req-progress-1",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-progress-1/result")) {
+          return createJsonResponse({
+            request_id: "req-progress-1",
+            result: {
+              status: "success",
+              data: {},
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+      },
+      {
+        onProgress: (event) => {
+          progressEvents.push({
+            type: String(event.type || ""),
+            requestId: String((event as { requestId?: unknown }).requestId || ""),
+          });
+        },
+      },
+    );
+
+    assert.deepEqual(progressEvents, [
+      {
+        type: "request-created",
+        requestId: "req-progress-1",
+      },
+    ]);
+  });
+
   it("forwards optional inline input to /v1/jobs create body", async function () {
     let capturedCreateBody: unknown;
     const client = new SkillRunnerClient({
@@ -46,12 +134,13 @@ describe("transport: upload fallback without FormData", function () {
         skill_id: "tag-regulator",
         upload_files: [
           {
-            key: "md_path",
+            key: "source_path",
             path: fixturePath("literature-digest", "example.md"),
           },
         ],
         parameter: { mode: "strict" },
         input: {
+          source_path: "inputs/source_path/example.md",
           metadata: { parentKey: "AAA111" },
           valid_tags: ["alpha", "beta"],
         },
@@ -66,6 +155,7 @@ describe("transport: upload fallback without FormData", function () {
     assert.deepEqual(
       (capturedCreateBody as { input?: unknown })?.input,
       {
+        source_path: "inputs/source_path/example.md",
         metadata: { parentKey: "AAA111" },
         valid_tags: ["alpha", "beta"],
       },
@@ -76,6 +166,193 @@ describe("transport: upload fallback without FormData", function () {
       { mode: "strict" },
       `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
     );
+  });
+
+  it("omits no_cache for interactive execution and keeps interactive options", async function () {
+    let capturedCreateBody: unknown;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          capturedCreateBody = JSON.parse(String(init?.body || "{}"));
+          return createJsonResponse({ request_id: "req-merge-options" });
+        }
+        if (url.endsWith("/v1/jobs/req-merge-options/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-merge-options")) {
+          return createJsonResponse({
+            request_id: "req-merge-options",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-merge-options/result")) {
+          return createJsonResponse({
+            request_id: "req-merge-options",
+            result: {
+              status: "success",
+              data: {},
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        runtime_options: {
+          execution_mode: "interactive",
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+        no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 900,
+      },
+    );
+
+    assert.deepEqual(
+      (capturedCreateBody as { runtime_options?: unknown })?.runtime_options,
+      {
+        execution_mode: "interactive",
+        interactive_auto_reply: true,
+        hard_timeout_seconds: 900,
+      },
+      `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
+    );
+  });
+
+  it("keeps no_cache for auto execution and drops interactive_auto_reply", async function () {
+    let capturedCreateBody: unknown;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          capturedCreateBody = JSON.parse(String(init?.body || "{}"));
+          return createJsonResponse({ request_id: "req-auto-options" });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options")) {
+          return createJsonResponse({
+            request_id: "req-auto-options",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-auto-options/result")) {
+          return createJsonResponse({
+            request_id: "req-auto-options",
+            result: {
+              status: "success",
+              data: {},
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        runtime_options: {
+          execution_mode: "auto",
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+        no_cache: true,
+        interactive_auto_reply: true,
+        hard_timeout_seconds: "1200",
+      },
+    );
+
+    assert.deepEqual(
+      (capturedCreateBody as { runtime_options?: unknown })?.runtime_options,
+      {
+        execution_mode: "auto",
+        no_cache: true,
+        hard_timeout_seconds: 1200,
+      },
+      `capturedCreateBody=${JSON.stringify(capturedCreateBody)}`,
+    );
+  });
+
+  it("supports inline-only skillrunner request without upload step", async function () {
+    let uploadCalled = false;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-inline-only" });
+        }
+        if (url.endsWith("/v1/jobs/req-inline-only/upload")) {
+          uploadCalled = true;
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-inline-only")) {
+          return createJsonResponse({
+            request_id: "req-inline-only",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-inline-only/result")) {
+          return createJsonResponse({
+            request_id: "req-inline-only",
+            result: {
+              status: "success",
+              data: {},
+              error: null,
+            },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    const result = await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          metadata: { parentKey: "AAA111" },
+          input_tags: ["topic:test"],
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "gemini",
+      },
+    );
+
+    assert.equal(result.status, "succeeded");
+    assert.isFalse(uploadCalled, "upload step should be skipped for inline-only payload");
   });
 
   it("uploads using multipart bytes when FormData is unavailable", async function () {
@@ -144,8 +421,11 @@ describe("transport: upload fallback without FormData", function () {
             },
             files: [
               {
-                key: "md_path",
-                path: fixturePath("literature-digest", "example.md"),
+                key: "inputs/source_path/Li 等 - 2022 - DN-DETR Accelerate DETR Training by Introducing Query DeNoising.md",
+                path: fixturePath(
+                  "selection-context",
+                  "attachments/7YXZJKNL/Li 等 - 2022 - DN-DETR Accelerate DETR Training by Introducing Query DeNoising.md",
+                ),
               },
             ],
           },
@@ -173,6 +453,14 @@ describe("transport: upload fallback without FormData", function () {
       const uploadText = new TextDecoder().decode(capturedUpload.bodyBytes);
       assert.include(uploadText, 'name="file"');
       assert.include(uploadText, 'filename="inputs.zip"');
+      const zipFlag = readZipGeneralPurposeFlagFromMultipart(
+        capturedUpload.bodyBytes || new Uint8Array(),
+      );
+      assert.equal(
+        zipFlag & 0x0800,
+        0x0800,
+        "zip entry names must set UTF-8 filename flag (bit 11)",
+      );
     } finally {
       (globalThis as { FormData?: unknown }).FormData = originalFormData;
       (globalThis as { Blob?: unknown }).Blob = originalBlob;
@@ -206,6 +494,9 @@ describe("transport: upload fallback without FormData", function () {
         {
           kind: "skillrunner.job.v1",
           skill_id: "tag-regulator",
+          input: {
+            md_path: "inputs/md_path/example.md",
+          },
           upload_files: [
             {
               key: "md_path",
@@ -224,6 +515,73 @@ describe("transport: upload fallback without FormData", function () {
     assert.match(String(thrown), /request_id=req-failed/i);
     assert.match(String(thrown), /status=failed/i);
     assert.match(String(thrown), /mock backend failed/i);
+  });
+
+  it("returns deferred status for interactive waiting_user without local timeout failure", async function () {
+    let pollCount = 0;
+    let resultFetchCalled = false;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string) => {
+        if (url.endsWith("/v1/jobs")) {
+          return createJsonResponse({ request_id: "req-waiting-user" });
+        }
+        if (url.endsWith("/v1/jobs/req-waiting-user/upload")) {
+          return createJsonResponse({ ok: true });
+        }
+        if (url.endsWith("/v1/jobs/req-waiting-user")) {
+          pollCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return createJsonResponse({
+            request_id: "req-waiting-user",
+            status: "waiting_user",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-waiting-user/result")) {
+          resultFetchCalled = true;
+          return createJsonResponse({
+            request_id: "req-waiting-user",
+            result: { status: "success", data: {} },
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    const result = await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "literature-explainer",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        upload_files: [
+          {
+            key: "source_path",
+            path: fixturePath("literature-digest", "example.md"),
+          },
+        ],
+        runtime_options: {
+          execution_mode: "interactive",
+        },
+        poll: {
+          interval_ms: 0,
+          timeout_ms: 1,
+        },
+        fetch_type: "result",
+      },
+      { engine: "gemini" },
+    );
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.requestId, "req-waiting-user");
+    assert.equal(result.fetchType, "result");
+    assert.equal(result.backendStatus, "waiting_user");
+    assert.equal(pollCount, 1);
+    assert.isFalse(
+      resultFetchCalled,
+      "result fetch should be deferred to backend reconciler",
+    );
   });
 
   it("fails fast when poll status is canceled and skips result fetch", async function () {
@@ -261,6 +619,9 @@ describe("transport: upload fallback without FormData", function () {
         {
           kind: "skillrunner.job.v1",
           skill_id: "tag-regulator",
+          input: {
+            md_path: "inputs/md_path/example.md",
+          },
           upload_files: [
             {
               key: "md_path",

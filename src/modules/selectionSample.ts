@@ -9,6 +9,7 @@ import {
   resolveRuntimeAlert,
   resolveRuntimeToolkit,
 } from "../utils/runtimeBridge";
+import { isDebugModeEnabled } from "./debugMode";
 
 const ajvLogger = {
   log: () => {},
@@ -70,6 +71,9 @@ function getSelectionValidator() {
 }
 
 export function registerSelectionSampleMenu() {
+  if (!isDebugModeEnabled()) {
+    return;
+  }
   const menu = getRuntimeToolkit()?.Menu;
   if (!menu?.register) {
     return;

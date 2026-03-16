@@ -19,6 +19,7 @@
 - `request`：由 `compileDeclarativeRequest` 或 `hooks.buildRequest` 产出
 - `backend`：由 backend registry + workflow settings 解析出的 profile；对本地 provider（如 `pass-through`）可为 runtime 构建的虚拟 backend（`local://...`）
 - `providerOptions`：运行时选项（持久化或 run-once 覆盖）
+- `onProgress?`：可选运行进度回调（用于 running 阶段元数据增量同步）
 
 ## 输出
 
@@ -36,26 +37,50 @@
 - Provider 可声明可调选项 schema（如 skillrunner 的 `engine/model/no_cache`）
 - Provider 可返回动态枚举（如 `model` 随 `engine` 变化）
 - Provider 负责对 runtime options 做 normalize
+- SkillRunner 的 engine/model 枚举来源：
+  - backend 实时拉取并按 backend 维度缓存（优先）
+  - 静态内置目录（兜底）
+  - 刷新策略：startup 首刷 + 每小时自动刷新 + Backend Manager 行级手动刷新
 
 ## skillrunner 语义（当前）
 
 - 支持 request kind：
   - `skillrunner.job.v1`
-- 执行链固定为 Auto 模式：
-  - `POST /v1/jobs`
-  - `POST /v1/jobs/{request_id}/upload`
-  - `GET /v1/jobs/{request_id}` 轮询
-  - `GET /v1/jobs/{request_id}/result|bundle`
-- 轮询终态：
-  - `succeeded`：继续结果拉取并返回统一成功结果
-  - `failed` / `canceled`：立即失败并抛出可诊断错误
+- 执行链分两阶段：
+  - 提交阶段（Provider/Queue）：`POST /v1/jobs` -> `POST /v1/jobs/{request_id}/upload` -> 首轮轮询
+  - 收敛阶段（Reconciler）：对 deferred 任务持续轮询后端状态，直至终态
+- progress 事件：
+  - create 成功后发出 `request-created`（含 `requestId`）
+  - 供 JobQueue 在 running 阶段写回 `job.meta.requestId`，让 Dashboard 立即可见 run 入口
+- deferred 语义：
+  - 当后端进入 `waiting_user` / `waiting_auth`（或其他非终态）时，Provider 返回 `status=deferred`
+  - 任务后续状态推进由后台收敛器负责，前端不再用本地超时推断终态
+- 终态处理：
+  - `succeeded`：收敛器触发一次 `applyResult`
+  - `failed` / `canceled`：收敛器写入终态并停止追踪
 - mixed-input 合同：
   - `parameter` 保持 object
   - `input` 允许任意 JSON（string/array/object）
-- deferred 范围（本实现未覆盖）：
-  - interactive 会话编排（`waiting_user`、`interaction/reply`）
-  - 鉴权等待流程（`waiting_auth`、`auth/session`）
-  - management API 迁移（`/v1/management/*`）
+  - 当存在 `upload_files` 时，`input` 必须是 object，且每个 `upload_files[].key` 都要在 `input.<key>` 显式声明文件相对路径
+  - `input.<key>` 路径必须是 `uploads/` 根下相对路径（不含 `uploads/` 前缀）；provider 会按该路径写入 zip entry
+- 执行模式透传：
+  - workflow `execution.skillrunner_mode` 会映射为 `/v1/jobs` create body 的 `runtime_options.execution_mode`
+  - 主链路仍是 `/v1/jobs*`，management API 仅用于观察与交互（reply/auth-import）
+- 状态机 SSOT：
+  - 统一消费模块：`src/modules/skillRunnerProviderStateMachine.ts`
+  - 详细文档见：`doc/components/skillrunner-provider-state-machine-ssot.md`
+
+## SkillRunner 管理 UI 与管理 API（当前）
+
+- Backend Manager 为 `type=skillrunner` 的 profile 提供“进入管理页面”动作。
+- 插件在 Zotero 对话框内直接加载 `${baseUrl}/ui`，复用后端原生管理 UI。
+- 该能力与 provider 执行链解耦：不影响 `skillrunner.job.v1` 请求与执行语义。
+- Dashboard 内置 SkillRunner 观察页使用 jobs 语义（`/v1/jobs/*`）读取 run/chat/pending 并支持 reply/cancel；management API 仅保留 run 列表与管理视图能力。
+- management API 的鉴权使用 backend profile 可选字段 `management_auth`（仅 SkillRunner）：
+  - 支持 `none` 与 `basic`
+  - 首次访问时可弹窗采集 basic 凭据
+  - 401 时触发重新输入并覆盖保存
+- `management_auth` 仅用于 Dashboard 管理能力，不注入 `skillrunner.job.v1` 执行链请求。
 
 ## generic-http 语义（当前）
 

@@ -2,6 +2,7 @@ import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
 import { GenericHttpProvider } from "./generic-http/provider";
 import { PassThroughProvider } from "./pass-through/provider";
+import { appendRuntimeLog } from "../modules/runtimeLogManager";
 import {
   ProviderRequestContractError,
   assertProviderRequestDispatchContract,
@@ -9,6 +10,7 @@ import {
   assertRequestKindProviderCompatible,
 } from "./requestContracts";
 import { SkillRunnerProvider } from "./skillrunner/provider";
+import type { ProviderProgressEvent } from "./types";
 import type { Provider } from "./types";
 
 const providers: Provider[] = [
@@ -95,10 +97,11 @@ function normalizeWithSchema(
 export function normalizeProviderRuntimeOptions(args: {
   providerId: string;
   options: unknown;
+  backend?: BackendInstance;
 }) {
   const provider = resolveProviderById(args.providerId);
   if (typeof provider.normalizeRuntimeOptions === "function") {
-    return provider.normalizeRuntimeOptions(args.options);
+    return provider.normalizeRuntimeOptions(args.options, args.backend);
   }
   const schema = provider.getRuntimeOptionSchema?.() || {};
   return normalizeWithSchema(args.options, schema);
@@ -135,6 +138,7 @@ export async function executeWithProvider(args: {
   request: unknown;
   backend: BackendInstance;
   providerOptions?: Record<string, unknown>;
+  onProgress?: (event: ProviderProgressEvent) => void;
 }): Promise<ProviderExecutionResult> {
   const provider = resolveProvider(args);
   assertProviderRequestDispatchContract({
@@ -143,5 +147,55 @@ export async function executeWithProvider(args: {
     providerId: provider.id,
     request: args.request,
   });
-  return provider.execute(args);
+  appendRuntimeLog({
+    level: "info",
+    scope: "provider",
+    backendId: args.backend.id,
+    backendType: args.backend.type,
+    providerId: provider.id,
+    component: "provider-registry",
+    operation: "dispatch",
+    phase: "start",
+    stage: "provider-dispatch-start",
+    message: "provider dispatch started",
+    details: {
+      requestKind: args.requestKind,
+    },
+  });
+  try {
+    const result = await provider.execute(args);
+    appendRuntimeLog({
+      level: "info",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: provider.id,
+      requestId: String(result.requestId || "").trim() || undefined,
+      component: "provider-registry",
+      operation: "dispatch",
+      phase: result.status === "deferred" ? "deferred" : "terminal",
+      stage: "provider-dispatch-succeeded",
+      message: "provider dispatch succeeded",
+      details: {
+        status: result.status,
+        fetchType: result.fetchType,
+      },
+    });
+    return result;
+  } catch (error) {
+    appendRuntimeLog({
+      level: "error",
+      scope: "provider",
+      backendId: args.backend.id,
+      backendType: args.backend.type,
+      providerId: provider.id,
+      component: "provider-registry",
+      operation: "dispatch",
+      phase: "terminal",
+      stage: "provider-dispatch-failed",
+      message: "provider dispatch failed",
+      error,
+    });
+    throw error;
+  }
 }

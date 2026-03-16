@@ -7,6 +7,7 @@ import {
   executeApplyResult,
   executeBuildRequests,
 } from "../../src/workflows/runtime";
+import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-regulator/hooks/applyResult.js";
 import {
   existsPath,
   readUtf8,
@@ -25,6 +26,9 @@ type TagRegulatorRequest = {
   kind: string;
   skill_id: string;
   targetParentID?: number;
+  runtime_options?: {
+    execution_mode?: string;
+  };
   input?: {
     metadata?: {
       id?: number;
@@ -34,6 +38,7 @@ type TagRegulatorRequest = {
       libraryID?: number;
     };
     input_tags?: string[];
+    valid_tags?: string;
   };
   parameter?: {
     infer_tag?: boolean;
@@ -56,16 +61,28 @@ type SuggestTagsDialogOpenArgs = {
   title?: string;
   initialState?: {
     suggestTagEntries?: SuggestTagEntry[];
-    selectedTags?: string[];
+    rowErrors?: Record<string, string>;
+    addedDirect?: string[];
+    staged?: string[];
+    rejected?: string[];
+    invalid?: Array<{ tag: string; reason?: string }>;
+    skippedDirect?: string[];
+    stagedSkipped?: string[];
+    countdownSeconds?: number;
+    timedOut?: boolean;
+    closePolicyApplied?: boolean;
   };
-  labels?: {
-    save?: string;
-    cancel?: string;
+  actions?: Array<{ id?: string; label?: string }>;
+  closeActionId?: string;
+  autoClose?: {
+    afterMs?: number;
+    actionId?: string;
   };
 };
 
 type SuggestTagsDialogOpenResult = {
   saved: boolean;
+  actionId?: string;
   result?: unknown;
   reason?: string;
 };
@@ -85,10 +102,66 @@ type RuntimeWithEditorBridge = typeof globalThis & {
   };
 };
 
+class FakeHtmlDocument {
+  createElementNS(_ns: string, tagName: string) {
+    return new FakeHtmlElement(tagName.toLowerCase());
+  }
+}
+
+type FakeListener = (event: {
+  type: string;
+  target: FakeHtmlElement;
+  stopPropagation: () => void;
+}) => void;
+
+class FakeHtmlElement {
+  public style: Record<string, string> = {};
+
+  public children: FakeHtmlElement[] = [];
+
+  public parentNode: FakeHtmlElement | null = null;
+
+  public textContent = "";
+
+  public type = "";
+
+  public value = "";
+
+  public checked = false;
+
+  private listeners = new Map<string, FakeListener[]>();
+
+  constructor(public readonly tagName: string) {}
+
+  get firstChild() {
+    return this.children[0] || null;
+  }
+
+  appendChild(child: FakeHtmlElement) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child: FakeHtmlElement) {
+    this.children = this.children.filter((entry) => entry !== child);
+    child.parentNode = null;
+    return child;
+  }
+
+  addEventListener(type: string, listener: FakeListener) {
+    const existing = this.listeners.get(type) || [];
+    existing.push(listener);
+    this.listeners.set(type, existing);
+  }
+}
+
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
+const TAG_VOCAB_STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
 
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_STAGED_PREF_KEY, true);
 }
 
 function saveTagVocabularyState(entries: PersistedTagEntry[]) {
@@ -104,6 +177,30 @@ function saveTagVocabularyState(entries: PersistedTagEntry[]) {
 
 function loadTagVocabularyState() {
   const raw = Zotero.Prefs.get(TAG_VOCAB_PREF_KEY, true);
+  if (typeof raw !== "string" || !raw.trim()) {
+    return {
+      corrupted: false,
+      entries: [] as PersistedTagEntry[],
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      corrupted: false,
+      entries: Array.isArray(parsed?.entries)
+        ? (parsed.entries as PersistedTagEntry[])
+        : ([] as PersistedTagEntry[]),
+    };
+  } catch {
+    return {
+      corrupted: true,
+      entries: [] as PersistedTagEntry[],
+    };
+  }
+}
+
+function loadStagedTagVocabularyState() {
+  const raw = Zotero.Prefs.get(TAG_VOCAB_STAGED_PREF_KEY, true);
   if (typeof raw !== "string" || !raw.trim()) {
     return {
       corrupted: false,
@@ -248,11 +345,15 @@ describe("workflow: tag-regulator", function () {
     for (const request of requests) {
       assert.equal(request.kind, "skillrunner.job.v1");
       assert.equal(request.skill_id, "tag-regulator");
+      assert.equal(request.runtime_options?.execution_mode, "auto");
       assert.equal(request.parameter?.infer_tag, false);
       assert.equal(request.parameter?.valid_tags_format, "yaml");
       assert.equal(request.parameter?.tag_note_language, "fr-FR");
       assert.equal(request.upload_files?.length, 1);
       assert.equal(request.upload_files?.[0].key, "valid_tags");
+      assert.isString(request.input?.valid_tags);
+      assert.match(String(request.input?.valid_tags || ""), /^inputs\//);
+      assert.notMatch(String(request.input?.valid_tags || ""), /^uploads\//);
       assert.isTrue(await existsPath(String(request.upload_files?.[0].path || "")));
       const yamlText = await readUtf8(String(request.upload_files?.[0].path || ""));
       assert.include(yamlText, "- topic:tunnel");
@@ -312,6 +413,7 @@ describe("workflow: tag-regulator", function () {
     })) as TagRegulatorRequest[];
 
     assert.lengthOf(requests, 1);
+    assert.equal(requests[0].runtime_options?.execution_mode, "auto");
     assert.equal(requests[0].parameter?.tag_note_language, "zh-CN");
   });
 
@@ -469,7 +571,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(loadTagVocabularyState().entries, before);
   });
 
-  it("opens suggest-tags dialog and writes only selected tags with source agent-suggest", async function () {
+  it("opens suggest-tags dialog and applies join-all for remaining rows", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -483,9 +585,24 @@ describe("workflow: tag-regulator", function () {
     const restoreOpen = installSuggestTagsDialogMock(async (args) => {
       openCalls.push(args);
       return {
-        saved: true,
+        saved: false,
+        actionId: "join-all",
         result: {
-          selectedTags: ["topic:new-alpha"],
+          suggestTagEntries: [
+            { tag: "topic:new-alpha", note: "alpha note" },
+            { tag: "topic:new-beta", note: "beta note" },
+            { tag: "topic:existing", note: "existing note" },
+          ],
+          rowErrors: {},
+          addedDirect: [],
+          staged: [],
+          rejected: [],
+          invalid: [],
+          skippedDirect: [],
+          stagedSkipped: [],
+          countdownSeconds: 9,
+          timedOut: false,
+          closePolicyApplied: false,
         },
       };
     });
@@ -529,11 +646,17 @@ describe("workflow: tag-regulator", function () {
           opened?: boolean;
           added?: string[];
           skipped?: string[];
+          addedDirect?: string[];
+          staged?: string[];
         };
       };
       assert.isTrue(Boolean(applied.suggest_intake?.opened));
-      assert.deepEqual(applied.suggest_intake?.added || [], ["topic:new-alpha"]);
-      assert.deepEqual(applied.suggest_intake?.skipped || [], []);
+      assert.deepEqual(
+        (applied.suggest_intake?.added || []).sort(),
+        ["topic:new-alpha", "topic:new-beta"],
+      );
+      assert.deepEqual(applied.suggest_intake?.staged || [], []);
+      assert.deepEqual(applied.suggest_intake?.skipped || [], ["topic:existing"]);
     } finally {
       restoreOpen();
     }
@@ -544,19 +667,26 @@ describe("workflow: tag-regulator", function () {
       { tag: "topic:new-beta", note: "beta note" },
       { tag: "topic:existing", note: "existing note" },
     ]);
+    assert.deepEqual(
+      (openCalls[0].actions || []).map((entry) => String(entry.id || "")),
+      ["join-all", "stage-all", "reject-all"],
+    );
+    assert.deepEqual(openCalls[0].autoClose, {
+      afterMs: 10000,
+      actionId: "stage-all",
+    });
 
     const afterEntries = loadTagVocabularyState().entries;
     const newEntry = afterEntries.find((entry) => entry.tag === "topic:new-alpha");
     assert.isOk(newEntry, "expected selected suggest tag to be persisted");
     assert.equal(newEntry?.source, "agent-suggest");
     assert.equal(newEntry?.note, "alpha note");
-    assert.isUndefined(
-      afterEntries.find((entry) => entry.tag === "topic:new-beta"),
-      "unselected suggest tag should not be persisted",
-    );
+    const newBetaEntry = afterEntries.find((entry) => entry.tag === "topic:new-beta");
+    assert.isOk(newBetaEntry, "expected join-all to persist topic:new-beta");
+    assert.equal(newBetaEntry?.source, "agent-suggest");
   });
 
-  it("skips duplicates during suggest-tags intake and keeps operation idempotent", async function () {
+  it("keeps operation idempotent during join-all intake", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -567,9 +697,23 @@ describe("workflow: tag-regulator", function () {
       },
     ]);
     const restoreOpen = installSuggestTagsDialogMock(async () => ({
-      saved: true,
+      saved: false,
+      actionId: "join-all",
       result: {
-        selectedTags: ["topic:existing", "topic:existing", "topic:new-idempotent"],
+        suggestTagEntries: [
+          { tag: "topic:existing", note: "existing note" },
+          { tag: "topic:new-idempotent", note: "idempotent note" },
+        ],
+        rowErrors: {},
+        addedDirect: [],
+        staged: [],
+        rejected: [],
+        invalid: [],
+        skippedDirect: [],
+        stagedSkipped: [],
+        countdownSeconds: 9,
+        timedOut: false,
+        closePolicyApplied: false,
       },
     }));
     const parent = await handlers.item.create({
@@ -631,7 +775,7 @@ describe("workflow: tag-regulator", function () {
     );
   });
 
-  it("keeps vocabulary unchanged when suggest-tags dialog is canceled", async function () {
+  it("applies close-policy staged intake when dialog closes without explicit action", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:stable",
@@ -642,9 +786,24 @@ describe("workflow: tag-regulator", function () {
       },
     ]);
     const before = loadTagVocabularyState().entries;
+    const beforeStaged = loadStagedTagVocabularyState().entries;
     const restoreOpen = installSuggestTagsDialogMock(async () => ({
       saved: false,
       reason: "user-canceled",
+      actionId: "stage-all",
+      result: {
+        suggestTagEntries: [{ tag: "topic:new-after-cancel", note: "cancel note" }],
+        rowErrors: {},
+        addedDirect: [],
+        staged: [],
+        rejected: [],
+        invalid: [],
+        skippedDirect: [],
+        stagedSkipped: [],
+        countdownSeconds: 5,
+        timedOut: false,
+        closePolicyApplied: false,
+      },
     }));
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -681,24 +840,49 @@ describe("workflow: tag-regulator", function () {
         },
       })) as {
         suggest_intake?: {
-          canceled?: boolean;
+          closePolicyApplied?: boolean;
+          staged?: string[];
+          rejected?: string[];
           added?: string[];
         };
       };
-      assert.isTrue(Boolean(applied.suggest_intake?.canceled));
+      assert.isTrue(Boolean(applied.suggest_intake?.closePolicyApplied));
       assert.deepEqual(applied.suggest_intake?.added || [], []);
+      assert.deepEqual(applied.suggest_intake?.staged || [], [
+        "topic:new-after-cancel",
+      ]);
+      assert.deepEqual(applied.suggest_intake?.rejected || [], []);
     } finally {
       restoreOpen();
     }
 
     assert.deepEqual(loadTagVocabularyState().entries, before);
+    assert.isAbove(
+      loadStagedTagVocabularyState().entries.length,
+      beforeStaged.length,
+      "expected staged entries to grow after close-policy staging",
+    );
   });
 
-  it("rejects invalid suggest tags with diagnostics while accepting valid selected tags", async function () {
+  it("rejects invalid suggest tags with diagnostics while accepting valid tags in join-all path", async function () {
     const restoreOpen = installSuggestTagsDialogMock(async () => ({
-      saved: true,
+      saved: false,
+      actionId: "join-all",
       result: {
-        selectedTags: ["bad-format", "topic:valid-suggest"],
+        suggestTagEntries: [
+          { tag: "bad-format", note: "invalid note" },
+          { tag: "topic:valid-suggest", note: "valid note" },
+        ],
+        rowErrors: {},
+        addedDirect: [],
+        staged: [],
+        rejected: [],
+        invalid: [],
+        skippedDirect: [],
+        stagedSkipped: [],
+        countdownSeconds: 7,
+        timedOut: false,
+        closePolicyApplied: false,
       },
     }));
     const parent = await handlers.item.create({
@@ -1058,6 +1242,54 @@ describe("workflow: tag-regulator", function () {
     const yamlB = await readUtf8(String(requestsB[0].upload_files?.[0].path || ""));
     assert.include(yamlB, "topic:version-b");
     assert.notInclude(yamlB, "topic:version-a");
+  });
+
+  it("marks timeout state when renderer countdown reaches zero", async function () {
+    const runtimeState: {
+      timerStarted?: boolean;
+      timerHandle?: ReturnType<typeof setInterval> | null;
+      timeoutApplied?: boolean;
+      state?: Record<string, unknown> | null;
+    } = {};
+    const renderer = __tagRegulatorApplyResultTestOnly.createSuggestTagsRenderer({
+      runtime: runtimeState,
+    });
+    const doc = new FakeHtmlDocument() as unknown as Document;
+    const root = new FakeHtmlElement("div") as unknown as HTMLElement;
+    const state: Record<string, unknown> = {
+      suggestTagEntries: [{ tag: "topic:countdown", note: "note" }],
+      rowErrors: {},
+      addedDirect: [],
+      staged: [],
+      rejected: [],
+      invalid: [],
+      skippedDirect: [],
+      stagedSkipped: [],
+      countdownSeconds: 1,
+      timedOut: false,
+      closePolicyApplied: false,
+    };
+    const host = {
+      rerender: () => {
+        renderer.render({ doc, root, state, host });
+      },
+      patchState: (updater: (draft: Record<string, unknown>) => void) => {
+        updater(state);
+        renderer.render({ doc, root, state, host });
+      },
+      closeWithAction: (actionId?: string) => {
+        void actionId;
+      },
+    };
+
+    renderer.render({ doc, root, state, host });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    if (runtimeState.timerHandle) {
+      clearInterval(runtimeState.timerHandle);
+    }
+    assert.isTrue(Boolean(state.timedOut));
+    assert.isTrue(Boolean(state.closePolicyApplied));
+    assert.equal(Number(state.countdownSeconds), 0);
   });
 
   it("keeps language option declarations aligned with literature-digest workflow", async function () {

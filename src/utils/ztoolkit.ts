@@ -2,7 +2,46 @@ import { ZoteroToolkit } from "zotero-plugin-toolkit";
 import { config } from "../../package.json";
 import { resolveAddonRuntimeEnv } from "./env";
 
-export { createZToolkit };
+export { createZToolkit, copyText, resolveClipboardCtor };
+
+function resolveClipboardCtor() {
+  return resolveToolkitMember<
+    | (new () => { addText: (text: string, mime: string) => unknown; copy: () => unknown })
+    | undefined
+  >("Clipboard");
+}
+
+function copyText(text: string) {
+  const Clipboard = resolveClipboardCtor();
+  if (Clipboard) {
+    const helper = new Clipboard() as {
+      addText: (payload: string, mime: string) => { copy?: () => unknown } | void;
+      copy?: () => unknown;
+    };
+    const chained = helper.addText(text, "text/unicode");
+    if (chained && typeof chained.copy === "function") {
+      chained.copy();
+      return;
+    }
+    if (typeof helper.copy === "function") {
+      helper.copy();
+      return;
+    }
+    return;
+  }
+  try {
+    const helper = (Components as any).classes?.["@mozilla.org/widget/clipboardhelper;1"]?.getService(
+      Components.interfaces.nsIClipboardHelper,
+    ) as { copyString?: (value: string) => void };
+    if (helper?.copyString) {
+      helper.copyString(text);
+      return;
+    }
+  } catch {
+    // ignore and throw below
+  }
+  throw new Error("clipboard unavailable");
+}
 
 function createZToolkit() {
   const _ztoolkit = new ZoteroToolkit();
@@ -30,10 +69,15 @@ function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
     "default",
     `chrome://${config.addonRef}/content/icons/favicon.png`,
   );
+  _ztoolkit.ProgressWindow.setIconURI(
+    "skillrunner-backend",
+    `chrome://${config.addonRef}/content/icons/icon_backend.png`,
+  );
 }
 
 import { BasicTool, unregister } from "zotero-plugin-toolkit";
 import { UITool } from "zotero-plugin-toolkit";
+import { resolveToolkitMember } from "./runtimeBridge";
 
 class MyToolkit extends BasicTool {
   UI: UITool;

@@ -8,6 +8,7 @@ import {
 import { resolveWorkflowExecutionContext } from "../workflowSettings";
 import { executeBuildRequests } from "../../workflows/runtime";
 import type { LoadedWorkflow } from "../../workflows/types";
+import type { WorkflowExecutionOptions } from "../workflowSettingsDomain";
 import type {
   PreparationSeamResult,
   WorkflowExecutionContext,
@@ -68,6 +69,7 @@ export async function runWorkflowPreparationSeam(args: {
   win: _ZoteroTypes.MainWindow;
   workflow: LoadedWorkflow;
   messageFormatter: WorkflowMessageFormatter;
+  executionOptionsOverride?: WorkflowExecutionOptions;
 }, deps: Partial<PreparationDeps> = {}): Promise<PreparationSeamResult> {
   const resolved = {
     ...defaultPreparationDeps,
@@ -115,7 +117,7 @@ export async function runWorkflowPreparationSeam(args: {
     });
     executionContext = await resolved.resolveWorkflowExecutionContext({
       workflow: args.workflow,
-      consumeRunOnce: true,
+      executionOptionsOverride: args.executionOptionsOverride,
     });
     const selectionContext = await resolved.buildSelectionContext(selectedItems);
     const builtRequests = await resolved.executeBuildRequests({

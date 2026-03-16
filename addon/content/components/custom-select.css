@@ -1,0 +1,91 @@
+/* Custom Select Dropdown Shared Component */
+
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+
+.custom-select-trigger {
+  box-sizing: border-box;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background-color: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text, #333);
+  background: #fff;
+  /* The user-select property was duplicated, removing the second one */
+  
+  /* Prevent text wrapping and maintain single line */
+  /* These properties are now explicitly defined above */
+}
+
+.custom-select-trigger:focus {
+  outline: none;
+  border-color: #9db8ff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.custom-select-trigger::after {
+  content: "▼";
+  font-size: 9px;
+  color: var(--muted, #666);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.custom-select-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid var(--line-strong, #ccc);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 10000;
+  max-height: 200px;
+  overflow-y: auto;
+  display: none;
+}
+
+.custom-select-menu.open {
+  display: block;
+}
+
+/* Optional generic flip direction if drawn upwards */
+.custom-select-menu.open-up {
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.custom-select-option {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text, #333);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.custom-select-option:hover {
+  background: #f0f4ff;
+}
+
+.custom-select-option.selected {
+  background: var(--accent, #0056b3);
+  color: #fff;
+}

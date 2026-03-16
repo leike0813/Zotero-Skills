@@ -1,6 +1,14 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
-import { sampleSelectionContext } from "../../src/modules/selectionSample";
+import {
+  registerSelectionSampleMenu,
+  sampleSelectionContext,
+} from "../../src/modules/selectionSample";
+import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
+import {
+  installRuntimeBridgeOverrideForTests,
+  resetRuntimeBridgeOverrideForTests,
+} from "../../src/utils/runtimeBridge";
 
 describe("selection sample risk regression", function () {
   let previousAddon: unknown;
@@ -16,6 +24,8 @@ describe("selection sample risk regression", function () {
 
     previousGetMainWindow = Zotero.getMainWindow;
     previousOutputDirPref = Zotero.Prefs.get(prefKey, true);
+    setDebugModeOverrideForTests();
+    resetRuntimeBridgeOverrideForTests();
   });
 
   afterEach(function () {
@@ -28,6 +38,57 @@ describe("selection sample risk regression", function () {
     } else {
       Zotero.Prefs.set(prefKey, previousOutputDirPref, true);
     }
+    setDebugModeOverrideForTests();
+    resetRuntimeBridgeOverrideForTests();
+  });
+
+  it("registers no selection debug menus when debug mode is disabled", function () {
+    const registeredIds: string[] = [];
+    installRuntimeBridgeOverrideForTests({
+      ztoolkit: {
+        Menu: {
+          register: (
+            _scope: string,
+            options: {
+              id: string;
+            },
+          ) => {
+            registeredIds.push(options.id);
+          },
+        },
+      },
+    });
+    setDebugModeOverrideForTests(false);
+
+    registerSelectionSampleMenu();
+
+    assert.lengthOf(registeredIds, 0);
+  });
+
+  it("registers selection debug menus when debug mode is enabled", function () {
+    const registeredIds: string[] = [];
+    installRuntimeBridgeOverrideForTests({
+      ztoolkit: {
+        Menu: {
+          register: (
+            _scope: string,
+            options: {
+              id: string;
+            },
+          ) => {
+            registeredIds.push(options.id);
+          },
+        },
+      },
+    });
+    setDebugModeOverrideForTests(true);
+
+    registerSelectionSampleMenu();
+
+    assert.sameMembers(registeredIds, [
+      `${config.addonRef}-sample-selection`,
+      `${config.addonRef}-validate-selection`,
+    ]);
   });
 
   it("Risk: MR-03 alerts when sample output directory is missing", async function () {

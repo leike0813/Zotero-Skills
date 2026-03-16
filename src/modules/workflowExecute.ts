@@ -4,6 +4,14 @@ import { runWorkflowPreparationSeam } from "./workflowExecution/preparationSeam"
 import { runWorkflowDuplicateGuardSeam } from "./workflowExecution/duplicateGuardSeam";
 import { runWorkflowExecutionSeam } from "./workflowExecution/runSeam";
 import { runWorkflowApplySeam } from "./workflowExecution/applySeam";
+import type { WorkflowExecutionOptions } from "./workflowSettingsDomain";
+import {
+  isWorkflowConfigurable,
+  updateWorkflowSettings,
+} from "./workflowSettings";
+import { openWorkflowSettingsWebDialog } from "./workflowSettingsWebDialog";
+import { loadBackendsRegistry } from "../backends/registry";
+import { isSkillRunnerBackendReconcileFlagged } from "./skillRunnerBackendHealthRegistry";
 import {
   emitWorkflowFinishSummary,
   emitWorkflowJobToasts,
@@ -15,15 +23,59 @@ import { shouldShowWorkflowNotifications } from "./workflowExecution/feedbackPol
 export async function executeWorkflowFromCurrentSelection(args: {
   win: _ZoteroTypes.MainWindow;
   workflow: LoadedWorkflow;
+  requireSettingsGate?: boolean;
+  executionOptionsOverride?: WorkflowExecutionOptions;
 }) {
   const messageFormatter = createLocalizedMessageFormatter();
   const showWorkflowNotifications = shouldShowWorkflowNotifications(
     args.workflow.manifest,
   );
+  let executionOptionsOverride = args.executionOptionsOverride;
+  if (args.requireSettingsGate === true && !executionOptionsOverride) {
+    const loadedBackends = await loadBackendsRegistry();
+    const candidateBackends = loadedBackends.fatalError
+      ? []
+      : loadedBackends.backends;
+    const submitVisibleBackends = candidateBackends.filter((backend) => {
+      if (String(backend.type || "").trim() !== "skillrunner") {
+        return true;
+      }
+      return !isSkillRunnerBackendReconcileFlagged(String(backend.id || "").trim());
+    });
+    const configurable = await isWorkflowConfigurable({
+      workflow: args.workflow,
+      candidateBackends: submitVisibleBackends,
+    });
+    if (configurable) {
+      const dialogResult = await openWorkflowSettingsWebDialog({
+        workflow: args.workflow,
+        ownerWindow: args.win,
+        candidateBackends: submitVisibleBackends,
+      });
+      if (dialogResult.status !== "confirmed") {
+        appendRuntimeLog({
+          level: "info",
+          scope: "workflow-trigger",
+          workflowId: args.workflow.manifest.id,
+          stage: "settings-gate-canceled",
+          message: "workflow trigger canceled by settings gate",
+        });
+        return;
+      }
+      executionOptionsOverride = dialogResult.executionOptions;
+      if (dialogResult.persist) {
+        updateWorkflowSettings(
+          args.workflow.manifest.id,
+          dialogResult.executionOptions,
+        );
+      }
+    }
+  }
   const preparation = await runWorkflowPreparationSeam({
     win: args.win,
     workflow: args.workflow,
     messageFormatter,
+    executionOptionsOverride,
   });
   if (preparation.status !== "ready") {
     return;
@@ -70,6 +122,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
       requests: duplicateGuard.allowedRequests,
     },
   });
+
   if (showWorkflowNotifications) {
     emitWorkflowStartToast({
       workflowLabel: args.workflow.manifest.label,
@@ -86,12 +139,14 @@ export async function executeWorkflowFromCurrentSelection(args: {
   });
 
   if (showWorkflowNotifications) {
-    emitWorkflowJobToasts({
-      workflowLabel: args.workflow.manifest.label,
-      totalJobs: runState.totalJobs,
-      outcomes: applySummary.jobOutcomes,
-      messageFormatter,
-    });
+    if (applySummary.jobOutcomes.length > 0) {
+      emitWorkflowJobToasts({
+        workflowLabel: args.workflow.manifest.label,
+        totalJobs: runState.totalJobs,
+        outcomes: applySummary.jobOutcomes,
+        messageFormatter,
+      });
+    }
   }
 
   appendRuntimeLog({
@@ -103,20 +158,23 @@ export async function executeWorkflowFromCurrentSelection(args: {
     details: {
       succeeded: applySummary.succeeded,
       failed: applySummary.failed,
+      pending: applySummary.pending,
       skipped: totalSkipped,
       failureCount: applySummary.failureReasons.length,
     },
   });
 
   if (showWorkflowNotifications) {
-    emitWorkflowFinishSummary({
-      win: args.win,
-      workflowLabel: args.workflow.manifest.label,
-      succeeded: applySummary.succeeded,
-      failed: applySummary.failed,
-      skipped: totalSkipped,
-      failureReasons: applySummary.failureReasons,
-      messageFormatter,
-    });
+    if (applySummary.pending === 0) {
+      emitWorkflowFinishSummary({
+        win: args.win,
+        workflowLabel: args.workflow.manifest.label,
+        succeeded: applySummary.succeeded,
+        failed: applySummary.failed,
+        skipped: totalSkipped,
+        failureReasons: applySummary.failureReasons,
+        messageFormatter,
+      });
+    }
   }
 }

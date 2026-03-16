@@ -1,73 +1,187 @@
 <p align="center">
-  <img src="../addon/content/icons/icon_full.png" alt="Zotero-Skills Icon" width="160" />
+  <img src="../addon/content/icons/icon_full.png" alt="Zotero Skills" width="128" />
 </p>
 
-# Zotero-Skills
+<h1 align="center">Zotero Skills</h1>
 
-Zotero-Skills 是一个面向 Zotero 7 的插件，它将 Zotero 变成一个可插拔的 AI 与自动化工作流前端。
+<p align="center">
+  <strong>面向 Zotero 7 的可插拔工作流引擎 — 将你的文献库变成 AI 驱动的研究中心。</strong>
+</p>
 
-语言切换：[English](../README.md) | 简体中文 | [Français](./README-frFR.md)
+<p align="center">
+  <a href="https://github.com/leike0813/Zotero-Skills/releases"><img src="https://img.shields.io/github/v/release/leike0813/Zotero-Skills?style=flat-square&color=blue" alt="Release" /></a>
+  <a href="https://github.com/leike0813/Zotero-Skills/blob/main/LICENSE"><img src="https://img.shields.io/github/license/leike0813/Zotero-Skills?style=flat-square" alt="License" /></a>
+  <a href="https://www.zotero.org/"><img src="https://img.shields.io/badge/Zotero-7-CC2936?style=flat-square&logo=zotero&logoColor=white" alt="Zotero 7" /></a>
+</p>
 
-## 这个项目解决什么问题
+<p align="center">
+  <a href="../README.md">English</a> ·
+  简体中文 ·
+  <a href="./README-frFR.md">Français</a> ·
+  <a href="./README-jaJP.md">日本語</a>
+</p>
 
-该项目在 Zotero 内提供一个可复用的执行壳层：
+---
 
-- 统一管理选区上下文、工作流执行、任务追踪与结果回写。
-- 将业务逻辑从插件核心中解耦出去。
-- 允许你通过外部工作流包扩展或替换行为。
+## ✨ 什么是 Zotero Skills？
 
-简而言之，Zotero-Skills 是一个“框架型插件”，而不是单一功能插件。
+Zotero Skills 是一个面向 Zotero 7 的**框架型插件**，它提供了统一的 AI 与自动化工作流执行壳层：
 
-## 可插拔架构
+- 📦 **可插拔工作流** — 业务逻辑以外部工作流包的形式存在，核心插件不包含任何具体业务代码。
+- 🔌 **多后端支持** — 可将任务路由到 [Skill-Runner](https://github.com/leike0813/Skill-Runner)、通用 HTTP API 或本地透传逻辑。
+- ⚡ **统一执行** — 选区上下文构建、请求编译、任务排队、结果落库和错误汇总均由共享运行时统一处理。
 
-插件采用可插拔工作流模型：
+> 你可以把它理解为 **Zotero 中的工作流引擎** — 通过声明式 manifest 和 hook 脚本定义「做什么」，插件负责「怎么执行」。
 
-- 每个工作流由 `workflow.json` 和可选 hooks（`filterInputs`、`buildRequest`、`applyResult`）组成。
-- 运行时统一完成请求编译、provider/backend 解析、任务执行与结果应用。
-- 工作流包可以面向不同后端（Skill-Runner、generic HTTP、pass-through 本地逻辑），而无需改动核心插件代码。
+## 🚀 核心能力
 
-核心优势：
+| 能力                  | 说明                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------ |
+| **工作流引擎**        | 声明式 `workflow.json` + 可选 hooks（`filterInputs`、`buildRequest`、`applyResult`） |
+| **Provider 注册中心** | 三种内建 provider：`skillrunner`、`generic-http`、`pass-through`                     |
+| **后端管理器**        | GUI 管理每种 provider 下的多个后端配置                                               |
+| **任务 Dashboard**    | 实时任务监控、SkillRunner 交互式对话、运行日志                                       |
+| **Workflow 设置**     | 每个 workflow 支持持久化与一次性参数覆盖                                             |
+| **Workflow 编辑器**   | 基于 Host 的渲染器框架，用于结构化数据编辑（如参考文献笔记）                         |
+| **日志查看器**        | 可过滤的运行日志窗口，支持 NDJSON 导出用于诊断                                       |
 
-- 可扩展：新增工作流时无需改动核心架构。
-- 可隔离：工作流特定逻辑留在各自工作流包中。
-- 可复用：共享统一的 runtime、队列、配置与 UI 行为。
+## 💡 Engine 推荐
 
-当前工作流声明还支持“推荐枚举 + 可自定义输入”的参数模式（`allowCustom`），例如语言参数可下拉选择，也可手动输入符合规范的值。
+### Codex（首选推荐）
 
-## Agent Skills 依赖 Skill-Runner
+- **优点**：无论是 agent CLI 工具还是 LLM 模型都有标杆级的性能（速度、理解能力、输出稳定性等），支持思考过程输出，执行稳定。免费版可用，但有模型访问限制。
+- **缺点**：免费版有模型访问限制（可能无法使用最新/最强的模型）。
+- **结论**：大多数用户的首选推荐。即使免费版也能提供出色的结果。
 
-对于 Agent Skills 调用，Zotero-Skills 依赖 [Skill-Runner](https://github.com/leike0813/Skill-Runner) 作为后端编排层：
+### Opencode
 
-- Zotero-Skills 从 Zotero 选区构建标准化请求。
-- Skill-Runner 负责技能执行与面向模型/服务的编排。
-- Zotero-Skills 接收输出并回写到 Zotero 条目、笔记和附件。
+- **优点**：支持多种模型提供商。推荐配合阿里巴巴的百炼 coding plan、智谱 coding plan 等使用。qwen3.5-plus、minimax-m2.5、kimi-k2.5、glm-5 等模型在文献理解、提炼、总结方面的性能已经可以完全满足实用要求。
+- **缺点**：速度有时不太稳定。配合 deepseek API Key 勉强可用，但 deepseek v3.2 的性能已经严重落后；选 reasoner tier 可能需要忍受较慢的速度。支持通过第三方插件使用 antigravity 模型配额，但有封号风险。
+- **结论**：如果您有符合条件的 API Key 或兼容订阅，这是最好的免费/低成本选择。
 
-若没有 Skill-Runner，Agent Skills 工作流无法完整执行。
+### Gemini-CLI
 
-## 成本模型与订阅配额优势
+- **优点**：有免费版可用。
+- **缺点**：启动较慢，交互式任务体验不太好，近期经常有模型可用性问题。Google 进一步收紧 pro 订阅用户配额后性价比一般。
+- **结论**：gemini-3-flash 模型可用于简单任务。
 
-该架构有助于控制 LLM 使用成本：
+### iFlow-CLI
 
-- 你可以通过 Skill-Runner 与后端集成，匹配已有订阅方案。
-- 在很多配置下，可以优先利用周期刷新的订阅额度（例如 OpenAI/Gemini 订阅配额），而不是直接走按 token 计费的 API 调用。
-- 插件在 UI/工作流层保持 provider 无关，后端策略可独立演进。
+- **优点**：完全免费。
+- **缺点**：skill 的理解、执行以及结构化输出稳定性很差，interactive 模式的任务无法稳定结束。
+- **结论**：虽然免费但不适合生产环境，预期应适当放低。
 
-## 典型使用场景（内建工作流）
+## 📋 内建工作流
 
-- 文献摘要工作流：从选中的 markdown/PDF 上下文生成 digest/reference 笔记。
-- 参考文献匹配工作流：将参考文献匹配为 citekey，回写结构化 payload，并以幂等方式更新父条目的 related items。
-- 参考文献编辑工作流：在独立编辑窗口中维护参考文献条目，并重写同步后的表格与 payload。
-- MinerU 工作流：解析选中的 PDF 附件，物化 markdown/资源并挂载到父条目。
-- Tag 管理工作流：打开受控词表管理面板，支持标签增删改查、facet 过滤、YAML 导入与导出。
-- Tag 规整工作流：调用 Skill-Runner 对父条目标签做规范化增删，并可将 `suggest_tags` 以 `source=agent-suggest` 方式纳入受控词表。
+| 工作流           | Provider       | 说明                                              |
+| ---------------- | -------------- | ------------------------------------------------- |
+| **文献摘要**     | `skillrunner`  | 从 markdown/PDF 上下文生成 digest 和参考文献笔记  |
+| **文献解读**     | `skillrunner`  | 交互式对话文献解读，结果以 conversation note 写回 |
+| **参考文献匹配** | `pass-through` | 将参考文献匹配为 citekey，回写结构化 payload      |
+| **参考文献编辑** | `pass-through` | 在独立编辑窗口中维护结构化参考文献条目            |
+| **MinerU**       | `generic-http` | 解析 PDF 附件，物化 markdown/资源并挂载到父条目   |
+| **Tag 管理**     | `pass-through` | 受控词表增删改查、facet 过滤、YAML 导入/导出      |
+| **Tag 规整**     | `skillrunner`  | 调用 Skill-Runner 规范化标签，纳入建议标签        |
 
-## 快速导航
+## 📥 安装
 
-- 架构与当前实现说明：[doc/dev_guide.md](./dev_guide.md)
-- 工作流组件说明：[doc/components/workflows.md](./components/workflows.md)
-- Provider 组件说明：[doc/components/providers.md](./components/providers.md)
-- 测试策略：[doc/testing-framework.md](./testing-framework.md)
+### 前置条件
 
-## 模板来源
+- [Zotero 7](https://www.zotero.org/download/)（版本 ≥ 6.999）
+- 使用 `skillrunner` 工作流时需要运行中的 [Skill-Runner](https://github.com/leike0813/Skill-Runner) 实例
 
-本仓库最初由 [Zotero Plugin Template](https://github.com/windingwind/zotero-plugin-template) 生成，随后演进为当前的 Zotero-Skills 架构与实现。
+### 安装步骤
+
+1. 从 [Releases](https://github.com/leike0813/Zotero-Skills/releases) 页面下载最新的 `.xpi` 文件。
+2. 在 Zotero 中：`工具` → `附加组件` → ⚙️ → `从文件安装附加组件…`
+3. 选择下载的 `.xpi` 文件，重启 Zotero。
+
+### 快速上手
+
+#### 1. 部署 Skill-Runner（前置条件）
+
+**一键本地部署**（推荐用于快速测试）
+
+1. 打开 `编辑` → `首选项` → `Zotero Skills` → `SkillRunner Local Runtime`
+2. 点击 **Deploy** 按钮，等待部署完成
+3. 后端将自动配置完成
+
+**Docker 部署**（推荐用于生产环境）
+
+推荐采用 Docker 部署，详见 [Skill-Runner](https://github.com/leike0813/Skill-Runner) 项目说明：
+
+```bash
+mkdir -p skills data
+docker compose up -d --build
+```
+
+- **API**: http://localhost:9813/v1
+- **Admin UI**: http://localhost:9813/ui
+
+#### 2. 配置后端
+
+_若不使用一键部署_：打开 `编辑` → `首选项` → `Zotero Skills` → `Backend Manager`，添加 Skill-Runner 端点。
+
+#### 3. 放置工作流
+
+将工作流文件夹复制到工作流目录（可在首选项中配置）。
+
+#### 4. 立即使用
+
+右键选中的条目 → `Zotero-Skills` → 选择一个工作流。
+
+## 🏗️ 架构概览
+
+```
+用户触发
+    │
+    ▼
+选区上下文 ──► 工作流引擎 ──► Provider 注册中心 ──► 任务队列
+                  │                   │                 │
+            workflow.json        后端配置解析       FIFO + 并发控制
+            + hook 脚本
+                  │                   │                 │
+                  ▼                   ▼                 ▼
+            构建请求 ──► 解析 Provider ──► 执行 & 结果落库
+                                              │
+                                         Handlers:
+                                         笔记 / 标签 /
+                                         附件 / 条目
+```
+
+## 💰 成本优势
+
+- 通过 Skill-Runner 路由调用，匹配已有的订阅方案。
+- 优先利用周期刷新的订阅额度（如 OpenAI/Gemini），而非按 token 计费的 API 调用。
+- 插件 UI/工作流层保持 provider 无关，后端策略可独立演进。
+
+## 🧑‍💻 开发
+
+```bash
+npm install          # 安装依赖
+npm start            # 启动开发服务器（含 mock Skill-Runner）
+npm test             # 运行 lite 测试
+npm run test:full    # 运行全量测试
+npm run build        # 生产构建
+```
+
+详见 [开发指南](dev_guide.md)。
+
+## 📖 文档索引
+
+| 文档                                     | 说明                                       |
+| ---------------------------------------- | ------------------------------------------ |
+| [架构流程](architecture-flow.md)         | 执行管线总览（含 Mermaid 流程图）          |
+| [开发指南](dev_guide.md)                 | 核心组件、配置模型、执行链路               |
+| [工作流组件](components/workflows.md)    | Manifest schema、hooks、输入筛选、执行语义 |
+| [Provider 组件](components/providers.md) | Provider 契约系统、请求类型                |
+| [测试策略](testing-framework.md)         | 双运行环境、lite/full 模式、CI 门禁        |
+
+## 📄 许可证
+
+[AGPL-3.0-or-later](../LICENSE)
+
+## 🙏 致谢
+
+- 基于 [@windingwind](https://github.com/windingwind) 的 [Zotero Plugin Template](https://github.com/windingwind/zotero-plugin-template) 构建
+- 使用 [zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit)

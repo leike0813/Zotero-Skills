@@ -20,10 +20,16 @@
 
 ## 输出
 
-- 任务状态流：`queued` → `running` → `succeeded | failed | canceled`
+- 任务状态流（SkillRunner）：
+  - 提交期：`queued` → `running`
+  - deferred 后：`running | waiting_user | waiting_auth`（由收敛器推进）
+  - 终态：`succeeded | failed | canceled`
 - 队列运行状态：正在运行的任务数、等待队列长度
 
-说明：当前实现没有公开“主动取消任务”接口，`canceled` 仅保留为状态类型预留。
+说明：
+
+- 当前实现没有公开“主动取消任务”接口，`canceled` 主要来自后端终态同步。
+- SkillRunner interactive waiting 状态不再由本地超时转 failed，而以后端状态机为准。
 
 ## 并发模型（当前版本）
 
@@ -44,7 +50,7 @@ Job {
   jobId: string
   workflowId: string
   request: unknown
-  state: "queued" | "running" | "succeeded" | "failed" | "canceled"
+  state: "queued" | "running" | "waiting_user" | "waiting_auth" | "succeeded" | "failed" | "canceled"
   result?: unknown
   error?: string
   createdAt: string
@@ -56,16 +62,19 @@ Job {
 
 - 输入合法性由 Workflow 运行时先完成，队列只接收可执行 request
 - 队列本身不理解 Workflow 业务，也不修改 request
-- M1 只覆盖成功链路与失败标记，不包含自动重试
+- 队列负责“提交到后端”阶段；deferred 任务由 `SkillRunnerTaskReconciler` 在后台继续收敛
+- 任务终态判断以 SkillRunner 后端状态机为 SSOT
 
 ## 失败模式
 
 - 并发池满：任务进入 `queued`
 - 执行异常：任务标记 `failed` 并记录错误
+- deferred/waiting：不是失败；任务从队列并发占位释放，交由收敛器追踪
 
 ## 测试点（TDD）
 
 - FIFO 顺序入队/出队
 - 固定并发上限：超额任务等待
-- 任务状态流转正确
+- 任务状态流转正确（含 `running -> waiting_* -> running -> terminal`）
+- deferred 任务释放队列占位后，后续任务可继续调度
 - 与 Provider 联调：多个 request 被逐个执行并全部成功

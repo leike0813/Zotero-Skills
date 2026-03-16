@@ -3,6 +3,7 @@ import {
   buildWorkflowFinishMessage,
   buildWorkflowJobToastMessage,
   buildWorkflowStartToastMessage,
+  buildWorkflowWaitingToastMessage,
   normalizeErrorMessage,
 } from "../../src/modules/workflowExecuteMessage";
 
@@ -124,6 +125,15 @@ describe("workflow execute message", function () {
     assert.equal(
       failed,
       "Workflow Literature Digest job 2/2 failed: example.md (timeout)",
+    );
+
+    const waiting = buildWorkflowWaitingToastMessage({
+      workflowLabel: "Literature Digest",
+      pendingJobs: 1,
+    });
+    assert.equal(
+      waiting,
+      "Workflow Literature Digest is waiting for backend input. pending=1",
     );
   });
 });

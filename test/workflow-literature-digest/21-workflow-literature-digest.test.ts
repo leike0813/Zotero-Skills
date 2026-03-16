@@ -9,6 +9,7 @@ import {
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
 import { ZipBundleReader } from "../../src/workflows/zipBundleReader";
 import {
+  decodeBase64Utf8,
   expectWorkflowSummaryCounter,
   fixturePath,
   workflowsPath,
@@ -27,6 +28,20 @@ function parseSourceAttachmentItemKey(noteContent: string) {
     /data-zs-source_attachment_item_key=(["'])([^"']+)\1/i,
   );
   return match ? match[2] : "";
+}
+
+function parsePayloadEntryPath(noteContent: string, payloadType: string) {
+  const pattern = new RegExp(
+    `data-zs-payload=(["'])${payloadType}\\1[^>]*data-zs-value=(["'])([^"']+)\\2`,
+    "i",
+  );
+  const match = String(noteContent || "").match(pattern);
+  if (!match) {
+    return "";
+  }
+  const decoded = decodeBase64Utf8(match[3]);
+  const parsed = JSON.parse(decoded) as { entry?: string };
+  return String(parsed.entry || "").trim();
 }
 
 const itFullOnly = isFullTestMode() ? it : it.skip;
@@ -85,6 +100,8 @@ describe("workflow: literature-digest", function () {
       targetParentID: number;
       skill_id: string;
       parameter?: { language?: string };
+      runtime_options?: { execution_mode?: string };
+      input?: { source_path?: string };
       upload_files: Array<{ key: string; path: string }>;
     }>;
     assert.lengthOf(requests, 1);
@@ -93,8 +110,10 @@ describe("workflow: literature-digest", function () {
     assert.equal(request.targetParentID, parent.id);
     assert.equal(request.skill_id, "literature-digest");
     assert.equal(request.parameter?.language, "zh-CN");
+    assert.equal(request.runtime_options?.execution_mode, "auto");
     assert.equal(request.upload_files?.[0].key, "source_path");
     assert.equal(request.upload_files?.[0].path, mdFile);
+    assert.match(String(request.input?.source_path || ""), /^inputs\/source_path\//);
   });
 
   it("builds request from selected pdf attachment when markdown is unavailable", async function () {
@@ -123,13 +142,17 @@ describe("workflow: literature-digest", function () {
       selectionContext: context,
     })) as Array<{
       kind: string;
+      runtime_options?: { execution_mode?: string };
+      input?: { source_path?: string };
       upload_files: Array<{ key: string; path: string }>;
     }>;
 
     assert.lengthOf(requests, 1);
     assert.equal(requests[0].kind, "skillrunner.job.v1");
+    assert.equal(requests[0].runtime_options?.execution_mode, "auto");
     assert.equal(requests[0].upload_files?.[0].key, "source_path");
     assert.equal(requests[0].upload_files?.[0].path, pdfFile);
+    assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
   it("skips build when parent already has digest/references/citation-analysis notes", async function () {
@@ -379,6 +402,114 @@ describe("workflow: literature-digest", function () {
     assert.include(parentNotes, thirdNote.id);
   });
 
+  it("applies result when artifact paths are uploads-prefixed bundle-relative paths", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Uploads-Prefixed Paths Parent" },
+    });
+    const digestPath = "uploads/inputs/source_path/artifacts/digest.md";
+    const referencesPath = "uploads/inputs/source_path/artifacts/references.json";
+    const citationPath = "uploads/inputs/source_path/artifacts/citation_analysis.json";
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    const applied = (await executeApplyResult({
+      workflow: workflow!,
+      parent,
+      bundleReader: {
+        async readText(entryPath: string) {
+          if (entryPath === "result/result.json") {
+            return JSON.stringify({
+              status: "success",
+              data: {
+                digest_path: digestPath,
+                references_path: referencesPath,
+                citation_analysis_path: citationPath,
+              },
+            });
+          }
+          if (entryPath === digestPath) {
+            return "# Digest";
+          }
+          if (entryPath === referencesPath) {
+            return "[]";
+          }
+          if (entryPath === citationPath) {
+            return '{"report_md":"# Citation Analysis"}';
+          }
+          throw new Error(`missing bundle entry: ${entryPath}`);
+        },
+      },
+    })) as { notes: Zotero.Item[] };
+
+    assert.lengthOf(applied.notes, 3);
+    const digestNote = Zotero.Items.get(applied.notes[0].id)!;
+    const referencesNote = Zotero.Items.get(applied.notes[1].id)!;
+    const citationAnalysisNote = Zotero.Items.get(applied.notes[2].id)!;
+    assert.equal(
+      parsePayloadEntryPath(digestNote.getNote(), "digest-markdown"),
+      digestPath,
+    );
+    assert.equal(
+      parsePayloadEntryPath(referencesNote.getNote(), "references-json"),
+      referencesPath,
+    );
+    assert.equal(
+      parsePayloadEntryPath(citationAnalysisNote.getNote(), "citation-analysis-json"),
+      citationPath,
+    );
+  });
+
+  it("surfaces missing artifact path details when all entry candidates fail", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Workflow Missing Artifact Path Parent" },
+    });
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow, "missing literature-digest workflow");
+
+    let thrown: unknown = null;
+    try {
+      await executeApplyResult({
+        workflow: workflow!,
+        parent,
+        bundleReader: {
+          async readText(entryPath: string) {
+            if (entryPath === "result/result.json") {
+              return JSON.stringify({
+                status: "success",
+                data: {
+                  digest_path: "uploads/inputs/source_path/artifacts/digest.md",
+                  references_path: "uploads/inputs/source_path/artifacts/references.json",
+                  citation_analysis_path:
+                    "uploads/inputs/source_path/artifacts/citation_analysis.json",
+                },
+              });
+            }
+            throw new Error(`missing bundle entry: ${entryPath}`);
+          },
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.isOk(thrown);
+    const message = String(
+      thrown instanceof Error ? thrown.message : thrown,
+    );
+    assert.include(message, "[digest_path] bundle entry not found");
+    assert.include(message, "uploads/inputs/source_path/artifacts/digest.md");
+    assert.include(message, "artifacts/digest.md");
+  });
+
   it("writes hidden source metadata with markdown attachment itemKey when request is provided", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -407,6 +538,7 @@ describe("workflow: literature-digest", function () {
       kind: string;
       targetParentID: number;
       sourceAttachmentPaths?: string[];
+      input?: { source_path?: string };
       upload_files?: Array<{ key: string; path: string }>;
     }>;
     assert.lengthOf(requests, 1);
@@ -461,6 +593,9 @@ describe("workflow: literature-digest", function () {
       request: {
         targetParentID: parent.id,
         sourceAttachmentPaths: ["D:/not-found/example.md"],
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
         upload_files: [{ key: "source_path", path: "D:/not-found/example.md" }],
       },
     })) as { notes: Zotero.Item[] };

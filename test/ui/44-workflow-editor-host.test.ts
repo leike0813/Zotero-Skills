@@ -76,12 +76,21 @@ class MockDialog {
 
   static maxInFlight = 0;
 
+  static continueAfterNoClose = true;
+
+  static lastFooterNodes: Array<{
+    style: Record<string, string>;
+    hidden?: boolean;
+    textContent?: string;
+  }> = [];
+
   private dialogData: MockDialogData | null = null;
 
   private readonly root = createRootElement();
 
   private readonly buttons: Array<{
     id: string;
+    label: string;
     options?: {
       noClose?: boolean;
       callback?: (event?: unknown) => void;
@@ -92,9 +101,10 @@ class MockDialog {
     return this;
   }
 
-  addButton(_label?: string, id?: string, options?: unknown) {
+  addButton(label?: string, id?: string, options?: unknown) {
     this.buttons.push({
       id: String(id || ""),
+      label: String(label || ""),
       options: (options || {}) as {
         noClose?: boolean;
         callback?: (event?: unknown) => void;
@@ -115,11 +125,29 @@ class MockDialog {
     MockDialog.inFlight += 1;
     MockDialog.maxInFlight = Math.max(MockDialog.maxInFlight, MockDialog.inFlight);
     const delayMs = MockDialog.nextDelays.shift() || 0;
+    const footerContainer = {
+      style: {} as Record<string, string>,
+      hidden: false,
+      textContent: "",
+    };
+    const footerButtons = this.buttons.map((entry) => ({
+      style: {} as Record<string, string>,
+      hidden: false,
+      textContent: String(entry.label || ""),
+    }));
+    MockDialog.lastFooterNodes = footerButtons;
     const doc = {
       defaultView: {
         resizeTo: () => {},
       },
       getElementById: () => this.root,
+      querySelectorAll: (selector: string) => {
+        const text = String(selector || "");
+        if (text === "button" || text.startsWith("button[")) {
+          return footerButtons;
+        }
+        return [footerContainer];
+      },
     };
 
     let closed = false;
@@ -147,10 +175,14 @@ class MockDialog {
           return;
         }
         const clicked = MockDialog.nextButtons.shift() || "save";
+        if (clicked === "__close__") {
+          window.close();
+          return;
+        }
         const button = this.buttons.find((entry) => entry.id === clicked);
         if (button?.options?.noClose) {
           button.options.callback?.({ type: "click" });
-          if (!closed) {
+          if (!closed && MockDialog.continueAfterNoClose) {
             setTimeout(runNextClick, 0);
           }
           return;
@@ -180,6 +212,8 @@ describe("workflow editor host", function () {
     MockDialog.nextDelays = [];
     MockDialog.inFlight = 0;
     MockDialog.maxInFlight = 0;
+    MockDialog.continueAfterNoClose = true;
+    MockDialog.lastFooterNodes = [];
 
     const runtime = globalThis as typeof globalThis & {
       addon?: {
@@ -223,6 +257,7 @@ describe("workflow editor host", function () {
     });
     assert.isTrue(saved.saved);
     assert.deepEqual(saved.result, { ok: true });
+    assert.equal(saved.actionId, "save");
 
     MockDialog.nextButtons.push("cancel");
     const canceled = await openWorkflowEditorSession({
@@ -232,6 +267,7 @@ describe("workflow editor host", function () {
     });
     assert.isFalse(canceled.saved);
     assert.equal(canceled.reason, "canceled");
+    assert.equal(canceled.actionId, "cancel");
   });
 
   it("prompts dirty close and saves when user chooses save", async function () {
@@ -356,5 +392,132 @@ describe("workflow editor host", function () {
     ]);
 
     assert.equal(MockDialog.maxInFlight, 1);
+  });
+
+  it("allows detached session to open without waiting queue", async function () {
+    registerWorkflowEditorRenderer("detached-renderer", {
+      render: () => {},
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("save", "save");
+    MockDialog.nextDelays.push(25, 25);
+
+    await Promise.all([
+      openWorkflowEditorSession({
+        rendererId: "detached-renderer",
+        title: "Queued",
+        initialState: { index: 1 },
+      }),
+      openWorkflowEditorSession({
+        rendererId: "detached-renderer",
+        title: "Detached",
+        initialState: { index: 2 },
+        detached: true,
+      }),
+    ]);
+
+    assert.equal(MockDialog.maxInFlight, 2);
+  });
+
+  it("returns custom actionId and serialized result for action buttons", async function () {
+    registerWorkflowEditorRenderer("custom-actions-renderer", {
+      render: ({ state }) => {
+        (state as { value?: number }).value = 42;
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("stage-all");
+    const result = await openWorkflowEditorSession({
+      rendererId: "custom-actions-renderer",
+      title: "Custom Actions",
+      initialState: { value: 0 },
+      actions: [
+        { id: "join-all", label: "Join All" },
+        { id: "stage-all", label: "Stage All" },
+        { id: "reject-all", label: "Reject All" },
+      ],
+    });
+
+    assert.isFalse(result.saved);
+    assert.equal(result.reason, "action");
+    assert.equal(result.actionId, "stage-all");
+    assert.deepEqual(result.result, { value: 42 });
+  });
+
+  it("applies closeActionId when dialog closes without explicit button click", async function () {
+    registerWorkflowEditorRenderer("close-default-renderer", {
+      render: () => {},
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("__close__");
+    const result = await openWorkflowEditorSession({
+      rendererId: "close-default-renderer",
+      title: "Close Default",
+      initialState: { ok: true },
+      actions: [{ id: "stage-all", label: "Stage All" }],
+      closeActionId: "stage-all",
+    });
+
+    assert.isFalse(result.saved);
+    assert.equal(result.reason, "action");
+    assert.equal(result.actionId, "stage-all");
+    assert.deepEqual(result.result, { ok: true });
+  });
+
+  it("allows renderer to hide footer buttons at runtime", async function () {
+    registerWorkflowEditorRenderer("footer-visibility-renderer", {
+      render: ({ host }) => {
+        host.setFooterVisible(false);
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("save");
+    const result = await openWorkflowEditorSession({
+      rendererId: "footer-visibility-renderer",
+      title: "Footer Visibility",
+      initialState: { ok: true },
+    });
+
+    assert.isTrue(result.saved);
+    assert.isAtLeast(MockDialog.lastFooterNodes.length, 1);
+    for (const node of MockDialog.lastFooterNodes) {
+      assert.isTrue(node.hidden === true || node.style.display === "none");
+    }
+  });
+
+  it("auto-closes dialog with configured actionId", async function () {
+    registerWorkflowEditorRenderer("auto-close-renderer", {
+      render: () => {},
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.continueAfterNoClose = false;
+    MockDialog.nextButtons.push("hold");
+    const result = await openWorkflowEditorSession({
+      rendererId: "auto-close-renderer",
+      title: "Auto Close",
+      initialState: { ok: true },
+      actions: [
+        {
+          id: "hold",
+          label: "Hold",
+          noClose: true,
+          onClick: () => {},
+        },
+      ],
+      autoClose: {
+        afterMs: 20,
+        actionId: "stage-all",
+      },
+    });
+
+    assert.isFalse(result.saved);
+    assert.equal(result.reason, "action");
+    assert.equal(result.actionId, "stage-all");
+    assert.deepEqual(result.result, { ok: true });
   });
 });

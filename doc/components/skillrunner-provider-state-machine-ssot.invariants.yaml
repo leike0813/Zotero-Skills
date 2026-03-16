@@ -1,0 +1,131 @@
+invariants:
+  - id: INV-PROV-STATE-SETS
+    domain: skillrunner-provider
+    type: enum
+    current_value:
+      states:
+        - queued
+        - running
+        - waiting_user
+        - waiting_auth
+        - succeeded
+        - failed
+        - canceled
+      terminalStates:
+        - succeeded
+        - failed
+        - canceled
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.states
+      - SKILLRUNNER_SSOT_FACTS.terminalStates
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: Provider 状态集合和终态集合必须固定，变更需先更新 SSOT/YAML/spec/code facts。
+
+  - id: INV-PROV-WRITE-NONTERMINAL-EVENTS
+    domain: skillrunner-provider
+    type: write-source
+    current_value:
+      nonTerminalWriteSource: events
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.nonTerminalWriteSource
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 非终态写入仅允许来自 events 语义。
+
+  - id: INV-PROV-WRITE-TERMINAL-JOBS
+    domain: skillrunner-provider
+    type: write-source
+    current_value:
+      terminalWriteSource: jobs-terminal
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.terminalWriteSource
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 终态允许 jobs-terminal 覆盖收敛，不允许非终态路径推断终态。
+
+  - id: INV-PROV-BACKEND-HEALTH-BACKOFF
+    domain: skillrunner-provider
+    type: timing
+    current_value:
+      probeBackoffMs:
+        - 5000
+        - 15000
+        - 60000
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.backendHealth.probeBackoffMs
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 后端可达性探测降频固定为 5s->15s->60s。
+
+  - id: INV-PROV-BACKEND-HEALTH-THRESHOLDS
+    domain: skillrunner-provider
+    type: threshold
+    current_value:
+      failureThresholdForGate: 2
+      successThresholdForRecovery: 1
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.backendHealth.failureThresholdForGate
+      - SKILLRUNNER_SSOT_FACTS.backendHealth.successThresholdForRecovery
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 两次失败进入 gate，首次成功恢复。
+
+  - id: INV-PROV-STREAM-EVENT-RUNNING-ONLY
+    domain: skillrunner-provider
+    type: stream-lifecycle
+    current_value:
+      eventConnectOnlySnapshot: running
+      eventDisconnectStates:
+        - waiting_user
+        - waiting_auth
+        - succeeded
+        - failed
+        - canceled
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.streamLifecycle.eventConnectOnlySnapshot
+      - SKILLRUNNER_SSOT_FACTS.streamLifecycle.eventDisconnectStates
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: event SSE 仅对 running 连接，进入 waiting/terminal 立即断开。
+
+  - id: INV-PROV-STARTUP-RUNNING-ONLY-RECONNECT
+    domain: skillrunner-provider
+    type: startup-policy
+    current_value:
+      autoReconnectSnapshot: running
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.startup.autoReconnectSnapshot
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 启动自动接线仅面向 snapshot=running 的请求。
+
+  - id: INV-PROV-UI-GATING-BACKEND-FLAG
+    domain: skillrunner-provider
+    type: ui-gating
+    current_value:
+      flaggedBackendBlocksRunDialog: true
+      flaggedBackendHiddenInHome: true
+      flaggedBackendTabDisabled: true
+      flaggedBackendWorkspaceDisabled: true
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.uiGating
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+    must: backend reconcileFlag=true 时必须统一执行入口阻断和 UI 禁用规则。

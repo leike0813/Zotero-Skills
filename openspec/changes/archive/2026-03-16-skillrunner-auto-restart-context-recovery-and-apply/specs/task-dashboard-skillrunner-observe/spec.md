@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: SkillRunner auto and interactive restart recovery MUST share one context chain
 

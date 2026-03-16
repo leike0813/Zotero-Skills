@@ -64,7 +64,7 @@ function makeHistory(args: {
 }
 
 describe("task dashboard snapshot", function () {
-  it("includes configured and runtime-discovered backends except pass-through", function () {
+  it("includes configured backends except pass-through", function () {
     const backends = normalizeDashboardBackends({
       configured: [makeBackend("skillrunner-local", "skillrunner")],
       history: [
@@ -88,7 +88,7 @@ describe("task dashboard snapshot", function () {
     });
     assert.deepEqual(
       backends.map((entry) => `${entry.id}:${entry.type}`),
-      ["generic-1:generic-http", "skillrunner-local:skillrunner"],
+      ["skillrunner-local:skillrunner"],
     );
   });
 

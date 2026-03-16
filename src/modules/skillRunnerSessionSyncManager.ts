@@ -28,6 +28,14 @@ const sessionStateListeners = new Map<
   string,
   Set<(payload: SkillRunnerSessionStateUpdate) => void>
 >();
+export const SKILLRUNNER_EVENT_STREAM_CONNECT_SNAPSHOT = "running" as const;
+export const SKILLRUNNER_EVENT_STREAM_DISCONNECT_STATES = [
+  "waiting_user",
+  "waiting_auth",
+  "succeeded",
+  "failed",
+  "canceled",
+] as const;
 
 export type SkillRunnerSessionStateUpdate = {
   backendId: string;
@@ -85,6 +93,15 @@ function stopSessionByKey(key: string) {
   }
   session.stopped = true;
   sessions.delete(key);
+}
+
+function shouldDisconnectEventStream(status: string) {
+  const normalized = normalizeStatus(status, "running");
+  return (
+    normalized === "waiting_user" ||
+    normalized === "waiting_auth" ||
+    isTerminal(normalized)
+  );
 }
 
 function emitSessionStateChanged(payload: SkillRunnerSessionStateUpdate) {
@@ -181,11 +198,7 @@ async function consumeEventHistory(session: SessionLoopState) {
   if (Number.isFinite(ceiling) && ceiling > session.eventCursor) {
     session.eventCursor = Math.floor(ceiling);
   }
-  if (
-    latestObservedStatus === "waiting_user" ||
-    latestObservedStatus === "waiting_auth" ||
-    isTerminal(latestObservedStatus)
-  ) {
+  if (shouldDisconnectEventStream(latestObservedStatus)) {
     stopSessionSync({
       backendId: session.backend.id,
       requestId: session.requestId,
@@ -247,11 +260,7 @@ async function streamEventLoop(session: SessionLoopState) {
           if (current.status === "running") {
             return;
           }
-          if (
-            isTerminal(current.status) ||
-            current.status === "waiting_user" ||
-            current.status === "waiting_auth"
-          ) {
+          if (shouldDisconnectEventStream(current.status)) {
             stopSessionByKey(key);
           }
         },

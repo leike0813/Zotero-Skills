@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: SkillRunner backend list and gating MUST reflect configured profile lifecycle
 

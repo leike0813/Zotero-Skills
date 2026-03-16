@@ -1,0 +1,82 @@
+invariants:
+  - id: INV-WS-RUN-DIALOG-SINGLETON
+    domain: skillrunner-workspace
+    type: ui-lifecycle
+    current_value:
+      singletonRunWorkspace: true
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.workspace.singletonRunWorkspace
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: SkillRunner 运行详情窗口必须单例。
+
+  - id: INV-WS-CHAT-SSE-SINGLE-OWNER
+    domain: skillrunner-workspace
+    type: stream-lifecycle
+    current_value:
+      chatOwnership: singleton-selected-session
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.streamLifecycle.chatOwnership
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: chat SSE 仅由当前选中会话持有，切换或关闭即断开旧连接。
+
+  - id: INV-WS-STATE-RENDER-FROM-LEDGER
+    domain: skillrunner-workspace
+    type: render-source
+    current_value:
+      stateRenderSource: ledger-snapshot
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.workspace.stateRenderSource
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: 对话窗口状态展示必须来自统一 ledger 快照投影，不得本地猜测。
+
+  - id: INV-WS-BACKEND-FLAGGED-GROUP-DISABLED
+    domain: skillrunner-workspace
+    type: ui-gating
+    current_value:
+      flaggedGroupDisabled: true
+      flaggedGroupNoBubbles: true
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.workspace.flaggedGroupRules
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: reconcileFlag 后端在 workspace 左侧必须禁交互且不渲染任务气泡。
+
+  - id: INV-WS-FIRST-FRAME-NO-FORCED-RUNNING
+    domain: skillrunner-workspace
+    type: render-policy
+    current_value:
+      firstFrameUsesLedgerSnapshot: true
+      refreshFailureNoForcedRunning: true
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.workspace.firstFrameRules
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: 首帧不允许被刷新失败强制改写为 running。
+
+  - id: INV-WS-PENDING-EDGE-RULES
+    domain: skillrunner-workspace
+    type: pending-policy
+    current_value:
+      waitingEdgeFetchPending: true
+      leaveWaitingClearsPending: true
+      pendingFailureRetainsLastGood: true
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.workspace.pendingRules
+    doc_refs:
+      - doc/components/skillrunner-provider-global-run-workspace-tabs-ssot.md
+    spec_refs:
+      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/skillrunner-ssot-yaml-invariants-governance/spec.md
+    must: waiting 边沿触发 pending 渲染，失败时保留 last-good。

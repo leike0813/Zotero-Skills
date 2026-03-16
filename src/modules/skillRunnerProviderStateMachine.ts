@@ -50,7 +50,7 @@ export type SkillRunnerStateEvent = {
   status?: SkillRunnerProviderState | string;
 };
 
-const KNOWN_STATUSES: SkillRunnerProviderState[] = [
+export const SKILLRUNNER_PROVIDER_STATES: SkillRunnerProviderState[] = [
   "queued",
   "running",
   "waiting_user",
@@ -60,16 +60,24 @@ const KNOWN_STATUSES: SkillRunnerProviderState[] = [
   "canceled",
 ];
 
-const TERMINAL_STATES = new Set<SkillRunnerProviderState>([
+export const SKILLRUNNER_TERMINAL_STATES: SkillRunnerProviderState[] = [
   "succeeded",
   "failed",
   "canceled",
-]);
+];
 
-const WAITING_STATES = new Set<SkillRunnerProviderState>([
+export const SKILLRUNNER_WAITING_STATES: SkillRunnerWaitingState[] = [
   "waiting_user",
   "waiting_auth",
-]);
+];
+
+const TERMINAL_STATES = new Set<SkillRunnerProviderState>(
+  SKILLRUNNER_TERMINAL_STATES,
+);
+
+const WAITING_STATES = new Set<SkillRunnerProviderState>(
+  SKILLRUNNER_WAITING_STATES,
+);
 
 const LEGAL_TRANSITIONS: Record<
   SkillRunnerProviderState,
@@ -144,7 +152,9 @@ function normalizeEventKind(value: unknown): SkillRunnerStateEventKind | "" {
 
 export function isKnownStatus(value: unknown): value is SkillRunnerProviderState {
   const normalized = String(value || "").trim().toLowerCase();
-  return KNOWN_STATUSES.includes(normalized as SkillRunnerProviderState);
+  return SKILLRUNNER_PROVIDER_STATES.includes(
+    normalized as SkillRunnerProviderState,
+  );
 }
 
 export function normalizeStatus(
@@ -152,7 +162,11 @@ export function normalizeStatus(
   fallback: SkillRunnerProviderState = "running",
 ): SkillRunnerProviderState {
   const normalized = String(value || "").trim().toLowerCase();
-  if (KNOWN_STATUSES.includes(normalized as SkillRunnerProviderState)) {
+  if (
+    SKILLRUNNER_PROVIDER_STATES.includes(
+      normalized as SkillRunnerProviderState,
+    )
+  ) {
     return normalized as SkillRunnerProviderState;
   }
   return fallback;

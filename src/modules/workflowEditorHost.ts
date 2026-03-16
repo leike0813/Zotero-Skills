@@ -99,7 +99,12 @@ function createHtmlElement<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
   tag: K,
 ) {
-  return doc.createElementNS(HTML_NS, tag) as HTMLElementTagNameMap[K];
+  const createNs = (doc as { createElementNS?: (ns: string, name: string) => Element })
+    .createElementNS;
+  if (typeof createNs === "function") {
+    return createNs.call(doc, HTML_NS, tag) as HTMLElementTagNameMap[K];
+  }
+  return doc.createElement(tag) as HTMLElementTagNameMap[K];
 }
 
 function clearChildren(node: Element) {

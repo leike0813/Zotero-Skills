@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
-import { __tagManagerTestOnly } from "../../workflows/tag-manager/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
 
 type ControlledEntry = {
   tag: string;

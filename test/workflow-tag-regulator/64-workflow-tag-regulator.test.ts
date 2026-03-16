@@ -7,7 +7,7 @@ import {
   executeApplyResult,
   executeBuildRequests,
 } from "../../src/workflows/runtime";
-import { __tagRegulatorApplyResultTestOnly } from "../../workflows/tag-regulator/hooks/applyResult.js";
+import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-regulator/hooks/applyResult.js";
 import {
   existsPath,
   readUtf8,

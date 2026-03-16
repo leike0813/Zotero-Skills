@@ -1,216 +1,178 @@
-# SkillRunner Provider State Machine SSOT (v3, Reconcile-Gated)
+# SkillRunner Provider State Machine SSOT (Lockdown v4)
 
 ## 1. Scope
 
-This SSOT defines the only valid runtime-state governance model in the plugin for SkillRunner tasks:
+This document is the provider-side SSOT for SkillRunner task observation in plugin runtime.
+It defines behavior invariants that are also machine-checked by YAML guardrails.
 
-- backend jobs semantics are SSOT
-- plugin is observer-only for non-terminal states
-- reconcile gating is backend-scoped
-- stream lifecycle is bounded by state and active UI ownership
+- Backend jobs semantics are SSOT.
+- Plugin is observer-only for non-terminal states.
+- Backend-level reconcile gating controls stream and UI access.
+- Runtime writes are constrained by explicit source guards.
 
-This document replaces prior request-scoped reconcile and mixed-owner stream behavior.
-
-## 2. Canonical Task States
-
-`queued | running | waiting_user | waiting_auth | succeeded | failed | canceled`
-
-Terminal:
-
-- `succeeded`
-- `failed`
-- `canceled`
-
-Non-terminal:
+## 2. Canonical States
 
 - `queued`
 - `running`
 - `waiting_user`
 - `waiting_auth`
+- `succeeded`
+- `failed`
+- `canceled`
+
+Terminal states:
+
+- `succeeded`
+- `failed`
+- `canceled`
 
 ## 3. Truth Inputs
 
-### 3.1 Events Channel (state channel)
+State channel:
 
-- source: `/v1/jobs/{request_id}/events/history` + `/v1/jobs/{request_id}/events` SSE
-- ownership: state projection only
-- non-terminal writes originate only here
+- `/v1/jobs/{request_id}/events/history`
+- `/v1/jobs/{request_id}/events` SSE
 
-### 3.2 Jobs Terminal Check (terminal override channel)
+Terminal override channel:
 
-- source: `/v1/jobs/{request_id}` status
-- ownership: terminal convergence only
-- used when backend failure path has no terminal `conversation.state.changed`
+- `/v1/jobs/{request_id}` (double-confirm terminal convergence only)
 
-### 3.3 Chat Channel (display channel)
+Display channel:
 
-- source: `/v1/jobs/{request_id}/chat/history` + `/v1/jobs/{request_id}/chat` SSE
-- ownership: conversation display only
-- never writes task state
+- `/v1/jobs/{request_id}/chat/history`
+- `/v1/jobs/{request_id}/chat` SSE
 
-## 4. Ledger Contract (Minimal)
+## 4. Invariant Catalog (Provider)
 
-Ledger record keeps only:
+Each invariant below is normative and machine-referenced by ID.
 
-- `requestId`
-- `snapshot`
-- minimal metadata for UI (`backendId/backendType/workflowLabel/taskName/runId/jobId`)
-- `updatedAt`
+### INV-PROV-STATE-SETS
 
-No local conversation message persistence.
-No request-level reconcile flag writes.
+- Trigger: any state parse/normalize path.
+- Allowed: provider states are exactly the seven canonical states.
+- Forbidden: introducing/removing provider state without updating SSOT+YAML+spec+facts export.
+- Observability: state-machine guard logs and invariant script mismatch.
 
-### 4.1 Persistence Substrate (Plugin Scope SQLite)
+### INV-PROV-WRITE-NONTERMINAL-EVENTS
 
-Runtime persistence for ledger/context/task rows is plugin-scope SQLite:
+- Trigger: write attempt to `queued/running/waiting_user/waiting_auth`.
+- Allowed: write source `events` only.
+- Forbidden: reconciler/probe/jobs polling rewriting non-terminal state.
+- Observability: guarded write path in request ledger + invariant check.
 
-- DB file: `<Zotero.DataDirectory>/zotero-skills/state/zotero-skills.db`
-- store entry: `pluginStateStore`
-- task tables:
+### INV-PROV-WRITE-TERMINAL-JOBS
+
+- Trigger: write attempt to `succeeded/failed/canceled`.
+- Allowed: events terminal or jobs-terminal double-confirm path.
+- Forbidden: non-terminal-only sources forcing terminal without confirm path.
+- Observability: terminal reconcile logs and guarded ledger writes.
+
+### INV-PROV-BACKEND-HEALTH-BACKOFF
+
+- Trigger: backend health probe failures/success.
+- Allowed: backoff cadence `5s -> 15s -> 60s`.
+- Forbidden: cadence drift without contract update.
+- Observability: health registry state (`backoffLevel`, `nextProbeAt`) + logs.
+
+### INV-PROV-BACKEND-HEALTH-THRESHOLDS
+
+- Trigger: consecutive failures/successes.
+- Allowed:
+  - enter reconcile flag on 2 consecutive failures
+  - recover on 1 success
+- Forbidden:
+  - single failure directly flagging backend
+  - requiring multiple successes to recover.
+- Observability: health registry transitions + probe logs.
+
+### INV-PROV-STREAM-EVENT-RUNNING-ONLY
+
+- Trigger: session sync connect/disconnect checks.
+- Allowed:
+  - auto-connect candidates are `snapshot=running`
+  - disconnect event stream on `waiting_user`, `waiting_auth`, or terminal.
+- Forbidden:
+  - long-lived event streams for waiting/terminal snapshots
+  - startup auto-connect for non-running snapshots.
+- Observability: `events-stream-disconnected` logs and active session map.
+
+### INV-PROV-STARTUP-RUNNING-ONLY-RECONNECT
+
+- Trigger: plugin startup reconcile/sync bootstrap.
+- Allowed: reconnect candidates from ledger snapshot `running` only.
+- Forbidden: startup reconnect sweep over waiting/terminal entries.
+- Observability: reconnect candidate query and startup sync behavior.
+
+### INV-PROV-UI-GATING-BACKEND-FLAG
+
+- Trigger: backend `reconcileFlag=true`.
+- Allowed:
+  - block run dialog open
+  - hide backend tasks in dashboard home list
+  - disable backend tab
+  - disable workspace backend group with no bubbles
+  - filter backend from submit dialog profile selector.
+- Forbidden: flagged backend entering interactive run paths.
+- Observability: dashboard/workspace snapshots + open-run guard branch.
+
+## 5. Ledger and Persistence Contract
+
+Ledger persistence is plugin-scope SQLite:
+
+- DB path: `<Zotero.DataDirectory>/zotero-skills/state/zotero-skills.db`
+- Store entry: `pluginStateStore`
+- Tables:
   - `plugin_task_requests`
   - `plugin_task_contexts`
   - `plugin_task_rows`
 
-Current task domain: `skillrunner`.
-Legacy prefs (`skillRunnerDeferredTasksJson`, `skillRunnerRequestLedgerJson`, `taskDashboardHistoryJson`) are migration input only and not runtime truth after migration.
+Ledger minimum semantics:
 
-## 5. Write Guards (Hard Invariants)
+- identity: `requestId`
+- snapshot: canonical state
+- display metadata: backend/workflow/run/task identifiers
+- no local chat message persistence
 
-### 5.1 NonTerminalWriteGuard
+Legacy JSON prefs are migration input only and not runtime truth after migration.
 
-`queued/running/waiting_user/waiting_auth` may be written only by events channel semantics.
+## 6. Reconciler Boundary
 
-Any non-terminal write attempt from reconciler/jobs probing is invalid.
+Allowed:
 
-### 5.2 TerminalOverrideGuard
-
-`succeeded/failed/canceled` may be written by jobs double-confirm terminal path.
-
-This is the only allowed non-events write path and exists for backend failure normalization.
-
-### 5.3 Observer-Only Rule
-
-Plugin can only follow backend truth; it must not fabricate non-terminal progression or downgrades.
-
-## 6. Backend Health Registry (Backend-Scoped Reconcile Flag)
-
-Health state keyed by `backendId`:
-
-- `reachable`
-- `reconcileFlag`
-- `backoffLevel`
-- `nextProbeAt`
-- `lastError`
-
-Probe endpoint:
-
-- `HEAD /v1/system/ping` (preferred)
-- `GET /v1/system/ping` (fallback within ping endpoint family)
-
-Probe cadence:
-
-- level 0: 5s
-- level 1: 15s
-- level 2: 60s
-
-Gate transition rule:
-
-- enter `reconcileFlag=true` only after 2 consecutive failures
-- recover (`reconcileFlag=false`) on first successful probe
-- reset to level 0 on recovery
-
-Registry is runtime-only (rebuilt on startup), not persisted.
-When a backend profile is removed, registry tracking for that backend is
-removed immediately and active streams for that backend are stopped.
-
-## 7. Stream Lifecycle Contract
-
-### 7.1 Event SSE
-
-- auto-connect candidates on startup: only tasks with `snapshot=running`
-- connect is blocked when backend `reconcileFlag=true`
-- disconnect immediately when snapshot becomes:
-  - `waiting_user`
-  - `waiting_auth`
-  - terminal
-
-### 7.2 Chat SSE
-
-- run dialog is singleton
-- only selected session owns chat SSE
-- on tab switch / dialog close, previous chat stream disconnects immediately
-- run dialog status rendering is event-driven via global state subscription
-  (`events -> ledger -> dialog subscriber -> snapshot`), not periodic full refresh
-
-## 8. Reconciler Boundary
-
-Reconciler is not a state driver.
-
-Allowed responsibilities:
-
-1. backend health probing and backoff transitions
-2. resume event connections after backend recovery
-3. terminal jobs double-confirm
+1. backend health probing and gating transitions
+2. resume eligible running session sync after backend recovery
+3. terminal double-confirm
 4. terminal side effects:
-   - `succeeded` -> applyResult once
-   - `failed/canceled` -> terminal toast once
+   - `succeeded` -> apply once
+   - `failed/canceled` -> terminal toast
 
-Forbidden responsibilities:
+Forbidden:
 
-- request-level reachability flagging as state authority
-- non-terminal rewriting
+- non-terminal state driving
 - chat stream ownership
+- speculative status rewrites while backend is unreachable
 
-## 9. Backend Reconcile Gating UX Rules
+## 7. Failure Boundaries
 
-When backend `reconcileFlag=true`:
+Backend unreachable:
 
-1. run dialog opening for this backend is blocked with explicit notice
-2. submit-workflow settings profile selector filters this backend out
-3. if filtered backend is current default, selector auto-switches to another available profile
-4. dashboard backend tab is marked unavailable and not selectable
-5. dashboard home running list hides tasks of this backend
-6. skillrunner workspace left backend group is marked unavailable, non-expandable, non-interactive, and renders no task bubbles
-
-Default settings page profile list is not filtered.
-
-## 10. Startup Sequence
-
-1. initialize backend health registry for all skillrunner backends
-2. initialize ledger
-3. start backend probes
-4. start event SSE only for `snapshot=running` and healthy backend
-5. no startup auto-connect for waiting/terminal tasks
-6. context bootstrap for recoverable apply path is request-created driven
-   (applies to both auto and interactive)
-
-## 11. Failure Boundaries
-
-### Backend unreachable
-
-- keep last-known snapshot
+- preserve last-known snapshot
 - set backend reconcile flag
-- block backend interactions per gating rules
+- apply backend-level UI/entry gating
 - do not clear tasks
-- do not force fallback status
+- do not downgrade/guess status
 
-### Backend recovered
+Backend terminal without terminal `state.changed`:
 
-- clear backend reconcile flag
-- resume event SSE for eligible running tasks
+- converge via jobs terminal double-confirm
 
-### Backend terminal without state.changed
+Missing recoverable context on terminal success:
 
-- terminal converges via jobs double-confirm
+- converge state
+- skip apply
+- emit explicit warning with `missing-context`
 
-### Legacy running task without recoverable context
-
-- if backend converges terminal `succeeded` but no recoverable context exists,
-  plugin converges state only and skips apply
-- plugin emits explicit warning with reason `missing-context`
-- plugin does not fabricate request payload for apply
-
-## 12. Sequence (Simplified)
+## 8. Sequence (Simplified)
 
 ```mermaid
 sequenceDiagram
@@ -220,20 +182,20 @@ sequenceDiagram
     participant Ledger as Request Ledger
     participant UI as Dashboard/Workspace/Run
 
-    Probe->>Jobs: backend health check
-    alt unreachable
-      Probe->>UI: set backend reconcileFlag=true
-    else reachable
-      Probe->>UI: set backend reconcileFlag=false
+    Probe->>Jobs: /v1/system/ping
+    alt probe fail x2
+      Probe->>UI: backend reconcileFlag=true
+    else probe success
+      Probe->>UI: backend reconcileFlag=false
       Sync->>Jobs: events/history + events SSE (running only)
-      Jobs-->>Sync: state.changed(non-terminal)
-      Sync->>Ledger: guarded non-terminal write
-      Ledger-->>UI: unified refresh
+      Jobs-->>Sync: conversation.state.changed
+      Sync->>Ledger: non-terminal guarded write (events)
+      Ledger-->>UI: unified state refresh
     end
 
-    Note over Jobs,Ledger: terminal can skip state.changed in failure path
-    Probe->>Jobs: terminal double-confirm
-    Jobs-->>Probe: failed/canceled/succeeded
-    Probe->>Ledger: terminal write
+    Note over Jobs,Ledger: terminal may skip state.changed in backend failure path
+    Probe->>Jobs: jobs double-confirm
+    Jobs-->>Probe: succeeded|failed|canceled
+    Probe->>Ledger: terminal guarded write (jobs-terminal)
     Ledger-->>UI: terminal convergence
 ```

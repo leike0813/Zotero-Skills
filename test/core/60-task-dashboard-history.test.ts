@@ -1,5 +1,4 @@
 import { assert } from "chai";
-import { config } from "../../package.json";
 import type { JobRecord } from "../../src/jobQueue/manager";
 import {
   cleanupTaskDashboardHistory,
@@ -41,20 +40,8 @@ function makeJob(args: {
 }
 
 describe("task dashboard history", function () {
-  const prefKey = `${config.prefsPrefix}.taskDashboardHistoryJson`;
-  let previousPref: unknown;
-
   beforeEach(function () {
-    previousPref = Zotero.Prefs.get(prefKey, true);
     resetTaskDashboardHistory();
-  });
-
-  afterEach(function () {
-    if (typeof previousPref === "undefined") {
-      Zotero.Prefs.clear(prefKey, true);
-    } else {
-      Zotero.Prefs.set(prefKey, previousPref, true);
-    }
   });
 
   it("records and updates task history by stable id", function () {
@@ -118,25 +105,12 @@ describe("task dashboard history", function () {
   it("drops expired entries older than 30 days", function () {
     const retentionMs = getTaskDashboardHistoryRetentionConfig().retentionMs;
     const oldDate = new Date(Date.now() - retentionMs - 24 * 60 * 60 * 1000).toISOString();
-    Zotero.Prefs.set(
-      prefKey,
-      JSON.stringify({
-        records: [
-          {
-            id: "run-old:job-1",
-            runId: "run-old",
-            jobId: "job-1",
-            workflowId: "tag-regulator",
-            workflowLabel: "Tag Regulator",
-            taskName: "old-task",
-            state: "failed",
-            createdAt: oldDate,
-            updatedAt: oldDate,
-            archivedAt: oldDate,
-          },
-        ],
+    recordTaskDashboardHistoryFromJob(
+      makeJob({
+        id: "job-1",
+        state: "failed",
+        updatedAt: oldDate,
       }),
-      true,
     );
 
     const cleaned = cleanupTaskDashboardHistory();

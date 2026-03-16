@@ -22,6 +22,13 @@ import {
   recordTaskDashboardHistoryFromJob,
 } from "../../src/modules/taskDashboardHistory";
 import { clearRuntimeLogs, listRuntimeLogs } from "../../src/modules/runtimeLogManager";
+import {
+  PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+  listPluginTaskContextEntries,
+  replacePluginTaskContextEntries,
+  resetPluginStateStoreForTests,
+  upsertPluginTaskContextEntry,
+} from "../../src/modules/pluginStateStore";
 import { getPref, setPref } from "../../src/utils/prefs";
 
 function createJsonResponse(payload: unknown, status = 200): Response {
@@ -118,18 +125,25 @@ function forceApplyRetryDueNow(reconciler: SkillRunnerTaskReconciler) {
   for (const context of runtime.contexts?.values?.() || []) {
     context.nextApplyRetryAt = "1970-01-01T00:00:00.000Z";
   }
-  const raw = String(getPref("skillRunnerDeferredTasksJson") || "");
-  const parsed = JSON.parse(raw || "{\"records\":[]}") as {
-    records?: Array<Record<string, unknown>>;
-  };
-  const records = Array.isArray(parsed.records) ? parsed.records : [];
-  for (const record of records) {
-    record.nextApplyRetryAt = "1970-01-01T00:00:00.000Z";
-  }
-  setPref(
-    "skillRunnerDeferredTasksJson",
-    JSON.stringify({
-      records,
+  const persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+  replacePluginTaskContextEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    persisted.map((entry) => {
+      let payload = {} as Record<string, unknown>;
+      try {
+        payload = JSON.parse(String(entry.payload || "{}")) as Record<string, unknown>;
+      } catch {
+        payload = {};
+      }
+      payload.nextApplyRetryAt = "1970-01-01T00:00:00.000Z";
+      return {
+        contextId: entry.contextId,
+        requestId: entry.requestId,
+        backendId: entry.backendId,
+        state: entry.state,
+        updatedAt: new Date().toISOString(),
+        payload: JSON.stringify(payload),
+      };
     }),
   );
 }
@@ -138,8 +152,10 @@ describe("skillrunner task reconciler", function () {
   const originalFetch = (globalThis as { fetch?: typeof fetch }).fetch;
 
   beforeEach(function () {
+    setPref("skillRunnerRequestLedgerJson", "");
     setPref("skillRunnerDeferredTasksJson", "");
     setPref("taskDashboardHistoryJson", "");
+    resetPluginStateStoreForTests();
     resetWorkflowTasks();
     clearRuntimeLogs();
     resetSkillRunnerBackendHealthRegistryForTests();
@@ -147,8 +163,10 @@ describe("skillrunner task reconciler", function () {
 
   afterEach(function () {
     (globalThis as { fetch?: typeof fetch }).fetch = originalFetch;
+    setPref("skillRunnerRequestLedgerJson", "");
     setPref("skillRunnerDeferredTasksJson", "");
     setPref("taskDashboardHistoryJson", "");
+    resetPluginStateStoreForTests();
     resetWorkflowTasks();
     clearRuntimeLogs();
     resetSkillRunnerBackendHealthRegistryForTests();
@@ -217,23 +235,26 @@ describe("skillrunner task reconciler", function () {
       job: makeDeferredJob(),
     });
 
-    const persistedBefore = String(getPref("skillRunnerDeferredTasksJson") || "");
-    assert.include(persistedBefore, "req-1");
+    const persistedBefore = listPluginTaskContextEntries(
+      PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    );
+    assert.isTrue(
+      persistedBefore.some((entry) => entry.requestId === "req-1"),
+    );
 
     await reconciler.reconcilePending();
 
-    const persistedAfter = String(getPref("skillRunnerDeferredTasksJson") || "");
-    const parsedAfter = JSON.parse(persistedAfter || "{\"records\":[]}") as {
-      records?: unknown[];
-    };
-    assert.lengthOf(Array.isArray(parsedAfter.records) ? parsedAfter.records : [], 0);
+    const persistedAfter = listPluginTaskContextEntries(
+      PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    );
+    assert.lengthOf(persistedAfter, 0);
     const tasks = listWorkflowTasks();
     assert.lengthOf(tasks, 1);
     assert.equal(tasks[0].state, "failed");
     assert.equal(tasks[0].requestId, "req-1");
   });
 
-  it("restores pending contexts from prefs on start", async function () {
+  it("restores pending contexts from sqlite store on start", async function () {
     const record = {
       id: "skillrunner-local:req-restore-1",
       workflowId: "literature-explainer",
@@ -255,12 +276,14 @@ describe("skillrunner task reconciler", function () {
       createdAt: "2026-03-12T00:00:00.000Z",
       updatedAt: "2026-03-12T00:00:00.000Z",
     };
-    setPref(
-      "skillRunnerDeferredTasksJson",
-      JSON.stringify({
-        records: [record],
-      }),
-    );
+    upsertPluginTaskContextEntry(PLUGIN_TASK_DOMAIN_SKILLRUNNER, {
+      contextId: String(record.id),
+      requestId: String(record.requestId),
+      backendId: String(record.backendId),
+      state: String(record.state),
+      updatedAt: String(record.updatedAt),
+      payload: JSON.stringify(record),
+    });
 
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
       if (url.endsWith("/v1/jobs/req-restore-1")) {
@@ -285,34 +308,35 @@ describe("skillrunner task reconciler", function () {
   });
 
   it("degrades persisted unknown state to running on restore", async function () {
-    setPref(
-      "skillRunnerDeferredTasksJson",
-      JSON.stringify({
-        records: [
-          {
-            id: "skillrunner-local:req-restore-unknown",
-            workflowId: "literature-explainer",
-            workflowLabel: "Literature Explainer",
-            requestKind: "skillrunner.job.v1",
-            request: { kind: "skillrunner.job.v1", targetParentID: 123 },
-            backendId: "skillrunner-local",
-            backendType: "skillrunner",
-            backendBaseUrl: "http://127.0.0.1:8030",
-            providerId: "skillrunner",
-            providerOptions: { engine: "gemini" },
-            runId: "run-restore-unknown",
-            jobId: "job-restore-unknown",
-            taskName: "paper.md",
-            targetParentID: 123,
-            requestId: "req-restore-unknown",
-            fetchType: "bundle",
-            state: "unknown_status",
-            createdAt: "2026-03-12T00:00:00.000Z",
-            updatedAt: "2026-03-12T00:00:00.000Z",
-          },
-        ],
-      }),
-    );
+    const unknownRecord = {
+      id: "skillrunner-local:req-restore-unknown",
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: { kind: "skillrunner.job.v1", targetParentID: 123 },
+      backendId: "skillrunner-local",
+      backendType: "skillrunner",
+      backendBaseUrl: "http://127.0.0.1:8030",
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      runId: "run-restore-unknown",
+      jobId: "job-restore-unknown",
+      taskName: "paper.md",
+      targetParentID: 123,
+      requestId: "req-restore-unknown",
+      fetchType: "bundle",
+      state: "unknown_status",
+      createdAt: "2026-03-12T00:00:00.000Z",
+      updatedAt: "2026-03-12T00:00:00.000Z",
+    };
+    upsertPluginTaskContextEntry(PLUGIN_TASK_DOMAIN_SKILLRUNNER, {
+      contextId: String(unknownRecord.id),
+      requestId: String(unknownRecord.requestId),
+      backendId: String(unknownRecord.backendId),
+      state: String(unknownRecord.state),
+      updatedAt: String(unknownRecord.updatedAt),
+      payload: JSON.stringify(unknownRecord),
+    });
 
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
       if (url.endsWith("/v1/jobs/req-restore-unknown")) {
@@ -377,14 +401,15 @@ describe("skillrunner task reconciler", function () {
     });
 
     await reconciler.reconcilePending();
-    const persisted = String(getPref("skillRunnerDeferredTasksJson") || "");
-    const parsed = JSON.parse(persisted || "{\"records\":[]}") as {
-      records?: Array<{ requestId?: string; state?: string }>;
-    };
-    const records = Array.isArray(parsed.records) ? parsed.records : [];
-    const matched = records.find((entry) => entry.requestId === "req-observed-waiting");
+    const persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+    const matched = persisted.find(
+      (entry) => entry.requestId === "req-observed-waiting",
+    );
     assert.isOk(matched);
-    assert.equal(matched?.state, "waiting_user");
+    const payload = JSON.parse(String(matched?.payload || "{}")) as {
+      state?: string;
+    };
+    assert.equal(payload.state, "waiting_user");
   });
 
   it("retries deferred apply after transient result fetch failure and then clears context", async function () {
@@ -443,20 +468,17 @@ describe("skillrunner task reconciler", function () {
     });
 
     await reconciler.reconcilePending();
-    let persisted = String(getPref("skillRunnerDeferredTasksJson") || "");
-    let parsed = JSON.parse(persisted || "{\"records\":[]}") as {
-      records?: Array<{ applyAttempt?: number }>;
+    let persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+    assert.lengthOf(persisted, 1);
+    let payload = JSON.parse(String(persisted[0]?.payload || "{}")) as {
+      applyAttempt?: number;
     };
-    assert.lengthOf(Array.isArray(parsed.records) ? parsed.records : [], 1);
-    assert.equal(parsed.records?.[0]?.applyAttempt, 1);
+    assert.equal(payload.applyAttempt, 1);
 
     forceApplyRetryDueNow(reconciler);
     await reconciler.reconcilePending();
-    persisted = String(getPref("skillRunnerDeferredTasksJson") || "");
-    parsed = JSON.parse(persisted || "{\"records\":[]}") as {
-      records?: unknown[];
-    };
-    assert.lengthOf(Array.isArray(parsed.records) ? parsed.records : [], 0);
+    persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+    assert.lengthOf(persisted, 0);
     assert.isAtLeast(resultAttempts, 2);
   });
 
@@ -681,11 +703,10 @@ describe("skillrunner task reconciler", function () {
       forceApplyRetryDueNow(reconciler);
     }
 
-    const persisted = String(getPref("skillRunnerDeferredTasksJson") || "");
-    const parsed = JSON.parse(persisted || "{\"records\":[]}") as {
-      records?: unknown[];
-    };
-    assert.lengthOf(Array.isArray(parsed.records) ? parsed.records : [], 0);
+    const persisted = listPluginTaskContextEntries(
+      PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    );
+    assert.lengthOf(persisted, 0);
     const tasks = listWorkflowTasks();
     assert.equal(tasks[0]?.state, "succeeded");
   });

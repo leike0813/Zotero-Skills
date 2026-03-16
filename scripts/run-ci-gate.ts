@@ -46,6 +46,14 @@ async function main() {
     process.exit(governanceCode);
     return;
   }
+  const ssotInvariantCode = await runNpmScript("check:ssot-invariants");
+  if (ssotInvariantCode !== 0) {
+    console.error(
+      `[ci-gate] gate=${gate} result=failed stage=check-ssot-invariants exitCode=${ssotInvariantCode} blocking=true`,
+    );
+    process.exit(ssotInvariantCode);
+    return;
+  }
   const exitCode = await runNpmScript(suiteCommand);
   if (exitCode !== 0) {
     console.error(

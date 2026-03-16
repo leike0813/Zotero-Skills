@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: SkillRunner backend reconcile gating MUST be backend-scoped
+### Requirement: SkillRunner backend reachability gating MUST be backend-scoped
 
 Plugin MUST maintain reachability/reconcile gating at backend level and apply it consistently to connection and UI entry points.
 
@@ -27,7 +27,7 @@ Plugin MUST maintain reachability/reconcile gating at backend level and apply it
 - **THEN** dashboard home running list MUST hide tasks belonging to that backend
 - **AND** hidden tasks MUST remain stored (no cleanup side effect)
 
-### Requirement: SkillRunner stream lifecycle MUST be bounded by state and selection
+### Requirement: SkillRunner stream lifecycle MUST be bounded by state and session ownership
 
 Plugin MUST minimize long-lived stream connections.
 
@@ -54,7 +54,7 @@ Plugin MUST NOT locally drive non-terminal transitions.
 - **AND** reconciler/jobs probes MUST NOT rewrite non-terminal state
 - **AND** terminal (`succeeded/failed/canceled`) MAY converge by jobs double-confirm when terminal event is absent
 
-### Requirement: SkillRunner task-state persistence MUST use plugin-scope SQLite
+### Requirement: Task-state persistence MUST use plugin-scope SQLite
 
 Task-state persistence MUST use plugin-scope SQLite tables instead of legacy prefs JSON runtime sources.
 

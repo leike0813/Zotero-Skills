@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: SkillRunner observation MUST follow backend jobs semantics as SSOT
+### Requirement: SkillRunner non-terminal state MUST remain observer-only
 
 Plugin MUST treat backend jobs semantics as the single truth for run state projection.
 
@@ -35,4 +35,3 @@ Plugin MUST treat backend jobs semantics as the single truth for run state proje
 - **THEN** plugin MUST run `events/history -> events SSE` for state channel
 - **AND** plugin MUST run `chat/history -> chat SSE` for display channel
 - **AND** sequence continuity MUST be preserved (no duplicate replay in final UI projection)
-

@@ -156,9 +156,13 @@ describe("workflow scan + registry integration", function () {
     assert.equal(state.workflowsDir, expectedDefault);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), expectedDefault);
     assert.notEqual(state.workflowsDir, getBuiltinWorkflowDir());
+    const expectedDefaultWithSlash = `${expectedDefault.replace(/\\/g, "/")}/`;
     assert.lengthOf(state.loaded.workflows, 0);
     assert.isTrue(
-      state.loaded.errors.every((entry) => !String(entry || "").includes(expectedDefault)),
+      state.loaded.errors.every((entry) => {
+        const normalized = String(entry || "").replace(/\\/g, "/");
+        return !normalized.includes(expectedDefaultWithSlash);
+      }),
       `errors=${JSON.stringify(state.loaded.errors)}`,
     );
   });

@@ -50,18 +50,39 @@ function isZoteroRuntime() {
 }
 
 async function readTextFile(filePath: string) {
-  if (isZoteroRuntime()) {
-    const io = (globalThis as { IOUtils: { readUTF8: (path: string) => Promise<string> } }).IOUtils;
+  const io = (
+    globalThis as {
+      IOUtils?: { readUTF8?: (path: string) => Promise<string> };
+    }
+  ).IOUtils;
+  if (typeof io?.readUTF8 === "function") {
     return io.readUTF8(filePath);
+  }
+  if (isZoteroRuntime()) {
+    const runtimeIo = (globalThis as {
+      IOUtils: { readUTF8: (path: string) => Promise<string> };
+    }).IOUtils;
+    return runtimeIo.readUTF8(filePath);
   }
   const fs = await dynamicImport("fs/promises");
   return fs.readFile(filePath, "utf8") as Promise<string>;
 }
 
 async function listDirectoryEntries(dirPath: string): Promise<string[]> {
-  if (isZoteroRuntime()) {
-    const io = (globalThis as { IOUtils: { getChildren: (path: string) => Promise<string[]> } }).IOUtils;
+  const io = (
+    globalThis as {
+      IOUtils?: { getChildren?: (path: string) => Promise<string[]> };
+    }
+  ).IOUtils;
+  if (typeof io?.getChildren === "function") {
     const children = await io.getChildren(dirPath);
+    return children.map((entryPath) => getBaseName(entryPath));
+  }
+  if (isZoteroRuntime()) {
+    const runtimeIo = (globalThis as {
+      IOUtils: { getChildren: (path: string) => Promise<string[]> };
+    }).IOUtils;
+    const children = await runtimeIo.getChildren(dirPath);
     return children.map((entryPath) => getBaseName(entryPath));
   }
   const fs = await dynamicImport("fs/promises");
@@ -69,9 +90,20 @@ async function listDirectoryEntries(dirPath: string): Promise<string[]> {
 }
 
 async function statPath(targetPath: string): Promise<{ isDirectory: boolean }> {
-  if (isZoteroRuntime()) {
-    const io = (globalThis as { IOUtils: { stat: (path: string) => Promise<{ type: string }> } }).IOUtils;
+  const io = (
+    globalThis as {
+      IOUtils?: { stat?: (path: string) => Promise<{ type: string }> };
+    }
+  ).IOUtils;
+  if (typeof io?.stat === "function") {
     const stat = await io.stat(targetPath);
+    return { isDirectory: stat.type === "directory" };
+  }
+  if (isZoteroRuntime()) {
+    const runtimeIo = (globalThis as {
+      IOUtils: { stat: (path: string) => Promise<{ type: string }> };
+    }).IOUtils;
+    const stat = await runtimeIo.stat(targetPath);
     return { isDirectory: stat.type === "directory" };
   }
   const fs = await dynamicImport("fs/promises");

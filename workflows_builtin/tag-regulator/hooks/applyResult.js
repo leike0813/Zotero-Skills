@@ -142,7 +142,13 @@ function clearChildren(node) {
 }
 
 function createHtmlElement(doc, tag) {
-  return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  if (doc && typeof doc.createElementNS === "function") {
+    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  }
+  if (doc && typeof doc.createElement === "function") {
+    return doc.createElement(tag);
+  }
+  throw new Error("document cannot create html element");
 }
 
 function resolveEditorHostBridge() {

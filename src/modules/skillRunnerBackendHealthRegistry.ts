@@ -16,7 +16,13 @@ export type SkillRunnerBackendHealthState = {
 
 const listeners = new Set<SkillRunnerBackendHealthListener>();
 const states = new Map<string, SkillRunnerBackendHealthState>();
-const BACKOFF_STEPS_MS = [5000, 15000, 60000] as const;
+export const SKILLRUNNER_BACKEND_PROBE_BACKOFF_STEPS_MS = [
+  5000,
+  15000,
+  60000,
+] as const;
+export const SKILLRUNNER_BACKEND_PROBE_FAILURE_THRESHOLD_FOR_GATE = 2;
+export const SKILLRUNNER_BACKEND_PROBE_SUCCESS_THRESHOLD_FOR_RECOVERY = 1;
 
 function nowIso() {
   return new Date().toISOString();
@@ -123,7 +129,8 @@ export function markSkillRunnerBackendHealthSuccess(backendId: string) {
   state.reconcileFlag = false;
   state.failureStreak = 0;
   state.backoffLevel = 0;
-  state.nextProbeAt = Date.now() + BACKOFF_STEPS_MS[0];
+  state.nextProbeAt =
+    Date.now() + SKILLRUNNER_BACKEND_PROBE_BACKOFF_STEPS_MS[0];
   state.lastError = undefined;
   state.updatedAt = nowIso();
   if (changed) {
@@ -143,13 +150,18 @@ export function markSkillRunnerBackendHealthFailure(args: {
   const previousFlag = state.reconcileFlag;
   const previousReachable = state.reachable;
   const nextFailureStreak = state.failureStreak + 1;
-  const nextLevel = Math.min(BACKOFF_STEPS_MS.length - 1, state.backoffLevel + 1);
-  const shouldFlag = nextFailureStreak >= 2;
+  const nextLevel = Math.min(
+    SKILLRUNNER_BACKEND_PROBE_BACKOFF_STEPS_MS.length - 1,
+    state.backoffLevel + 1,
+  );
+  const shouldFlag =
+    nextFailureStreak >= SKILLRUNNER_BACKEND_PROBE_FAILURE_THRESHOLD_FOR_GATE;
   state.reachable = !shouldFlag ? previousReachable : false;
   state.reconcileFlag = shouldFlag;
   state.failureStreak = nextFailureStreak;
   state.backoffLevel = nextLevel;
-  state.nextProbeAt = Date.now() + BACKOFF_STEPS_MS[nextLevel];
+  state.nextProbeAt =
+    Date.now() + SKILLRUNNER_BACKEND_PROBE_BACKOFF_STEPS_MS[nextLevel];
   state.lastError = normalizeString(
     args.error && typeof args.error === "object" && "message" in args.error
       ? (args.error as { message?: unknown }).message

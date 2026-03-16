@@ -1,123 +1,129 @@
-# SkillRunner Global Run Workspace Tabs SSOT (v3, Backend-Gated)
+# SkillRunner Global Run Workspace Tabs SSOT (Lockdown v4)
 
-## 1. Purpose
+## 1. Scope
 
-Define the singleton run workspace behavior under backend-level reconcile gating:
+This document defines run-workspace-side SSOT behavior under provider lockdown rules.
+It governs how the singleton run workspace consumes provider projection and stream outputs.
 
-- left workspace groups and right detail panel share one snapshot lineage
-- run dialog entry and interactivity are gated by backend health
-- chat stream ownership is strictly single-session
+- Workspace never owns provider truth.
+- Workspace renders unified snapshot + selected-session chat/pending views.
+- Backend reconcile gating is enforced before any interactive run path.
 
 ## 2. Data Sources
 
-### Status
+Status source:
 
-Read from ledger snapshot only (provider SSOT guarded writes).
+- unified request snapshot from provider ledger projection
 
-### Chat content
+Chat source:
 
-Read from jobs chat history/SSE only for currently selected session.
+- selected session only via jobs chat history/SSE
 
-### Pending interaction payload
+Pending source:
 
-Read from jobs pending endpoint.
-If refresh fails in waiting state, retain last-good payload until new valid payload arrives.
+- jobs pending endpoint for selected waiting session
+- on pending refresh failure, keep last-good pending view for current waiting session
 
-## 3. First Frame Contract
+## 3. Invariant Catalog (Workspace)
 
-Open session flow:
+### INV-WS-RUN-DIALOG-SINGLETON
 
-1. render status from ledger snapshot
-2. check backend reconcile flag
-3. if backend is flagged, block entering interactive run view and render explicit unavailable notice
-4. if backend is healthy, start selected-session chat stream
+- Trigger: opening run dialog from any entry.
+- Allowed: one singleton workspace window/tab context.
+- Forbidden: parallel run-dialog instances competing for session ownership.
+- Observability: open-run routing behavior and active workspace state.
 
-Refresh failure must not rewrite waiting state back to running.
+### INV-WS-CHAT-SSE-SINGLE-OWNER
 
-## 4. Stream Ownership Contract
+- Trigger: selected session changes or workspace closes.
+- Allowed:
+  - selected session owns chat stream
+  - previous session chat stream disconnects immediately.
+- Forbidden: multiple concurrent chat stream owners.
+- Observability: chat stream lifecycle events per selected session.
 
-### Chat stream
+### INV-WS-STATE-RENDER-FROM-LEDGER
 
-- at most one active chat stream globally
-- owned by current selected session in singleton run workspace
-- switching selected task disconnects old stream before connecting new stream
-- closing workspace disconnects stream immediately
+- Trigger: session view render and refresh.
+- Allowed: status label/banner derived from unified snapshot projection.
+- Forbidden: run dialog local speculative status transitions.
+- Observability: state update path `events -> ledger -> dialog subscriber -> snapshot`.
 
-### Event stream
+### INV-WS-BACKEND-FLAGGED-GROUP-DISABLED
 
-- event stream is external to workspace ownership and follows provider SSOT lifecycle (running-only)
-- workspace never creates duplicate event stream ownership loops
+- Trigger: backend `reconcileFlag=true`.
+- Allowed:
+  - backend group marked unavailable
+  - group non-interactive
+  - no task bubbles rendered
+  - open-run blocked with explicit notice.
+- Forbidden: flagged backend task becoming selectable/openable in workspace.
+- Observability: workspace groups snapshot and open-run guard.
 
-## 5. Backend-Flagged Group Contract
+### INV-WS-FIRST-FRAME-NO-FORCED-RUNNING
 
-For backend group with `reconcileFlag=true`:
+- Trigger: open session first frame after switch/restart.
+- Allowed: first frame status uses ledger snapshot.
+- Forbidden: failed refresh forcing waiting/terminal snapshot back to running.
+- Observability: first-frame render and refresh-failure branch.
 
-- group header shows unavailable marker
-- group cannot expand/collapse interactively
-- no task bubbles rendered in the group
-- clicking group has no navigation effect
+### INV-WS-PENDING-EDGE-RULES
 
-This prevents opening non-actionable run dialogs while backend is unreachable.
+- Trigger: waiting-edge transitions.
+- Allowed:
+  - non-waiting -> waiting edge triggers pending fetch
+  - waiting -> running/queued/terminal clears pending card
+  - fetch failure retains last-good pending while waiting.
+- Forbidden: immediate pending wipe on transient fetch failure.
+- Observability: pending card rendering state transitions.
 
-## 6. Dashboard and Workspace Consistency
+## 4. Backend Gating UX (Workspace View)
 
-For healthy backends:
+For backend with `reconcileFlag=true`:
 
-- same request status must match among:
-  - dashboard row
-  - workspace left bubble label
-  - run banner
+- workspace group is disabled and cannot expand/collapse interactively
+- no task bubbles under that backend
+- attempts to open run dialog are blocked
 
-For flagged backends:
+Consistency with dashboard:
 
-- dashboard home running list omits those tasks
-- workspace left group is disabled/no bubbles
-- run dialog entry is blocked
+- dashboard home running list hides flagged backend tasks
+- backend tab disabled semantics match workspace disabled semantics
 
-## 7. Restart Replay Contract
+## 5. Restart Replay Contract
 
 After plugin restart:
 
-1. running snapshots are reconnect candidates (if backend healthy)
+1. running snapshots are reconnect candidates (backend healthy only)
 2. waiting/terminal snapshots are not auto-streamed
-3. opening waiting session on healthy backend must restore waiting state and pending UI
-4. opening session on flagged backend is blocked with explicit reason
+3. opening waiting session on healthy backend restores waiting status + pending UI
+4. opening session on flagged backend is blocked
 
-## 8. Terminal Contract
+## 6. Terminal and Apply Note
 
-When terminal is confirmed:
+- workspace consumes terminal convergence from unified snapshot
+- terminal side effects are reconciler-owned, not workspace-owned
+- when terminal succeeds but context is missing, state converges and apply is skipped with explicit warning
 
-- workspace reflects terminal state from ledger
-- chat stream for that session disconnects
-- terminal side effects are handled by reconciler (not workspace)
-
-## 9. Sequence
+## 7. Sequence (Simplified)
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant WS as Workspace
+    participant WS as Run Workspace
     participant H as Backend Health
-    participant LD as Ledger
+    participant LD as Ledger Projection
     participant CH as Chat Stream
 
-    U->>WS: open task tab
-    WS->>LD: read snapshot
+    U->>WS: open session
+    WS->>LD: render first-frame snapshot
     WS->>H: check backend reconcileFlag
     alt backend flagged
-      WS-->>U: show backend unavailable notice
-      WS-->>U: no interactive run panel
+      WS-->>U: unavailable notice (blocked)
     else backend healthy
       WS->>CH: chat/history catch-up
       WS->>CH: chat SSE connect (selected session only)
+      LD-->>WS: state updates
       CH-->>WS: chat updates
-      LD-->>WS: status updates
     end
 ```
-
-## 10. Apply Trigger Note (Restart Recovery)
-
-- run/workspace UI still consumes unified snapshot lineage.
-- `succeeded` apply execution depends on reconciler recoverable context:
-  - context present: apply executes once
-  - context missing (legacy running task): state converges, apply skipped, warning shown

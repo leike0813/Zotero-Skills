@@ -32,6 +32,15 @@ function detectZoteroRuntime() {
   );
 }
 
+function compactError(error: unknown) {
+  const text = normalizeString(
+    error && typeof error === "object" && "message" in error
+      ? (error as { message?: unknown }).message
+      : error,
+  );
+  return text || "unknown error";
+}
+
 function ensureTrailingSlash(value: string) {
   if (!value) {
     return value;
@@ -270,12 +279,54 @@ async function readPackagedTextFromRuntime(args: {
   return response.text();
 }
 
+function getZoteroCurrentWorkingDir() {
+  const runtime = globalThis as {
+    Services?: {
+      dirsvc?: {
+        get?: (key: string, iface: unknown) => { path?: string };
+      };
+    };
+    Ci?: { nsIFile?: unknown };
+  };
+  try {
+    if (runtime.Services?.dirsvc?.get && runtime.Ci?.nsIFile) {
+      const file = runtime.Services.dirsvc.get("CurWorkD", runtime.Ci.nsIFile);
+      const path = normalizeString(file?.path);
+      if (path) {
+        return path;
+      }
+    }
+  } catch {
+    // noop
+  }
+  return "";
+}
+
+async function readPackagedTextFromZoteroWorkingDir(relativePath: string) {
+  const runtime = globalThis as {
+    IOUtils?: { readUTF8?: (path: string) => Promise<string> };
+  };
+  const readUTF8 = runtime.IOUtils?.readUTF8;
+  const cwd = getZoteroCurrentWorkingDir();
+  if (typeof readUTF8 !== "function" || !cwd) {
+    throw new Error("zotero working directory fallback is unavailable");
+  }
+  const sourcePath = joinPath(cwd, BUILTIN_WORKFLOW_ROOT, relativePath);
+  return readUTF8(sourcePath);
+}
+
 async function readPackagedText(args: { rootURI?: string; relativePath: string }) {
   if (detectZoteroRuntime()) {
     try {
       return await readPackagedTextFromRuntime(args);
-    } catch {
-      return readPackagedTextFromNode(args.relativePath);
+    } catch (runtimeError) {
+      try {
+        return await readPackagedTextFromZoteroWorkingDir(args.relativePath);
+      } catch (fallbackError) {
+        throw new Error(
+          `failed to read packaged builtin workflow resource: runtime=${compactError(runtimeError)}; cwd_fallback=${compactError(fallbackError)}`,
+        );
+      }
     }
   }
   return readPackagedTextFromNode(args.relativePath);

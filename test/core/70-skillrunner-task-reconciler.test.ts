@@ -9,6 +9,10 @@ import {
   SkillRunnerTaskReconciler,
 } from "../../src/modules/skillRunnerTaskReconciler";
 import {
+  getSkillRunnerBackendHealthState,
+  resetSkillRunnerBackendHealthRegistryForTests,
+} from "../../src/modules/skillRunnerBackendHealthRegistry";
+import {
   resetWorkflowTasks,
   listWorkflowTasks,
   recordWorkflowTaskUpdate,
@@ -29,6 +33,10 @@ function createJsonResponse(payload: unknown, status = 200): Response {
     text: async () => text,
     arrayBuffer: async () => new TextEncoder().encode(text).buffer,
   } as unknown as Response;
+}
+
+function isListRunsProbeUrl(url: string) {
+  return /\/v1\/system\/ping(?:\?|$)/.test(String(url || ""));
 }
 
 function makeDeferredJob(args?: {
@@ -134,6 +142,7 @@ describe("skillrunner task reconciler", function () {
     setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
     clearRuntimeLogs();
+    resetSkillRunnerBackendHealthRegistryForTests();
   });
 
   afterEach(function () {
@@ -142,6 +151,7 @@ describe("skillrunner task reconciler", function () {
     setPref("taskDashboardHistoryJson", "");
     resetWorkflowTasks();
     clearRuntimeLogs();
+    resetSkillRunnerBackendHealthRegistryForTests();
     setSkillRunnerBackendReconcileFailureToastEmitterForTests();
     setSkillRunnerTaskLifecycleToastEmitterForTests();
   });
@@ -168,6 +178,11 @@ describe("skillrunner task reconciler", function () {
 
   it("registers deferred task and clears persisted record after terminal reconcile", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-1")) {
         return createJsonResponse({
           request_id: "req-1",
@@ -320,9 +335,66 @@ describe("skillrunner task reconciler", function () {
     assert.equal(tasks[0].requestId, "req-restore-unknown");
   });
 
+  it("updates persisted non-terminal context state from observed backend state", async function () {
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-observed-waiting")) {
+        return createJsonResponse({
+          request_id: "req-observed-waiting",
+          status: "waiting_user",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-observed-waiting",
+        requestId: "req-observed-waiting",
+        state: "running",
+        fetchType: "result",
+      }),
+    });
+
+    await reconciler.reconcilePending();
+    const persisted = String(getPref("skillRunnerDeferredTasksJson") || "");
+    const parsed = JSON.parse(persisted || "{\"records\":[]}") as {
+      records?: Array<{ requestId?: string; state?: string }>;
+    };
+    const records = Array.isArray(parsed.records) ? parsed.records : [];
+    const matched = records.find((entry) => entry.requestId === "req-observed-waiting");
+    assert.isOk(matched);
+    assert.equal(matched?.state, "waiting_user");
+  });
+
   it("retries deferred apply after transient result fetch failure and then clears context", async function () {
     let resultAttempts = 0;
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-retry-success")) {
         return createJsonResponse({
           request_id: "req-retry-success",
@@ -390,6 +462,11 @@ describe("skillrunner task reconciler", function () {
 
   it("emits succeeded toast when interactive task reaches terminal succeeded and apply completes", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-toast-succeeded")) {
         return createJsonResponse({
           request_id: "req-toast-succeeded",
@@ -449,6 +526,11 @@ describe("skillrunner task reconciler", function () {
 
   it("emits failed toast when interactive task reaches terminal failed", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-toast-failed")) {
         return createJsonResponse({
           request_id: "req-toast-failed",
@@ -499,6 +581,11 @@ describe("skillrunner task reconciler", function () {
 
   it("emits canceled toast when interactive task reaches terminal canceled", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-toast-canceled")) {
         return createJsonResponse({
           request_id: "req-toast-canceled",
@@ -548,6 +635,11 @@ describe("skillrunner task reconciler", function () {
 
   it("stops apply retries after limit and drops deferred context", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
       if (url.endsWith("/v1/jobs/req-retry-exhausted")) {
         return createJsonResponse({
           request_id: "req-retry-exhausted",
@@ -680,6 +772,140 @@ describe("skillrunner task reconciler", function () {
     );
   });
 
+  it("reconciles running task to terminal failed after double-confirming backend terminal state", async function () {
+    recordWorkflowTaskUpdate(
+      makeDashboardJob({
+        id: "active-terminal-failed",
+        runId: "run-active-terminal-failed",
+        requestId: "req-terminal-failed",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    recordTaskDashboardHistoryFromJob(
+      makeDashboardJob({
+        id: "history-terminal-failed",
+        runId: "run-history-terminal-failed",
+        requestId: "req-terminal-failed",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+    let pollCount = 0;
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-terminal-failed")) {
+        pollCount += 1;
+        return createJsonResponse({
+          request_id: "req-terminal-failed",
+          status: "failed",
+          error: "backend hard terminated",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const result = await reconcileSkillRunnerBackendTaskLedgerOnce({
+      backend: {
+        id: "remote-skillrunner",
+        displayName: "Remote SkillRunner",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8031",
+        auth: { kind: "none" },
+      },
+      source: "startup",
+    });
+
+    assert.isTrue(result.ok);
+    assert.isAtLeast(pollCount, 2);
+    const task = listWorkflowTasks().find(
+      (entry) => entry.requestId === "req-terminal-failed",
+    );
+    assert.isOk(task);
+    assert.equal(task?.state, "failed");
+    assert.equal(task?.error, "backend hard terminated");
+    const historyRows = listTaskDashboardHistory({
+      backendId: "remote-skillrunner",
+      requestId: "req-terminal-failed",
+    });
+    assert.lengthOf(historyRows, 1);
+    assert.equal(historyRows[0].state, "failed");
+    assert.equal(historyRows[0].error, "backend hard terminated");
+    assert.lengthOf(toasts, 1);
+    assert.equal(toasts[0].state, "failed");
+    assert.equal(toasts[0].type, "error");
+  });
+
+  it("keeps running task unchanged when double-confirm terminal check is not stable", async function () {
+    recordWorkflowTaskUpdate(
+      makeDashboardJob({
+        id: "active-terminal-unstable",
+        runId: "run-active-terminal-unstable",
+        requestId: "req-terminal-unstable",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    recordTaskDashboardHistoryFromJob(
+      makeDashboardJob({
+        id: "history-terminal-unstable",
+        runId: "run-history-terminal-unstable",
+        requestId: "req-terminal-unstable",
+        state: "running",
+        backendId: "remote-skillrunner",
+        backendBaseUrl: "http://127.0.0.1:8031",
+      }),
+    );
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+    let pollCount = 0;
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (url.endsWith("/v1/jobs/req-terminal-unstable")) {
+        pollCount += 1;
+        return createJsonResponse({
+          request_id: "req-terminal-unstable",
+          status: pollCount === 1 ? "failed" : "running",
+          error: pollCount === 1 ? "transient terminal report" : null,
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const result = await reconcileSkillRunnerBackendTaskLedgerOnce({
+      backend: {
+        id: "remote-skillrunner",
+        displayName: "Remote SkillRunner",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8031",
+        auth: { kind: "none" },
+      },
+      source: "startup",
+    });
+
+    assert.isTrue(result.ok);
+    assert.equal(pollCount, 2);
+    const task = listWorkflowTasks().find(
+      (entry) => entry.requestId === "req-terminal-unstable",
+    );
+    assert.isOk(task);
+    assert.equal(task?.state, "running");
+    const historyRows = listTaskDashboardHistory({
+      backendId: "remote-skillrunner",
+      requestId: "req-terminal-unstable",
+    });
+    assert.lengthOf(historyRows, 1);
+    assert.equal(historyRows[0].state, "running");
+    assert.lengthOf(toasts, 0);
+  });
+
   it("reports toast when backend reconcile fails due to communication error", async function () {
     recordTaskDashboardHistoryFromJob(
       makeDashboardJob({
@@ -719,13 +945,12 @@ describe("skillrunner task reconciler", function () {
   it("throttles repeated backend-reconcile-failed logs when backend is unreachable", async function () {
     let networkDown = true;
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
-      if (url.endsWith("/v1/jobs/req-reconcile-throttle")) {
+      if (isListRunsProbeUrl(url)) {
         if (networkDown) {
           throw new TypeError("NetworkError when attempting to fetch resource.");
         }
         return createJsonResponse({
-          request_id: "req-reconcile-throttle",
-          status: "running",
+          data: [],
         });
       }
       return createJsonResponse({ error: "unexpected route" }, 404);
@@ -759,23 +984,135 @@ describe("skillrunner task reconciler", function () {
     await reconciler.reconcilePending();
     await reconciler.reconcilePending();
     let failedLogs = listRuntimeLogs({
-      operation: "backend-reconcile-failed",
+      operation: "backend-health-probe-failed",
       backendId: "skillrunner-local",
-      requestId: "req-reconcile-throttle",
       order: "asc",
     });
     assert.lengthOf(failedLogs, 1);
 
-    networkDown = false;
-    await reconciler.reconcilePending();
     networkDown = true;
     await reconciler.reconcilePending();
     failedLogs = listRuntimeLogs({
-      operation: "backend-reconcile-failed",
+      operation: "backend-health-probe-failed",
       backendId: "skillrunner-local",
-      requestId: "req-reconcile-throttle",
       order: "asc",
     });
-    assert.lengthOf(failedLogs, 2);
+    assert.lengthOf(failedLogs, 1);
+  });
+
+  it("degrades reconcile poll frequency after sustained failures and restores after recovery", async function () {
+    let networkDown = true;
+    let fetchCount = 0;
+    const previousBackendsPref = String(getPref("backendsConfigJson") || "");
+    setPref(
+      "backendsConfigJson",
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: "skillrunner-local",
+            displayName: "Local Backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+    );
+    const dateNowDescriptor = Object.getOwnPropertyDescriptor(Date, "now");
+    let fakeNow = Date.now();
+    Object.defineProperty(Date, "now", {
+      configurable: true,
+      value: () => fakeNow,
+    });
+    try {
+      (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+        if (isListRunsProbeUrl(url)) {
+          fetchCount += 1;
+          if (networkDown) {
+            throw new TypeError("NetworkError when attempting to fetch resource.");
+          }
+          return createJsonResponse({
+            data: [],
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-reconcile-backoff")) {
+          return createJsonResponse({
+            request_id: "req-reconcile-backoff",
+            status: "running",
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      };
+
+      const reconciler = new SkillRunnerTaskReconciler();
+      reconciler.registerFromJob({
+        workflowId: "literature-explainer",
+        workflowLabel: "Literature Explainer",
+        requestKind: "skillrunner.job.v1",
+        request: {
+          kind: "skillrunner.job.v1",
+          targetParentID: 123,
+        },
+        backend: {
+          id: "skillrunner-local",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        providerId: "skillrunner",
+        providerOptions: { engine: "gemini" },
+        job: makeDeferredJob({
+          id: "job-reconcile-backoff",
+          requestId: "req-reconcile-backoff",
+          state: "waiting_user",
+          fetchType: "result",
+        }),
+      });
+
+      const key = "skillrunner-local";
+
+      await reconciler.reconcilePending();
+      assert.isAtLeast(fetchCount, 1);
+      let health = getSkillRunnerBackendHealthState(key);
+      assert.isOk(health);
+      assert.equal(health?.backoffLevel, 1);
+      assert.isFalse(health?.reconcileFlag);
+      assert.isTrue((health?.nextProbeAt || 0) > fakeNow);
+      const countAfterFirstProbe = fetchCount;
+      await reconciler.reconcilePending();
+      assert.equal(fetchCount, countAfterFirstProbe);
+
+      fakeNow = (health?.nextProbeAt || fakeNow) + 1;
+      await reconciler.reconcilePending();
+      assert.isAbove(fetchCount, countAfterFirstProbe);
+      const countAfterSecondProbe = fetchCount;
+      health = getSkillRunnerBackendHealthState(key);
+      assert.equal(health?.backoffLevel, 2);
+      assert.isTrue(health?.reconcileFlag);
+
+      fakeNow = (health?.nextProbeAt || fakeNow) + 1;
+      await reconciler.reconcilePending();
+      assert.isAbove(fetchCount, countAfterSecondProbe);
+      const countAfterThirdProbe = fetchCount;
+      health = getSkillRunnerBackendHealthState(key);
+      assert.equal(health?.backoffLevel, 2);
+
+      await reconciler.reconcilePending();
+      assert.equal(fetchCount, countAfterThirdProbe);
+
+      fakeNow = (health?.nextProbeAt || fakeNow) + 1;
+      networkDown = false;
+      await reconciler.reconcilePending();
+      assert.isAbove(fetchCount, countAfterThirdProbe);
+      health = getSkillRunnerBackendHealthState(key);
+      assert.equal(health?.backoffLevel, 0);
+      assert.isFalse(health?.reconcileFlag);
+    } finally {
+      if (dateNowDescriptor) {
+        Object.defineProperty(Date, "now", dateNowDescriptor);
+      }
+      setPref("backendsConfigJson", previousBackendsPref);
+    }
   });
 });

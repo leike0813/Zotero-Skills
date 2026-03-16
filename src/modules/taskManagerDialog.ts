@@ -43,6 +43,10 @@ import {
   isWaiting,
   normalizeStatus,
 } from "./skillRunnerProviderStateMachine";
+import {
+  isSkillRunnerBackendReconcileFlagged,
+  subscribeSkillRunnerBackendHealth,
+} from "./skillRunnerBackendHealthRegistry";
 
 type DashboardState = {
   backends: BackendInstance[];
@@ -122,6 +126,8 @@ type DashboardSnapshot = {
     label: string;
     backendId?: string;
     backendType?: string;
+    disabled?: boolean;
+    disabledReason?: string;
   }>;
   summary: {
     total: number;
@@ -470,6 +476,39 @@ function isSkillRunnerBackend(backend: BackendInstance) {
   return String(backend.type || "").trim() === "skillrunner";
 }
 
+function isBackendReconcileFlagged(args: {
+  backendId?: string;
+  backendType?: string;
+}) {
+  const backendId = String(args.backendId || "").trim();
+  const backendType = String(args.backendType || "").trim().toLowerCase();
+  if (!backendId || backendType !== "skillrunner") {
+    return false;
+  }
+  return isSkillRunnerBackendReconcileFlagged(backendId);
+}
+
+function resolveBackendUnavailableMessageForDialog(args: {
+  backendId?: string;
+  backendDisplayName?: string;
+}) {
+  return localize(
+    "task-dashboard-skillrunner-backend-unavailable",
+    "Backend {backend} is temporarily unreachable. Please try again later.",
+    {
+      args: {
+        backend:
+          String(args.backendDisplayName || "").trim() ||
+          resolveBackendDisplayName(
+            String(args.backendId || "").trim(),
+            undefined,
+          ) ||
+          "-",
+      },
+    },
+  );
+}
+
 function resolveStatusLabel(state: string) {
   const normalized = normalizeStatus(state, "running");
   if (normalized === "queued") {
@@ -801,7 +840,7 @@ async function buildDashboardSnapshot(args: {
   active: WorkflowTaskRecord[];
 }) {
   const summary = summarizeTaskDashboardHistory(args.history);
-  const selectedTabKey = normalizeDashboardTabKey({
+  let selectedTabKey = normalizeDashboardTabKey({
     requestedTabKey: args.state.selectedTabKey,
     backends: args.backends,
   });
@@ -829,10 +868,30 @@ async function buildDashboardSnapshot(args: {
         backendMetaById,
       }),
     )
+    .filter(
+      (row) =>
+        !isBackendReconcileFlagged({
+          backendId: row.backendId,
+          backendType: row.backendType,
+        }),
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   let homeWorkflows: DashboardSnapshot["homeWorkflows"] = [];
   let homeWorkflowDocView: DashboardSnapshot["homeWorkflowDocView"] = undefined;
+  const selectedBackendFromRequestedTab = args.backends.find(
+    (entry) => entry.id === fromBackendTabKey(selectedTabKey),
+  );
+  if (
+    selectedBackendFromRequestedTab &&
+    isBackendReconcileFlagged({
+      backendId: selectedBackendFromRequestedTab.id,
+      backendType: selectedBackendFromRequestedTab.type,
+    })
+  ) {
+    selectedTabKey = "home";
+    args.state.selectedTabKey = "home";
+  }
   if (selectedTabKey === "home") {
     homeWorkflows = await buildHomeWorkflowSummaries({
       backends: args.backends,
@@ -1024,6 +1083,14 @@ async function buildDashboardSnapshot(args: {
       "task-dashboard-home-summary-title",
       "Task Summary",
     ),
+    backendUnavailable: localize(
+      "task-dashboard-skillrunner-backend-unavailable",
+      "Backend {backend} is temporarily unreachable. Please try again later.",
+    ),
+    backendUnavailableTag: localize(
+      "task-dashboard-backend-unavailable-tag",
+      "Unavailable",
+    ),
   };
 
   const tabs = [
@@ -1039,22 +1106,42 @@ async function buildDashboardSnapshot(args: {
       key: "runtime-logs",
       label: labels.runtimeLogsTabTitle,
     },
-    ...args.backends.map((backend) => ({
-      key: toBackendTabKey(backend.id),
-      label: `${resolveBackendDisplayName(backend.id, backend.displayName)} (${backend.type})`,
-      backendId: backend.id,
-      backendType: backend.type,
-    })),
+    ...args.backends.map((backend) => {
+      const backendId = String(backend.id || "").trim();
+      const backendType = String(backend.type || "").trim();
+      const backendDisplayName = resolveBackendDisplayName(
+        backend.id,
+        backend.displayName,
+      );
+      const disabled = isBackendReconcileFlagged({
+        backendId,
+        backendType,
+      });
+      return {
+        key: toBackendTabKey(backend.id),
+        label: `${backendDisplayName} (${backend.type})`,
+        backendId: backend.id,
+        backendType: backend.type,
+        disabled,
+        disabledReason: disabled
+          ? resolveBackendUnavailableMessageForDialog({
+              backendId,
+              backendDisplayName,
+            })
+          : undefined,
+      };
+    }),
   ];
 
-  const selectedBackendId = fromBackendTabKey(selectedTabKey);
+  const resolvedSelectedTabKey = args.state.selectedTabKey;
+  const selectedBackendId = fromBackendTabKey(resolvedSelectedTabKey);
   const selectedBackend = args.backends.find((entry) => entry.id === selectedBackendId);
 
   const snapshot: DashboardSnapshot = {
     generatedAt: new Date().toISOString(),
     title: localize("task-manager-title", "Task Dashboard"),
     labels,
-    selectedTabKey,
+    selectedTabKey: resolvedSelectedTabKey,
     tabs,
     summary: {
       total: summary.total,
@@ -1069,7 +1156,7 @@ async function buildDashboardSnapshot(args: {
     backendLoadError: args.state.backendLoadError,
   };
 
-  if (selectedTabKey === "workflow-options") {
+  if (resolvedSelectedTabKey === "workflow-options") {
     snapshot.workflowOptionsView = await buildWorkflowOptionsView({
       state: args.state,
       backends: args.backends,
@@ -1077,7 +1164,7 @@ async function buildDashboardSnapshot(args: {
     return snapshot;
   }
 
-  if (selectedTabKey === "runtime-logs") {
+  if (resolvedSelectedTabKey === "runtime-logs") {
     const { getRuntimeLogDiagnosticMode, snapshotRuntimeLogs } = await import(
       "./runtimeLogManager"
     );
@@ -1266,9 +1353,27 @@ export async function openTaskManagerDialog(args?: {
   cleanupTaskDashboardHistory();
 
   let unsubscribeTasks: (() => void) | undefined;
+  let unsubscribeBackendHealth: (() => void) | undefined;
   let refreshTimer: number | undefined;
   let frameWindow: Window | null = null;
   let removeMessageListener: (() => void) | undefined;
+
+  const refreshConfiguredBackends = async () => {
+    try {
+      const loaded = await loadBackendsRegistry();
+      const nextBackends = normalizeDashboardBackends({
+        configured: loaded.backends,
+        history: [],
+        active: [],
+      });
+      state.backends = nextBackends;
+      state.backendLoadError = loaded.fatalError
+        ? compactError(loaded.fatalError)
+        : undefined;
+    } catch (error) {
+      state.backendLoadError = compactError(error);
+    }
+  };
 
   const pushSnapshot = async (
     messageType: "dashboard:init" | "dashboard:snapshot",
@@ -1276,6 +1381,7 @@ export async function openTaskManagerDialog(args?: {
     if (!frameWindow) {
       return;
     }
+    await refreshConfiguredBackends();
     cleanupTaskDashboardHistory();
     const history = normalizeFilteredHistory();
     const active = normalizeFilteredActive();
@@ -1308,6 +1414,7 @@ export async function openTaskManagerDialog(args?: {
     | "user-action"
     | "periodic"
     | "task-update"
+    | "backend-health"
     | "backend-load"
     | "save-state";
   const shouldSkipRefresh = (reason: RefreshReason) => {
@@ -1334,6 +1441,35 @@ export async function openTaskManagerDialog(args?: {
     void enqueueRefresh("dashboard:snapshot");
   };
 
+  const ensureBackendInteractable = (backendIdRaw: unknown) => {
+    const backendId = String(backendIdRaw || "").trim();
+    if (!backendId) {
+      return true;
+    }
+    const backend = state.backends.find((entry) => entry.id === backendId);
+    if (!backend) {
+      return true;
+    }
+    if (
+      !isBackendReconcileFlagged({
+        backendId: backend.id,
+        backendType: backend.type,
+      })
+    ) {
+      return true;
+    }
+    taskManagerDialog?.window?.alert?.(
+      resolveBackendUnavailableMessageForDialog({
+        backendId: backend.id,
+        backendDisplayName: resolveBackendDisplayName(
+          backend.id,
+          backend.displayName,
+        ),
+      }),
+    );
+    return false;
+  };
+
   const handleAction = async (envelope: DashboardActionEnvelope) => {
     const action = String(envelope.action || "").trim();
     const payload = envelope.payload || {};
@@ -1345,7 +1481,12 @@ export async function openTaskManagerDialog(args?: {
       return;
     }
     if (action === "select-tab") {
-      state.selectedTabKey = String(payload.tabKey || "home").trim() || "home";
+      const requestedTabKey = String(payload.tabKey || "home").trim() || "home";
+      const requestedBackendId = fromBackendTabKey(requestedTabKey);
+      if (requestedBackendId && !ensureBackendInteractable(requestedBackendId)) {
+        return;
+      }
+      state.selectedTabKey = requestedTabKey;
       if (state.selectedTabKey !== "home") {
         state.homeWorkflowDocWorkflowId = "";
       }
@@ -1452,6 +1593,9 @@ export async function openTaskManagerDialog(args?: {
       if (!taskId || !backendId) {
         return;
       }
+      if (!ensureBackendInteractable(backendId)) {
+        return;
+      }
       const backend = state.backends.find((entry) => entry.id === backendId);
       const backendType = String(backend?.type || payloadBackendType).trim();
       if (backendType === "skillrunner") {
@@ -1487,6 +1631,9 @@ export async function openTaskManagerDialog(args?: {
     if (action === "view-logs" || action === "select-log-task") {
       const backendId = String(payload.backendId || "").trim();
       const taskId = String(payload.taskId || "").trim();
+      if (!ensureBackendInteractable(backendId)) {
+        return;
+      }
       if (backendId && taskId) {
         state.selectedTabKey = toBackendTabKey(backendId);
         state.selectedLogTaskByBackendId.set(backendId, taskId);
@@ -1498,6 +1645,9 @@ export async function openTaskManagerDialog(args?: {
     if (action === "open-log-diagnostics") {
       const backendId = String(payload.backendId || "").trim();
       const taskId = String(payload.taskId || "").trim();
+      if (!ensureBackendInteractable(backendId)) {
+        return;
+      }
       const backend = state.backends.find((entry) => entry.id === backendId);
       if (!backend || !taskId) {
         return;
@@ -1547,6 +1697,9 @@ export async function openTaskManagerDialog(args?: {
     if (action === "open-run") {
       const backendId = String(payload.backendId || "").trim();
       const requestId = String(payload.requestId || "").trim();
+      if (!ensureBackendInteractable(backendId)) {
+        return;
+      }
       if (backendId && requestId) {
         const backend = state.backends.find((entry) => entry.id === backendId);
         if (backend && isSkillRunnerBackend(backend)) {
@@ -1784,7 +1937,15 @@ export async function openTaskManagerDialog(args?: {
       };
       externalSelectTab = (next) => {
         if (typeof next.tabKey === "string" && next.tabKey.trim()) {
-          state.selectedTabKey = next.tabKey.trim();
+          const requestedTabKey = next.tabKey.trim();
+          const requestedBackendId = fromBackendTabKey(requestedTabKey);
+          if (
+            requestedBackendId &&
+            !ensureBackendInteractable(requestedBackendId)
+          ) {
+            return;
+          }
+          state.selectedTabKey = requestedTabKey;
           if (state.selectedTabKey !== "home") {
             state.homeWorkflowDocWorkflowId = "";
           }
@@ -1795,29 +1956,12 @@ export async function openTaskManagerDialog(args?: {
         refresh("user-action");
       };
 
-      void (async () => {
-        try {
-          const loaded = await loadBackendsRegistry();
-          const history = normalizeFilteredHistory();
-          const active = normalizeFilteredActive();
-          state.backends = normalizeDashboardBackends({
-            configured: loaded.backends,
-            history,
-            active,
-          });
-          state.backendLoadError = loaded.fatalError
-            ? compactError(loaded.fatalError)
-            : undefined;
-          refresh("backend-load");
-        } catch (error) {
-          state.backendLoadError = compactError(error);
-          refresh("backend-load");
-        }
-      })();
-
       refresh("init");
       unsubscribeTasks = subscribeWorkflowTasks(() => {
         refresh("task-update");
+      });
+      unsubscribeBackendHealth = subscribeSkillRunnerBackendHealth(() => {
+        refresh("backend-health");
       });
       refreshTimer = dialogWindow.setInterval(() => {
         refresh("periodic");
@@ -1831,6 +1975,10 @@ export async function openTaskManagerDialog(args?: {
       if (refreshTimer) {
         taskManagerDialog?.window?.clearInterval(refreshTimer);
         refreshTimer = undefined;
+      }
+      if (unsubscribeBackendHealth) {
+        unsubscribeBackendHealth();
+        unsubscribeBackendHealth = undefined;
       }
       if (removeMessageListener) {
         removeMessageListener();

@@ -76,7 +76,7 @@ async function main() {
   try {
     const fixtureSelection = await readSelectionFixture(rootDir);
     const selectionContext = normalizeAttachmentPaths(rootDir, fixtureSelection);
-    const loaded = await loadWorkflowManifests("workflows");
+    const loaded = await loadWorkflowManifests("workflows_builtin");
     const workflow = loaded.workflows.find(
       (entry) => entry.manifest.id === "literature-digest",
     );

@@ -28,6 +28,7 @@ Built-in workflows have moved to repository `workflows_builtin/` and must be del
   - `workflowDir` pref first
   - fallback to `<DataDirectory>/zotero-skills/workflows`.
 - `.env` `ZOTERO_PLUGIN_DATA_DIR` is only consumed by scaffold startup and eventually maps to `Zotero.DataDirectory.dir`.
+- Preferences keeps only stable user-directory guidance; built-in sync directory interpolation and placeholder hints are intentionally removed.
 
 ### Decision 2: Force-overwrite startup sync
 

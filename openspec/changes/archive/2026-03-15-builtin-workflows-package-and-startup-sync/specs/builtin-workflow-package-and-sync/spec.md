@@ -49,3 +49,12 @@ Dashboard home workflow bubbles MUST include a built-in marker for workflows who
 - **WHEN** user directory provides same-id workflow overriding built-in
 - **THEN** dashboard MUST treat effective source as user
 - **AND** built-in marker MUST NOT be shown for that workflow
+
+### Requirement: Preferences workflow path hints MUST avoid dynamic runtime placeholders
+
+Preferences workflow section MUST avoid rendering built-in sync path interpolation and placeholder copy that can drift from runtime data.
+
+#### Scenario: Workflow preferences render path hints
+- **WHEN** preferences workflow section is rendered
+- **THEN** it MUST keep only stable user workflow directory guidance
+- **AND** it MUST NOT render built-in sync directory placeholder interpolation

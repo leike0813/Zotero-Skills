@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import hooks from "../../src/hooks";
 import {
+  ensureDefaultWorkflowDirExistsOnStartup,
   getBuiltinWorkflowDir,
   getDefaultWorkflowDir,
   getEffectiveWorkflowDir,
@@ -10,7 +11,7 @@ import {
   rescanWorkflowRegistry,
 } from "../../src/modules/workflowRuntime";
 import { syncBuiltinWorkflowsOnStartup } from "../../src/modules/builtinWorkflowSync";
-import { joinPath, workflowsPath } from "./workflow-test-utils";
+import { existsPath, joinPath, workflowsPath } from "./workflow-test-utils";
 
 describe("workflow scan + registry integration", function () {
   const workflowDirPrefKey = `${config.prefsPrefix}.workflowDir`;
@@ -78,6 +79,18 @@ describe("workflow scan + registry integration", function () {
   });
 
   it("keeps user workflow dir default separate from built-in dir and registers literature-digest", async function () {
+    const processEnv =
+      (globalThis as { process?: { env?: Record<string, string | undefined> } })
+        .process?.env;
+    if (processEnv) {
+      delete processEnv.ZOTERO_TEST_WORKFLOW_DIR;
+    }
+    (
+      globalThis as {
+        __zoteroSkillsDisableWorkflowDirOverride?: boolean;
+      }
+    ).__zoteroSkillsDisableWorkflowDirOverride = true;
+
     await syncBuiltinWorkflowsOnStartup();
     const configuredDir = getDefaultWorkflowDir();
     assert.equal(getEffectiveWorkflowDir(), configuredDir);
@@ -108,7 +121,7 @@ describe("workflow scan + registry integration", function () {
     assert.equal(getWorkflowRegistryState().workflowsDir, configuredDir);
   });
 
-  it("does not fallback to built-in source directory when default user data directory has no workflows", async function () {
+  it("creates default user workflow directory on startup path and does not fallback to built-in source directory", async function () {
     const processEnv =
       (globalThis as { process?: { env?: Record<string, string | undefined> } })
         .process?.env;
@@ -128,27 +141,25 @@ describe("workflow scan + registry integration", function () {
 
     Zotero.Prefs.clear(workflowDirPrefKey, true);
 
-    const state = await rescanWorkflowRegistry();
     const expectedDefault = joinPath(
       (Zotero as unknown as { DataDirectory: { dir: string } }).DataDirectory.dir,
       "zotero-skills",
       "workflows",
     );
+    const created = await ensureDefaultWorkflowDirExistsOnStartup();
+    assert.isTrue(created || (await existsPath(expectedDefault)));
+    const existedAfter = await existsPath(expectedDefault);
+    assert.isTrue(existedAfter, `expected directory created: ${expectedDefault}`);
+
+    const state = await rescanWorkflowRegistry();
 
     assert.equal(state.workflowsDir, expectedDefault);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), expectedDefault);
     assert.notEqual(state.workflowsDir, getBuiltinWorkflowDir());
     assert.lengthOf(state.loaded.workflows, 0);
-    assert.isAtLeast(state.loaded.errors.length, 1);
     assert.isTrue(
-      state.loaded.errors.some((entry) => entry.includes(expectedDefault)),
+      state.loaded.errors.every((entry) => !String(entry || "").includes(expectedDefault)),
       `errors=${JSON.stringify(state.loaded.errors)}`,
-    );
-    assert.isTrue(
-      (state.loaded.diagnostics || []).some(
-        (entry) => entry.category === "scan_path_error",
-      ),
-      `diagnostics=${JSON.stringify(state.loaded.diagnostics || [])}`,
     );
   });
 

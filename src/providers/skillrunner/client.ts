@@ -665,6 +665,18 @@ export class SkillRunnerClient {
     });
   }
 
+  async getRunPending(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    return this.getJobState({
+      requestPath: "/v1/jobs/{request_id}/interaction/pending",
+      requestMethod: "GET",
+      requestId,
+    });
+  }
+
   async fetchRunBundle(args: { requestId: string }) {
     const requestId = String(args.requestId || "").trim();
     if (!requestId) {

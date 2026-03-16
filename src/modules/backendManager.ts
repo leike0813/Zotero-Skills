@@ -24,6 +24,9 @@ import {
   normalizeBackendDisplayName,
 } from "../backends/identity";
 import { MANAGED_LOCAL_BACKEND_ID } from "./skillRunnerLocalRuntimeConstants";
+import { stopSessionSync } from "./skillRunnerSessionSyncManager";
+import { untrackSkillRunnerBackendHealth } from "./skillRunnerBackendHealthRegistry";
+import { purgeSkillRunnerBackendReconcileState } from "./skillRunnerTaskReconciler";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const PROVIDER_SECTIONS = [
@@ -886,6 +889,13 @@ export function persistBackendsConfig(
     idMapping,
     removedIds,
   });
+  for (const removedId of removedIds.values()) {
+    stopSessionSync({
+      backendId: removedId,
+    });
+    purgeSkillRunnerBackendReconcileState(removedId);
+    untrackSkillRunnerBackendHealth(removedId);
+  }
   resolved.refreshWorkflowMenus();
 }
 

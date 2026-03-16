@@ -24,16 +24,17 @@
 
 ## 5. Path Governance & Test Semantics Alignment
 
-- [x] 5.1 Clarify built-in/user directory rules in docs and preferences help text
+- [x] 5.1 Clarify built-in/user directory rules in docs
 - [x] 5.2 Remove misleading test defaults that set user `workflowDir` to `workflows_builtin`
 - [x] 5.3 Add startup sync path-safety and fallback guarantees (same/nested guard + keep previous copy on replace failure)
 - [x] 5.4 Add builtin manifest consistency checker script (`check:builtin-workflow-manifest`)
+- [x] 5.5 Remove built-in sync directory and placeholder hints from preferences, including related i18n/placeholder interpolation logic
 
 ## 6. Validation
 
-- [ ] 6.1 Run `npx tsc --noEmit`
-- [ ] 6.2 Run targeted tests:
+- [x] 6.1 Run `npx tsc --noEmit`
+- [x] 6.2 Run targeted tests:
   - `test/core/41-workflow-scan-registration.test.ts`
   - `test/ui/01-startup-workflow-menu-init.test.ts`
   - `test/core/42-hooks-startup-template-cleanup.test.ts`
-- [ ] 6.3 Run `openspec validate --change \"builtin-workflows-package-and-startup-sync\" --strict`
+- [x] 6.3 Run `openspec validate --change \"builtin-workflows-package-and-startup-sync\" --strict`

@@ -9,10 +9,11 @@ We need a stable built-in delivery path that is version-bound to plugin releases
 - Package `workflows_builtin/**` into plugin release artifacts.
 - Add startup sync that force-overwrites local built-in workflow target directory.
 - Keep user workflow directory untouched.
-- Clarify runtime path semantics in docs/UI:
+- Clarify runtime path semantics in docs:
   - built-in target directory
   - user workflow directory default calculation
   - `.env` `ZOTERO_PLUGIN_DATA_DIR` -> `Zotero.DataDirectory.dir` runtime chain
+- Remove preferences hints that can drift from runtime reality (built-in sync directory interpolation and placeholder copy).
 - Upgrade workflow registry scanning from single-directory to dual-directory merge:
   - built-in directory + user `workflowDir`
   - user workflow keeps precedence on same workflow id.

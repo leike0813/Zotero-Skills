@@ -1,5 +1,10 @@
 import type { JobRecord, JobState } from "../jobQueue/manager";
 import { isActive, isTerminal } from "./skillRunnerProviderStateMachine";
+import {
+  PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+  listPluginTaskRowEntries,
+  replacePluginTaskRowEntries,
+} from "./pluginStateStore";
 
 export type WorkflowTaskRecord = {
   id: string;
@@ -26,6 +31,7 @@ type TaskListener = (tasks: WorkflowTaskRecord[]) => void;
 
 const taskRecords = new Map<string, WorkflowTaskRecord>();
 const listeners = new Set<TaskListener>();
+let hydratedFromStore = false;
 
 function normalizeMetaString(meta: Record<string, unknown>, key: string) {
   const value = meta[key];
@@ -99,17 +105,108 @@ function emitTasksChanged() {
   }
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parsePersistedTaskRecord(raw: unknown): WorkflowTaskRecord | null {
+  if (!isObject(raw)) {
+    return null;
+  }
+  const id = String(raw.id || "").trim();
+  const runId = String(raw.runId || "").trim();
+  const jobId = String(raw.jobId || "").trim();
+  const workflowId = String(raw.workflowId || "").trim();
+  const workflowLabel = String(raw.workflowLabel || "").trim();
+  const taskName = String(raw.taskName || "").trim();
+  const state = String(raw.state || "").trim() as JobState;
+  const createdAt = String(raw.createdAt || "").trim();
+  const updatedAt = String(raw.updatedAt || "").trim();
+  if (
+    !id ||
+    !runId ||
+    !jobId ||
+    !workflowId ||
+    !workflowLabel ||
+    !taskName ||
+    !state ||
+    !createdAt ||
+    !updatedAt
+  ) {
+    return null;
+  }
+  return {
+    id,
+    runId,
+    jobId,
+    requestId: String(raw.requestId || "").trim() || undefined,
+    engine: String(raw.engine || "").trim() || undefined,
+    workflowId,
+    workflowLabel,
+    taskName,
+    inputUnitIdentity: String(raw.inputUnitIdentity || "").trim() || undefined,
+    inputUnitLabel: String(raw.inputUnitLabel || "").trim() || undefined,
+    providerId: String(raw.providerId || "").trim() || undefined,
+    backendId: String(raw.backendId || "").trim() || undefined,
+    backendType: String(raw.backendType || "").trim() || undefined,
+    backendBaseUrl: String(raw.backendBaseUrl || "").trim() || undefined,
+    state,
+    error: String(raw.error || "").trim() || undefined,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function ensureHydratedFromStore() {
+  if (hydratedFromStore) {
+    return;
+  }
+  hydratedFromStore = true;
+  for (const row of listPluginTaskRowEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    "active",
+  )) {
+    try {
+      const parsed = parsePersistedTaskRecord(JSON.parse(String(row.payload || "{}")));
+      if (!parsed) {
+        continue;
+      }
+      taskRecords.set(parsed.id, parsed);
+    } catch {
+      continue;
+    }
+  }
+}
+
+function persistTaskRecordsToStore() {
+  replacePluginTaskRowEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    "active",
+    Array.from(taskRecords.values()).map((entry) => ({
+      taskId: String(entry.id || "").trim(),
+      requestId: String(entry.requestId || "").trim(),
+      backendId: String(entry.backendId || "").trim(),
+      state: String(entry.state || "").trim(),
+      updatedAt: String(entry.updatedAt || "").trim(),
+      payload: JSON.stringify(entry),
+    })),
+  );
+}
+
 function isFinishedState(state: JobState) {
   return isTerminal(state);
 }
 
 export function recordWorkflowTaskUpdate(job: JobRecord) {
+  ensureHydratedFromStore();
   const record = buildWorkflowTaskRecordFromJob(job);
   taskRecords.set(record.id, record);
+  persistTaskRecordsToStore();
   emitTasksChanged();
 }
 
 export function listWorkflowTasks() {
+  ensureHydratedFromStore();
   return Array.from(taskRecords.values())
     .map((entry) => ({ ...entry }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -120,6 +217,7 @@ export function listActiveWorkflowTasks() {
 }
 
 export function clearFinishedWorkflowTasks() {
+  ensureHydratedFromStore();
   let removed = false;
   for (const [id, record] of taskRecords.entries()) {
     if (!isFinishedState(record.state)) {
@@ -129,6 +227,7 @@ export function clearFinishedWorkflowTasks() {
     removed = true;
   }
   if (removed) {
+    persistTaskRecordsToStore();
     emitTasksChanged();
   }
 }
@@ -137,6 +236,7 @@ export function removeWorkflowTasksByBackendAndRequestIds(args: {
   backendId: string;
   requestIds: string[];
 }) {
+  ensureHydratedFromStore();
   const backendId = String(args.backendId || "").trim();
   const requestIdSet = new Set(
     (Array.isArray(args.requestIds) ? args.requestIds : [])
@@ -159,9 +259,55 @@ export function removeWorkflowTasksByBackendAndRequestIds(args: {
     removed += 1;
   }
   if (removed > 0) {
+    persistTaskRecordsToStore();
     emitTasksChanged();
   }
   return removed;
+}
+
+export function updateWorkflowTaskStateByRequest(args: {
+  backendId?: string;
+  requestId: string;
+  state: JobState;
+  error?: string;
+  updatedAt?: string;
+}) {
+  ensureHydratedFromStore();
+  const requestId = String(args.requestId || "").trim();
+  if (!requestId) {
+    return 0;
+  }
+  const backendId = String(args.backendId || "").trim();
+  const nextState = args.state;
+  const nextError = String(args.error || "").trim() || undefined;
+  const nextUpdatedAt = String(args.updatedAt || "").trim() || new Date().toISOString();
+  let updated = 0;
+  for (const [id, record] of taskRecords.entries()) {
+    if (String(record.requestId || "").trim() !== requestId) {
+      continue;
+    }
+    if (backendId && String(record.backendId || "").trim() !== backendId) {
+      continue;
+    }
+    if (
+      record.state === nextState &&
+      String(record.error || "").trim() === String(nextError || "").trim()
+    ) {
+      continue;
+    }
+    taskRecords.set(id, {
+      ...record,
+      state: nextState,
+      error: nextError,
+      updatedAt: nextUpdatedAt,
+    });
+    updated += 1;
+  }
+  if (updated > 0) {
+    persistTaskRecordsToStore();
+    emitTasksChanged();
+  }
+  return updated;
 }
 
 export function subscribeWorkflowTasks(listener: TaskListener) {
@@ -172,9 +318,12 @@ export function subscribeWorkflowTasks(listener: TaskListener) {
 }
 
 export function resetWorkflowTasks() {
+  ensureHydratedFromStore();
   if (taskRecords.size === 0) {
+    replacePluginTaskRowEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER, "active", []);
     return;
   }
   taskRecords.clear();
+  persistTaskRecordsToStore();
   emitTasksChanged();
 }

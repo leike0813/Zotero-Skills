@@ -6,6 +6,7 @@
     logsDetailScrollTop: 0,
     homeDocScrollTop: 0,
     homeRunningScrollTop: 0,
+    backendTaskScrollTopByTabKey: Object.create(null),
     homeDocWorkflowId: "",
     previousTabKey: null,
   };
@@ -130,6 +131,12 @@
     const tableWrap = el("div", "table-wrap");
     if (args.tableWrapClassName) {
       tableWrap.classList.add(args.tableWrapClassName);
+    }
+    if (typeof args.scrollKey === "string" && args.scrollKey.trim()) {
+      const scrollKey = args.scrollKey.trim();
+      tableWrap.addEventListener("scroll", function () {
+        state.backendTaskScrollTopByTabKey[scrollKey] = tableWrap.scrollTop || 0;
+      });
     }
     const table = document.createElement("table");
     if (args.tableClassName) {
@@ -547,6 +554,8 @@
       renderTaskTable({
         rows: backend.rows || [],
         labels,
+        tableWrapClassName: "backend-task-table-wrap",
+        scrollKey: snapshot.selectedTabKey,
         selectedId: backend.selectedLogTaskId,
         emptyText: backend.emptyRowsText || labels.backendNoTasks || labels.noHistory,
         onRowClick: (row) => {
@@ -594,6 +603,8 @@
         rows: backend.rows || [],
         labels,
         panelClassName: "skillrunner-task-panel",
+        tableWrapClassName: "backend-task-table-wrap",
+        scrollKey: snapshot.selectedTabKey,
         emptyText: backend.emptyRowsText || labels.backendNoTasks || labels.noHistory,
         columns: [
           labels.colTask,
@@ -1488,8 +1499,14 @@
         snapshot.selectedTabKey === "home" &&
         !snapshot.homeWorkflowDocView,
     );
+    const shouldRestoreBackendTaskScroll = Boolean(
+      snapshot &&
+        typeof snapshot.selectedTabKey === "string" &&
+        snapshot.selectedTabKey.indexOf("backend:") === 0,
+    );
     let previousHomeDocScrollTop = 0;
     let previousHomeRunningScrollTop = 0;
+    let previousBackendTaskScrollTop = 0;
     if (shouldRestoreHomeDocScroll) {
       const existingDoc = app.querySelector(".workflow-doc-content");
       const requestedWorkflowId = String(
@@ -1524,6 +1541,20 @@
         previousHomeRunningScrollTop = existingRunningWrap.scrollTop;
       } else if (Number.isFinite(state.homeRunningScrollTop)) {
         previousHomeRunningScrollTop = state.homeRunningScrollTop;
+      }
+    }
+    if (shouldRestoreBackendTaskScroll) {
+      const existingBackendWrap = app.querySelector(".backend-task-table-wrap");
+      const currentTabKey = String(snapshot.selectedTabKey || "").trim();
+      if (
+        existingBackendWrap &&
+        typeof existingBackendWrap.scrollTop === "number" &&
+        Number.isFinite(existingBackendWrap.scrollTop)
+      ) {
+        previousBackendTaskScrollTop = existingBackendWrap.scrollTop;
+      } else if (Number.isFinite(state.backendTaskScrollTopByTabKey[currentTabKey])) {
+        previousBackendTaskScrollTop =
+          state.backendTaskScrollTopByTabKey[currentTabKey];
       }
     }
     clearNode(app);
@@ -1602,16 +1633,31 @@
       tabs
         .filter((tab) => tab.key !== "home" && tab.key !== "workflow-options" && tab.key !== "runtime-logs")
         .forEach(function (tab) {
-        const btn = el("button", "tab-btn", tab.label || tab.key);
-        if (tab.key === snapshot.selectedTabKey) {
-          btn.classList.add("active");
-        }
-        btn.addEventListener("click", function () {
-          sendAction("select-tab", {
-            tabKey: tab.key,
-          });
-        });
-        sidebar.appendChild(btn);
+          const isDisabled = tab.disabled === true;
+          const btn = el("button", "tab-btn", tab.label || tab.key);
+          if (tab.key === snapshot.selectedTabKey) {
+            btn.classList.add("active");
+          }
+          if (isDisabled) {
+            btn.classList.add("disabled");
+            btn.disabled = true;
+            const unavailableTag = document.createElement("span");
+            unavailableTag.className = "tab-disabled-tag";
+            unavailableTag.textContent =
+              (snapshot.labels && snapshot.labels.backendUnavailableTag) ||
+              "Unavailable";
+            btn.appendChild(unavailableTag);
+            if (typeof tab.disabledReason === "string" && tab.disabledReason.trim()) {
+              btn.title = tab.disabledReason.trim();
+            }
+          } else {
+            btn.addEventListener("click", function () {
+              sendAction("select-tab", {
+                tabKey: tab.key,
+              });
+            });
+          }
+          sidebar.appendChild(btn);
         });
     }
     app.appendChild(sidebar);
@@ -1658,6 +1704,14 @@
       }
     } else if (snapshot.selectedTabKey !== "home" || snapshot.homeWorkflowDocView) {
       state.homeRunningScrollTop = 0;
+    }
+    if (shouldRestoreBackendTaskScroll && previousBackendTaskScrollTop > 0) {
+      const nextBackendWrap = main.querySelector(".backend-task-table-wrap");
+      if (nextBackendWrap) {
+        nextBackendWrap.scrollTop = previousBackendTaskScrollTop;
+        state.backendTaskScrollTopByTabKey[String(snapshot.selectedTabKey || "")] =
+          previousBackendTaskScrollTop;
+      }
     }
     
     // Synchronously restore scroll layout in the same frame for runtime logs

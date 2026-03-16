@@ -75,7 +75,7 @@
 - Backend Manager 为 `type=skillrunner` 的 profile 提供“进入管理页面”动作。
 - 插件在 Zotero 对话框内直接加载 `${baseUrl}/ui`，复用后端原生管理 UI。
 - 该能力与 provider 执行链解耦：不影响 `skillrunner.job.v1` 请求与执行语义。
-- Dashboard 内置 SkillRunner 观察页使用 `/v1/management/*` 读取 run/chat/pending 并支持 reply/cancel。
+- Dashboard 内置 SkillRunner 观察页使用 jobs 语义（`/v1/jobs/*`）读取 run/chat/pending 并支持 reply/cancel；management API 仅保留 run 列表与管理视图能力。
 - management API 的鉴权使用 backend profile 可选字段 `management_auth`（仅 SkillRunner）：
   - 支持 `none` 与 `basic`
   - 首次访问时可弹窗采集 basic 凭据

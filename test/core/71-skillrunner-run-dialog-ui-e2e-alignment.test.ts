@@ -37,8 +37,15 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     const hostTs = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
     assert.include(hostTs, "const refreshRunState = async () =>");
     assert.include(hostTs, "entry.refreshState = () =>");
-    assert.include(hostTs, "shouldRefreshRunDialogStateFromChatEvent(event)");
-    assert.include(hostTs, "await entry.refreshState();");
+    assert.include(hostTs, "entry.refreshDisplay = () =>");
+    assert.include(hostTs, "syncSessionStateFromLedger(entry)");
+    assert.include(hostTs, "subscribeSkillRunnerSessionState");
+    assert.include(hostTs, "await syncPendingState()");
+    assert.include(hostTs, "const hasStructuredPending =");
+    assert.include(hostTs, "ensureSkillRunnerSessionSync");
+    assert.include(hostTs, "streamRunChat");
+    assert.include(hostTs, "initialStatus: target.item.status");
+    assert.notInclude(hostTs, "runWorkspaceState.refreshTimer = dialogWindow.setInterval");
   });
 
   it("does not full-refresh root dom on every snapshot", async function () {

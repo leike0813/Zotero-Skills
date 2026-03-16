@@ -203,6 +203,55 @@ export function getEffectiveWorkflowDir() {
   return fallback;
 }
 
+export async function ensureDefaultWorkflowDirExistsOnStartup() {
+  const targetDir = String(getDefaultWorkflowDir() || "").trim();
+  if (!targetDir) {
+    return false;
+  }
+  const runtime = globalThis as {
+    IOUtils?: {
+      makeDirectory?: (
+        path: string,
+        options?: { createAncestors?: boolean },
+      ) => Promise<void>;
+    };
+  };
+  if (typeof runtime.IOUtils?.makeDirectory !== "function") {
+    const zoteroRuntime = globalThis as {
+      Zotero?: {
+        File?: {
+          pathToFile?: (path: string) => unknown;
+          createDirectoryIfMissingAsync?: (dir: unknown) => Promise<void>;
+        };
+      };
+    };
+    if (
+      typeof zoteroRuntime.Zotero?.File?.pathToFile === "function" &&
+      typeof zoteroRuntime.Zotero?.File?.createDirectoryIfMissingAsync ===
+        "function"
+    ) {
+      try {
+        const targetDirFile = zoteroRuntime.Zotero.File.pathToFile(targetDir);
+        await zoteroRuntime.Zotero.File.createDirectoryIfMissingAsync(
+          targetDirFile,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+  try {
+    await runtime.IOUtils.makeDirectory(targetDir, {
+      createAncestors: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function rescanWorkflowRegistry(args?: { workflowsDir?: string }) {
   const workflowsDir = String(args?.workflowsDir || getEffectiveWorkflowDir()).trim();
   const builtinWorkflowsDir = getBuiltinWorkflowDir();

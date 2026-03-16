@@ -68,10 +68,20 @@ body {
   overflow: hidden;
 }
 
+.workspace-group.is-disabled {
+  border-style: dashed;
+  border-color: #d4dbe7;
+  background: #f8fafc;
+}
+
 .workspace-group-header {
   width: 100%;
   border: none;
   border-bottom: 1px solid #e4eaf3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   background: #f3f7fd;
   color: #12315a;
   font: 600 12px/1.4 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -82,6 +92,35 @@ body {
 
 .workspace-group-header:hover {
   background: #eaf1fb;
+}
+
+.workspace-group-header:disabled {
+  cursor: not-allowed;
+  color: #64748b;
+  background: #eef2f7;
+}
+
+.workspace-group-disabled-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid #d9e2ef;
+  background: #ffffff;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.workspace-group-disabled-hint {
+  border: 1px dashed #d3dae6;
+  border-radius: 8px;
+  padding: 8px;
+  color: #64748b;
+  font-size: 11px;
+  background: #f8fafd;
 }
 
 .workspace-group-body {

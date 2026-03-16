@@ -175,6 +175,7 @@ export async function openWorkflowSettingsWebDialog(args: {
     workflow: args.workflow,
     draft: args.initialDraft,
     candidateBackends: args.candidateBackends,
+    autoSelectFallbackProfile: true,
   });
   let draft: WorkflowExecutionOptions = {
     backendId: descriptor.selectedProfile || undefined,
@@ -191,6 +192,12 @@ export async function openWorkflowSettingsWebDialog(args: {
     if (!frameWindow) {
       return;
     }
+    const draftBackendId = String(draft.backendId || "").trim();
+    const selectedProfile = descriptor.profiles.some(
+      (profile) => profile.id === draftBackendId,
+    )
+      ? draftBackendId
+      : descriptor.selectedProfile;
     const snapshot: WorkflowSettingsDialogSnapshot = {
       title: localize("workflow-settings-submit-title", "Workflow Settings"),
       labels: {
@@ -246,8 +253,7 @@ export async function openWorkflowSettingsWebDialog(args: {
         profileEditable: descriptor.profileEditable,
         profileMissing: descriptor.profileMissing,
         profiles: descriptor.profiles,
-        selectedProfile:
-          String(draft.backendId || "").trim() || descriptor.selectedProfile,
+        selectedProfile,
         workflowSchemaEntries: descriptor.workflowSchemaEntries,
         providerSchemaEntries: descriptor.providerSchemaEntries,
         workflowParams: { ...(draft.workflowParams || {}) },
@@ -270,7 +276,25 @@ export async function openWorkflowSettingsWebDialog(args: {
       workflow: args.workflow,
       draft,
       candidateBackends: args.candidateBackends,
+      autoSelectFallbackProfile: true,
     });
+    const draftBackendId = String(draft.backendId || "").trim();
+    if (!draftBackendId) {
+      if (descriptor.selectedProfile) {
+        draft = {
+          ...draft,
+          backendId: descriptor.selectedProfile,
+        };
+      }
+      return;
+    }
+    if (descriptor.profiles.some((profile) => profile.id === draftBackendId)) {
+      return;
+    }
+    draft = {
+      ...draft,
+      backendId: descriptor.selectedProfile || undefined,
+    };
   };
 
   const closeDialog = () => {

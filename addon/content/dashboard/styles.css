@@ -57,6 +57,10 @@ body {
 
 .tab-btn {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   text-align: left;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -75,6 +79,28 @@ body {
   background: var(--accent-soft);
   border-color: #c8d9ff;
   color: #12306b;
+}
+
+.tab-btn.disabled,
+.tab-btn:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  background: #eef2f7;
+  border-color: #d3dbe8;
+}
+
+.tab-disabled-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .main {

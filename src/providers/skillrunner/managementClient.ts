@@ -48,6 +48,15 @@ export type SkillRunnerManagementChatHistoryPayload = {
   source?: string;
 };
 
+export type SkillRunnerManagementEventHistoryPayload = {
+  request_id: string;
+  count: number;
+  events: Array<Record<string, unknown>>;
+  cursor_floor: number;
+  cursor_ceiling: number;
+  source?: string;
+};
+
 export type SkillRunnerManagementReplyPayload = {
   mode?: "interaction" | "auth";
   interaction_id?: number;
@@ -399,6 +408,24 @@ export class SkillRunnerManagementClient {
     } as SkillRunnerManagementRunList;
   }
 
+  async probeReachability() {
+    let lastError: unknown;
+    const methods: Array<"HEAD" | "GET"> = ["HEAD", "GET"];
+    for (const method of methods) {
+      try {
+        await this.requestWithAuthRetry({
+          method,
+          path: "/v1/system/ping",
+          expectJson: false,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("skillrunner reachability probe failed");
+  }
+
   async getRun(args: { requestId: string }) {
     const requestId = String(args.requestId || "").trim();
     if (!requestId) {
@@ -406,7 +433,7 @@ export class SkillRunnerManagementClient {
     }
     const body = await this.requestWithAuthRetry({
       method: "GET",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}`,
     });
     if (!isObject(body)) {
       throw new Error("management run detail response must be object");
@@ -432,7 +459,7 @@ export class SkillRunnerManagementClient {
     }
     const body = await this.requestWithAuthRetry({
       method: "GET",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}/chat/history`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/chat/history`,
       query,
     });
     if (!isObject(body)) {
@@ -451,6 +478,53 @@ export class SkillRunnerManagementClient {
     } as SkillRunnerManagementChatHistoryPayload;
   }
 
+  async listRunEventHistory(args: {
+    requestId: string;
+    fromSeq?: number;
+    toSeq?: number;
+    fromTs?: string;
+    toTs?: string;
+  }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    const query = new URLSearchParams();
+    if (typeof args.fromSeq === "number" && Number.isFinite(args.fromSeq)) {
+      query.set("from_seq", String(Math.max(0, Math.floor(args.fromSeq))));
+    }
+    if (typeof args.toSeq === "number" && Number.isFinite(args.toSeq)) {
+      query.set("to_seq", String(Math.max(0, Math.floor(args.toSeq))));
+    }
+    const fromTs = String(args.fromTs || "").trim();
+    if (fromTs) {
+      query.set("from_ts", fromTs);
+    }
+    const toTs = String(args.toTs || "").trim();
+    if (toTs) {
+      query.set("to_ts", toTs);
+    }
+    const body = await this.requestWithAuthRetry({
+      method: "GET",
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/events/history`,
+      query,
+    });
+    if (!isObject(body)) {
+      throw new Error("management events history response must be object");
+    }
+    const events = Array.isArray(body.events)
+      ? body.events.filter(isObject)
+      : [];
+    return {
+      request_id: String(body.request_id || requestId),
+      count: events.length,
+      events,
+      cursor_floor: Number(body.cursor_floor || 0),
+      cursor_ceiling: Number(body.cursor_ceiling || 0),
+      source: String(body.source || "unknown"),
+    } as SkillRunnerManagementEventHistoryPayload;
+  }
+
   async getPending(args: { requestId: string }) {
     const requestId = String(args.requestId || "").trim();
     if (!requestId) {
@@ -458,7 +532,7 @@ export class SkillRunnerManagementClient {
     }
     const body = await this.requestWithAuthRetry({
       method: "GET",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}/pending`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/interaction/pending`,
     });
     if (!isObject(body)) {
       throw new Error("management pending response must be object");
@@ -476,7 +550,7 @@ export class SkillRunnerManagementClient {
     }
     const body = await this.requestWithAuthRetry({
       method: "POST",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}/reply`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/interaction/reply`,
       headers: {
         "content-type": "application/json",
       },
@@ -495,7 +569,7 @@ export class SkillRunnerManagementClient {
     }
     const body = await this.requestWithAuthRetry({
       method: "POST",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}/cancel`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/cancel`,
       headers: {
         "content-type": "application/json",
       },
@@ -562,7 +636,34 @@ export class SkillRunnerManagementClient {
     query.set("cursor", String(cursor));
     const response = (await this.requestWithAuthRetry({
       method: "GET",
-      path: `/v1/management/runs/${encodeURIComponent(requestId)}/chat`,
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/chat`,
+      query,
+      headers: {
+        accept: "text/event-stream",
+      },
+      expectJson: false,
+    })) as Response;
+    await streamSseResponse({
+      response,
+      onFrame: args.onFrame,
+    });
+  }
+
+  async streamRunEvents(args: {
+    requestId: string;
+    cursor?: number;
+    onFrame: (frame: SkillRunnerManagementSseFrame) => void;
+  }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    const query = new URLSearchParams();
+    const cursor = Math.max(0, Math.floor(Number(args.cursor || 0)));
+    query.set("cursor", String(cursor));
+    const response = (await this.requestWithAuthRetry({
+      method: "GET",
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/events`,
       query,
       headers: {
         accept: "text/event-stream",

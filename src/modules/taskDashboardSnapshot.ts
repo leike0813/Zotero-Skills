@@ -64,12 +64,6 @@ export function normalizeDashboardBackends(args: {
     }
     map.set(backend.id, cloneBackend(backend));
   }
-  for (const record of args.history) {
-    appendSyntheticBackend(map, record);
-  }
-  for (const record of args.active) {
-    appendSyntheticBackend(map, record);
-  }
   return Array.from(map.values()).sort((a, b) => a.id.localeCompare(b.id));
 }
 

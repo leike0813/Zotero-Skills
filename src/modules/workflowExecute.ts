@@ -11,6 +11,7 @@ import {
 } from "./workflowSettings";
 import { openWorkflowSettingsWebDialog } from "./workflowSettingsWebDialog";
 import { loadBackendsRegistry } from "../backends/registry";
+import { isSkillRunnerBackendReconcileFlagged } from "./skillRunnerBackendHealthRegistry";
 import {
   emitWorkflowFinishSummary,
   emitWorkflowJobToasts,
@@ -35,15 +36,21 @@ export async function executeWorkflowFromCurrentSelection(args: {
     const candidateBackends = loadedBackends.fatalError
       ? []
       : loadedBackends.backends;
+    const submitVisibleBackends = candidateBackends.filter((backend) => {
+      if (String(backend.type || "").trim() !== "skillrunner") {
+        return true;
+      }
+      return !isSkillRunnerBackendReconcileFlagged(String(backend.id || "").trim());
+    });
     const configurable = await isWorkflowConfigurable({
       workflow: args.workflow,
-      candidateBackends,
+      candidateBackends: submitVisibleBackends,
     });
     if (configurable) {
       const dialogResult = await openWorkflowSettingsWebDialog({
         workflow: args.workflow,
         ownerWindow: args.win,
-        candidateBackends,
+        candidateBackends: submitVisibleBackends,
       });
       if (dialogResult.status !== "confirmed") {
         appendRuntimeLog({

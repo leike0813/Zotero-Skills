@@ -389,6 +389,8 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
   workflow: LoadedWorkflow;
   draft?: WorkflowExecutionOptions;
   candidateBackends?: BackendInstance[];
+  excludedBackendIds?: string[];
+  autoSelectFallbackProfile?: boolean;
 }): Promise<WorkflowSettingsUiDescriptor> {
   const providerId = resolveProviderId(args.workflow);
   const provider = resolveProviderById(providerId);
@@ -397,7 +399,22 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
     ? args.candidateBackends
     : await listBackendsForProvider(providerId);
   const availableBackends = rawCandidateBackends.filter(
-    (backend) => String(backend.type || "").trim() === providerId,
+    (backend) => {
+      if (String(backend.type || "").trim() !== providerId) {
+        return false;
+      }
+      const backendId = String(backend.id || "").trim();
+      if (!backendId) {
+        return false;
+      }
+      if (
+        Array.isArray(args.excludedBackendIds) &&
+        args.excludedBackendIds.some((id) => String(id || "").trim() === backendId)
+      ) {
+        return false;
+      }
+      return true;
+    },
   );
   const profiles = requiresBackendProfile
     ? availableBackends.map((backend) => ({
@@ -412,7 +429,7 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
     (profile) => profile.id === profileFromMerged,
   )
     ? profileFromMerged
-    : profiles.length === 1
+    : profiles.length === 1 || args.autoSelectFallbackProfile === true
       ? profiles[0].id
       : "";
   const selectedBackend = selectedProfile

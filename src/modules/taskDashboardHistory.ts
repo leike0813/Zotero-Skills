@@ -1,6 +1,5 @@
 import type { JobRecord } from "../jobQueue/manager";
 import { PASS_THROUGH_BACKEND_TYPE } from "../config/defaults";
-import { getPref, setPref } from "../utils/prefs";
 import {
   buildWorkflowTaskRecordFromJob,
   type WorkflowTaskRecord,
@@ -9,17 +8,16 @@ import {
   isKnownStatus,
   normalizeStatus,
 } from "./skillRunnerProviderStateMachine";
-
-const HISTORY_PREF_KEY = "taskDashboardHistoryJson";
+import {
+  PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+  listPluginTaskRowEntries,
+  replacePluginTaskRowEntries,
+} from "./pluginStateStore";
 const RETENTION_DAYS = 30;
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 export type TaskDashboardHistoryRecord = WorkflowTaskRecord & {
   archivedAt: string;
-};
-
-type DashboardHistoryDocument = {
-  records?: unknown;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -90,37 +88,36 @@ function parseHistoryRecord(raw: unknown): TaskDashboardHistoryRecord | null {
 }
 
 function readHistoryRecords(): TaskDashboardHistoryRecord[] {
-  const raw = String(getPref(HISTORY_PREF_KEY) || "").trim();
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(raw) as DashboardHistoryDocument | unknown[];
-    const rows = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.records)
-        ? parsed.records
-        : [];
-    const normalized: TaskDashboardHistoryRecord[] = [];
-    for (const row of rows) {
-      const parsedRecord = parseHistoryRecord(row);
+  const normalized: TaskDashboardHistoryRecord[] = [];
+  for (const row of listPluginTaskRowEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    "history",
+  )) {
+    try {
+      const parsedRecord = parseHistoryRecord(JSON.parse(String(row.payload || "{}")));
       if (!parsedRecord) {
         continue;
       }
       normalized.push(parsedRecord);
+    } catch {
+      continue;
     }
-    return normalized;
-  } catch {
-    return [];
   }
+  return normalized;
 }
 
 function writeHistoryRecords(records: TaskDashboardHistoryRecord[]) {
-  setPref(
-    HISTORY_PREF_KEY,
-    JSON.stringify({
-      records,
-    }),
+  replacePluginTaskRowEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    "history",
+    records.map((entry) => ({
+      taskId: String(entry.id || "").trim(),
+      requestId: String(entry.requestId || "").trim(),
+      backendId: String(entry.backendId || "").trim(),
+      state: String(entry.state || "").trim(),
+      updatedAt: String(entry.updatedAt || "").trim(),
+      payload: JSON.stringify(entry),
+    })),
   );
 }
 
@@ -213,6 +210,51 @@ export function removeTaskDashboardHistoryByBackendAndRequestIds(args: {
     writeHistoryRecords(after);
   }
   return removed;
+}
+
+export function updateTaskDashboardHistoryStateByRequest(args: {
+  backendId?: string;
+  requestId: string;
+  state: WorkflowTaskRecord["state"];
+  error?: string;
+  updatedAt?: string;
+}) {
+  const requestId = String(args.requestId || "").trim();
+  if (!requestId) {
+    return 0;
+  }
+  const backendId = String(args.backendId || "").trim();
+  const nextState = normalizeStatus(args.state) as WorkflowTaskRecord["state"];
+  const nextError = String(args.error || "").trim() || undefined;
+  const nextUpdatedAt = String(args.updatedAt || "").trim() || new Date().toISOString();
+  const before = readHistoryRecords();
+  let updated = 0;
+  const after = before.map((record) => {
+    if (String(record.requestId || "").trim() !== requestId) {
+      return record;
+    }
+    if (backendId && String(record.backendId || "").trim() !== backendId) {
+      return record;
+    }
+    if (
+      record.state === nextState &&
+      String(record.error || "").trim() === String(nextError || "").trim()
+    ) {
+      return record;
+    }
+    updated += 1;
+    return {
+      ...record,
+      state: nextState,
+      error: nextError,
+      updatedAt: nextUpdatedAt,
+      archivedAt: nextUpdatedAt,
+    };
+  });
+  if (updated > 0) {
+    writeHistoryRecords(after);
+  }
+  return updated;
 }
 
 export function resetTaskDashboardHistory() {

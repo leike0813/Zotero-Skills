@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import path from "path";
 
 type Child = ReturnType<typeof spawn>;
 type SpawnOptions = Parameters<typeof spawn>[2];
@@ -21,8 +22,9 @@ if (modeArg?.startsWith("-")) {
 const REQUESTED_TEST_MODE = modeArg || process.env.ZOTERO_TEST_MODE || "lite";
 const REQUESTED_TEST_DOMAIN =
   domainArg || process.env.ZOTERO_TEST_DOMAIN || "all";
+const DEFAULT_TEST_WORKFLOW_DIR = path.join(process.cwd(), "workflows_builtin");
 const TEST_WORKFLOW_DIR = String(
-  process.env.ZOTERO_TEST_WORKFLOW_DIR || "",
+  process.env.ZOTERO_TEST_WORKFLOW_DIR || DEFAULT_TEST_WORKFLOW_DIR,
 ).trim();
 
 function normalizeTestMode(value: string) {
@@ -167,7 +169,7 @@ async function main() {
   console.log(`[test-domain] ${TEST_DOMAIN}`);
   console.log(
     `[test-workflow-dir] ${
-      TEST_WORKFLOW_DIR || "(default from Zotero.DataDirectory/zotero-skills/workflows)"
+      TEST_WORKFLOW_DIR || "(default from project/workflows_builtin)"
     }`,
   );
 

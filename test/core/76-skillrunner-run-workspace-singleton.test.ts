@@ -17,8 +17,9 @@ describe("skillrunner run workspace singleton", function () {
 
   it("builds workspace groups with active/finished buckets and title fallback", async function () {
     const ts = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
-    assert.include(ts, "activeTasks: sorted.filter((task) => !task.terminal)");
-    assert.include(ts, "finishedTasks: sorted.filter((task) => task.terminal)");
+    assert.include(ts, "activeTasks: disabled ? [] : sorted.filter((task) => !task.terminal)");
+    assert.include(ts, "finishedTasks: disabled ? [] : sorted.filter((task) => task.terminal)");
+    assert.include(ts, "disabled = isSkillRunnerBackendReconcileFlagged");
     assert.include(ts, "resolveRunWorkspaceTaskTitle");
     assert.include(ts, "task-dashboard-run-waiting-request-id");
     assert.include(ts, "selectable: requestId.length > 0");
@@ -32,4 +33,3 @@ describe("skillrunner run workspace singleton", function () {
     assert.include(ts, "session,");
   });
 });
-

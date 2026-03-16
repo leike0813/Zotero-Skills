@@ -17,16 +17,19 @@ import {
   listTaskDashboardHistory,
   recordTaskDashboardHistoryFromJob,
   removeTaskDashboardHistoryByBackendAndRequestIds,
+  updateTaskDashboardHistoryStateByRequest,
 } from "./taskDashboardHistory";
 import {
   listActiveWorkflowTasks,
   recordWorkflowTaskUpdate,
   removeWorkflowTasksByBackendAndRequestIds,
+  type WorkflowTaskRecord,
+  updateWorkflowTaskStateByRequest,
 } from "./taskRuntime";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 import { localizeWorkflowText } from "./workflowExecution/messageFormatter";
 import { resolveTargetParentIDFromRequest } from "./workflowExecution/requestMeta";
-import { getPref, setPref } from "../utils/prefs";
+import { getPref } from "../utils/prefs";
 import {
   isTerminal,
   isWaiting,
@@ -37,12 +40,47 @@ import {
   type SkillRunnerStateEvent,
   type SkillRunnerStateMachineViolation,
 } from "./skillRunnerProviderStateMachine";
+import {
+  registerSkillRunnerRequestLedgerFromJob,
+  removeSkillRunnerRequestLedgerRecordsByBackendId,
+  updateSkillRunnerRequestLedgerSnapshot,
+} from "./skillRunnerRequestLedger";
+import {
+  ensureSkillRunnerSessionSync,
+  stopSessionSync,
+  stopAllSkillRunnerSessionSync,
+} from "./skillRunnerSessionSyncManager";
+import { loadBackendsRegistry } from "../backends/registry";
+import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
+import {
+  getSkillRunnerBackendHealthState,
+  isSkillRunnerBackendReconcileFlagged,
+  markSkillRunnerBackendHealthFailure,
+  markSkillRunnerBackendHealthSuccess,
+  pruneSkillRunnerBackendHealth,
+  registerSkillRunnerBackendForHealthTracking,
+  shouldProbeSkillRunnerBackendNow,
+} from "./skillRunnerBackendHealthRegistry";
+import {
+  PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+  listPluginTaskContextEntries,
+  replacePluginTaskContextEntries,
+} from "./pluginStateStore";
 
 type DeferredResultLike = {
   status?: unknown;
   requestId?: unknown;
   fetchType?: unknown;
   backendStatus?: unknown;
+};
+
+type MissingContextCandidate = {
+  backendId: string;
+  backendType: string;
+  backendBaseUrl: string;
+  requestId: string;
+  workflowLabel: string;
+  taskName: string;
 };
 
 type ReconcileContext = {
@@ -75,11 +113,7 @@ type ReconcileContext = {
   updatedAt: string;
 };
 
-type ReconcileDocument = {
-  records?: unknown;
-};
-
-const PREF_KEY = "skillRunnerDeferredTasksJson";
+const LOCAL_RUNTIME_STATE_PREF_KEY = "skillRunnerLocalRuntimeStateJson";
 const POLL_INTERVAL_MS = 1600;
 const BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS = 60000;
 const APPLY_MAX_ATTEMPTS = 5;
@@ -223,6 +257,271 @@ function collectRequestIdsForBackend(backendId: string) {
   return Array.from(requestIds.values());
 }
 
+function readManagedLocalBackendProbeCandidate():
+  | { backendId: string; baseUrl: string }
+  | null {
+  const raw = normalizeString(getPref(LOCAL_RUNTIME_STATE_PREF_KEY));
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as {
+      managedBackendId?: unknown;
+      baseUrl?: unknown;
+    };
+    const backendId = normalizeString(parsed.managedBackendId);
+    const baseUrl = normalizeString(parsed.baseUrl);
+    if (!backendId || !baseUrl) {
+      return null;
+    }
+    return {
+      backendId,
+      baseUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
+type TerminalJobState = Extract<JobState, "succeeded" | "failed" | "canceled">;
+
+type TaskLedgerRow = {
+  id: string;
+  runId: string;
+  jobId: string;
+  requestId?: string;
+  workflowId: string;
+  workflowLabel: string;
+  taskName: string;
+  inputUnitIdentity?: string;
+  inputUnitLabel?: string;
+  providerId?: string;
+  backendId?: string;
+  backendType?: string;
+  backendBaseUrl?: string;
+  state: JobState;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function resolveTerminalJobState(value: unknown): TerminalJobState | "" {
+  const normalized = normalizeStatus(value, "running");
+  if (normalized === "succeeded" || normalized === "failed" || normalized === "canceled") {
+    return normalized;
+  }
+  return "";
+}
+
+async function resolveDoubleConfirmedTerminalRunState(args: {
+  client: SkillRunnerClient;
+  requestId: string;
+  firstStatus?: unknown;
+  firstError?: unknown;
+}) {
+  let firstStatus = args.firstStatus;
+  let firstError = args.firstError;
+  if (firstStatus === undefined) {
+    const firstRunState = await args.client.getRunState({
+      requestId: args.requestId,
+    });
+    firstStatus = firstRunState.status;
+    firstError = firstRunState.error;
+  }
+  const firstState = resolveTerminalJobState(firstStatus);
+  if (!firstState) {
+    return null;
+  }
+  const normalizedFirstError = normalizeString(firstError) || undefined;
+  let second: Awaited<ReturnType<SkillRunnerClient["getRunState"]>>;
+  try {
+    second = await args.client.getRunState({
+      requestId: args.requestId,
+    });
+  } catch {
+    return null;
+  }
+  const secondState = resolveTerminalJobState(second.status);
+  if (!secondState || secondState !== firstState) {
+    return null;
+  }
+  return {
+    state: secondState,
+    error: normalizeString(second.error) || normalizedFirstError || undefined,
+  };
+}
+
+function buildJobRecordFromTaskLedgerRow(args: {
+  row: TaskLedgerRow;
+  state: JobState;
+  error?: string;
+}) {
+  const nextError = normalizeString(args.error) || undefined;
+  const requestId = normalizeString(args.row.requestId) || undefined;
+  return {
+    id: args.row.jobId,
+    workflowId: args.row.workflowId,
+    request: {},
+    meta: {
+      runId: args.row.runId,
+      workflowLabel: args.row.workflowLabel,
+      taskName: args.row.taskName,
+      inputUnitIdentity: args.row.inputUnitIdentity,
+      inputUnitLabel: args.row.inputUnitLabel,
+      providerId: args.row.providerId,
+      backendId: args.row.backendId,
+      backendType: args.row.backendType,
+      backendBaseUrl: args.row.backendBaseUrl,
+      requestId,
+      index: 0,
+    },
+    state: args.state,
+    error: nextError,
+    result: {
+      requestId,
+    },
+    createdAt: args.row.createdAt,
+    updatedAt: nowIso(),
+  } satisfies JobRecord;
+}
+
+function emitTerminalToastFromTaskLedgerRow(args: {
+  row: TaskLedgerRow;
+  state: TerminalJobState;
+  error?: string;
+}) {
+  const taskLabel =
+    normalizeString(args.row.taskName) ||
+    normalizeString(args.row.requestId) ||
+    normalizeString(args.row.jobId);
+  if (args.state === "succeeded") {
+    skillRunnerTaskLifecycleToastEmitter({
+      state: "succeeded",
+      text: localizeWorkflowText(
+        "workflow-execute-toast-job-success",
+        `Workflow ${args.row.workflowLabel} job 1/1 succeeded: ${taskLabel}`,
+        {
+          workflowLabel: args.row.workflowLabel,
+          taskLabel,
+          index: 1,
+          total: 1,
+        },
+      ),
+      type: "success",
+    });
+    return;
+  }
+  if (args.state === "failed") {
+    const reason =
+      normalizeString(args.error) ||
+      localizeWorkflowText("workflow-execute-unknown-error", "unknown error");
+    skillRunnerTaskLifecycleToastEmitter({
+      state: "failed",
+      text: localizeWorkflowText(
+        "workflow-execute-toast-job-failed",
+        `Workflow ${args.row.workflowLabel} job 1/1 failed: ${taskLabel} (${reason})`,
+        {
+          workflowLabel: args.row.workflowLabel,
+          taskLabel,
+          index: 1,
+          total: 1,
+          reason,
+        },
+      ),
+      type: "error",
+    });
+    return;
+  }
+  skillRunnerTaskLifecycleToastEmitter({
+    state: "canceled",
+    text: localizeWorkflowText(
+      "workflow-execute-toast-job-canceled",
+      `Workflow ${args.row.workflowLabel} job 1/1 canceled: ${taskLabel}`,
+      {
+        workflowLabel: args.row.workflowLabel,
+        taskLabel,
+        index: 1,
+        total: 1,
+      },
+    ),
+    type: "default",
+  });
+}
+
+function reconcileTerminalStateIntoTaskLedger(args: {
+  backendId: string;
+  requestId: string;
+  state: TerminalJobState;
+  error?: string;
+}) {
+  const normalizedBackendId = normalizeString(args.backendId);
+  const normalizedRequestId = normalizeString(args.requestId);
+  if (!normalizedBackendId || !normalizedRequestId) {
+    return {
+      updatedActiveCount: 0,
+      updatedHistoryCount: 0,
+    };
+  }
+
+  const activeRows = listActiveWorkflowTasks().filter((entry) => {
+    return (
+      normalizeString(entry.backendId) === normalizedBackendId &&
+      normalizeString(entry.requestId) === normalizedRequestId
+    );
+  });
+  let updatedActiveCount = 0;
+  for (const row of activeRows) {
+    if (
+      row.state === args.state &&
+      normalizeString(row.error) === normalizeString(args.error)
+    ) {
+      continue;
+    }
+    recordWorkflowTaskUpdate(
+      buildJobRecordFromTaskLedgerRow({
+        row,
+        state: args.state,
+        error: args.error,
+      }),
+    );
+    updatedActiveCount += 1;
+  }
+  if (updatedActiveCount > 0) {
+    emitTerminalToastFromTaskLedgerRow({
+      row: activeRows[0],
+      state: args.state,
+      error: args.error,
+    });
+  }
+
+  const historyRows = listTaskDashboardHistory({
+    backendId: normalizedBackendId,
+    requestId: normalizedRequestId,
+  });
+  let updatedHistoryCount = 0;
+  for (const row of historyRows) {
+    if (
+      row.state === args.state &&
+      normalizeString(row.error) === normalizeString(args.error)
+    ) {
+      continue;
+    }
+    recordTaskDashboardHistoryFromJob(
+      buildJobRecordFromTaskLedgerRow({
+        row,
+        state: args.state,
+        error: args.error,
+      }),
+    );
+    updatedHistoryCount += 1;
+  }
+
+  return {
+    updatedActiveCount,
+    updatedHistoryCount,
+  };
+}
+
 function appendStateMachineWarning(args: {
   workflowId?: string;
   jobId?: string;
@@ -256,6 +555,36 @@ export function mapSkillRunnerBackendStatusToJobState(
   fallback: JobState = "running",
 ): JobState {
   return normalizeStatus(status, fallback);
+}
+
+function resolveFetchTypeForContext(args: {
+  request: unknown;
+  deferred: DeferredResultLike;
+  existing?: ReconcileContext;
+}) {
+  const requestFetchType =
+    args.request &&
+    typeof args.request === "object" &&
+    !Array.isArray(args.request)
+      ? normalizeString((args.request as { fetch_type?: unknown }).fetch_type)
+      : "";
+  if (requestFetchType === "result") {
+    return "result" as const;
+  }
+  if (requestFetchType === "bundle") {
+    return "bundle" as const;
+  }
+  const deferredFetchType = normalizeString(args.deferred.fetchType);
+  if (deferredFetchType === "result") {
+    return "result" as const;
+  }
+  if (deferredFetchType === "bundle") {
+    return "bundle" as const;
+  }
+  if (args.existing?.fetchType === "result") {
+    return "result" as const;
+  }
+  return "bundle" as const;
 }
 
 function isTerminalState(state: JobState) {
@@ -397,37 +726,34 @@ function contextToJobRecord(context: ReconcileContext): JobRecord {
 }
 
 function readPersistedContexts() {
-  const raw = normalizeString(getPref(PREF_KEY));
-  if (!raw) {
-    return [] as ReconcileContext[];
-  }
-  try {
-    const parsed = JSON.parse(raw) as ReconcileDocument | unknown[];
-    const rows = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.records)
-        ? parsed.records
-        : [];
-    const normalized: ReconcileContext[] = [];
-    for (const row of rows) {
-      const context = parseContext(row);
+  const normalized: ReconcileContext[] = [];
+  for (const row of listPluginTaskContextEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+  )) {
+    try {
+      const context = parseContext(JSON.parse(String(row.payload || "{}")));
       if (!context) {
         continue;
       }
       normalized.push(context);
+    } catch {
+      continue;
     }
-    return normalized;
-  } catch {
-    return [] as ReconcileContext[];
   }
+  return normalized;
 }
 
 function writePersistedContexts(records: ReconcileContext[]) {
-  setPref(
-    PREF_KEY,
-    JSON.stringify({
-      records,
-    }),
+  replacePluginTaskContextEntries(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    records.map((entry) => ({
+      contextId: normalizeString(entry.id),
+      requestId: normalizeString(entry.requestId),
+      backendId: normalizeString(entry.backendId),
+      state: normalizeString(entry.state),
+      updatedAt: normalizeString(entry.updatedAt) || nowIso(),
+      payload: JSON.stringify(entry),
+    })),
   );
 }
 
@@ -482,15 +808,26 @@ export async function reconcileSkillRunnerBackendTaskLedgerOnce(args: {
     };
   }
   const missingRequestIds: string[] = [];
+  const terminalConfirmedByRequestId = new Map<
+    string,
+    {
+      state: TerminalJobState;
+      error?: string;
+    }
+  >();
   try {
     const client = new SkillRunnerClient({
       baseUrl,
     });
     for (const requestId of requestIds) {
       try {
-        await client.getRunState({
+        const terminalRunState = await resolveDoubleConfirmedTerminalRunState({
+          client,
           requestId,
         });
+        if (terminalRunState) {
+          terminalConfirmedByRequestId.set(requestId, terminalRunState);
+        }
       } catch (error) {
         const status = extractHttpStatusFromError(error);
         if (status === 404) {
@@ -508,6 +845,22 @@ export async function reconcileSkillRunnerBackendTaskLedgerOnce(args: {
       backendId,
       requestIds: missingRequestIds,
     });
+    let reconciledTerminalActiveCount = 0;
+    let reconciledTerminalHistoryCount = 0;
+    const reconciledTerminalRequestIds: string[] = [];
+    for (const [requestId, terminalState] of terminalConfirmedByRequestId.entries()) {
+      const reconciled = reconcileTerminalStateIntoTaskLedger({
+        backendId,
+        requestId,
+        state: terminalState.state,
+        error: terminalState.error,
+      });
+      if (reconciled.updatedActiveCount > 0 || reconciled.updatedHistoryCount > 0) {
+        reconciledTerminalRequestIds.push(requestId);
+      }
+      reconciledTerminalActiveCount += reconciled.updatedActiveCount;
+      reconciledTerminalHistoryCount += reconciled.updatedHistoryCount;
+    }
     appendRuntimeLog({
       level: "info",
       scope: "provider",
@@ -525,6 +878,9 @@ export async function reconcileSkillRunnerBackendTaskLedgerOnce(args: {
         missingRequestIds,
         removedActiveCount,
         removedHistoryCount,
+        reconciledTerminalRequestIds,
+        reconciledTerminalActiveCount,
+        reconciledTerminalHistoryCount,
       },
     });
     return {
@@ -601,6 +957,220 @@ export class SkillRunnerTaskReconciler {
 
   private isReconciling = false;
 
+  private applySnapshotToTaskStores(args: {
+    context: ReconcileContext;
+    state: JobState;
+    error?: string;
+    updatedAt?: string;
+  }) {
+    const updatedAt = normalizeString(args.updatedAt) || nowIso();
+    updateWorkflowTaskStateByRequest({
+      backendId: args.context.backendId,
+      requestId: args.context.requestId,
+      state: args.state,
+      error: args.error,
+      updatedAt,
+    });
+    updateTaskDashboardHistoryStateByRequest({
+      backendId: args.context.backendId,
+      requestId: args.context.requestId,
+      state: args.state,
+      error: args.error,
+      updatedAt,
+    });
+  }
+
+  private buildMissingContextCandidates() {
+    const existingKeys = new Set<string>();
+    for (const context of this.contexts.values()) {
+      const requestId = normalizeString(context.requestId);
+      const backendId = normalizeString(context.backendId);
+      if (!requestId || !backendId) {
+        continue;
+      }
+      existingKeys.add(`${backendId}:${requestId}`);
+    }
+    const candidates = new Map<string, MissingContextCandidate>();
+    for (const row of listActiveWorkflowTasks()) {
+      if (normalizeString(row.backendType) !== "skillrunner") {
+        continue;
+      }
+      if (normalizeStatus(row.state, "running") !== "running") {
+        continue;
+      }
+      const backendId = normalizeString(row.backendId);
+      const requestId = normalizeString(row.requestId);
+      const backendBaseUrl = normalizeString(row.backendBaseUrl);
+      if (!backendId || !requestId || !backendBaseUrl) {
+        continue;
+      }
+      const key = `${backendId}:${requestId}`;
+      if (existingKeys.has(key)) {
+        continue;
+      }
+      candidates.set(key, {
+        backendId,
+        backendType: normalizeString(row.backendType) || "skillrunner",
+        backendBaseUrl,
+        requestId,
+        workflowLabel: normalizeString(row.workflowLabel) || normalizeString(row.workflowId),
+        taskName: normalizeString(row.taskName) || normalizeString(row.jobId) || requestId,
+      });
+    }
+    return Array.from(candidates.values());
+  }
+
+  private async reconcileMissingContextCandidate(candidate: MissingContextCandidate) {
+    if (isSkillRunnerBackendReconcileFlagged(candidate.backendId)) {
+      return;
+    }
+    if (!getSkillRunnerBackendHealthState(candidate.backendId)) {
+      return;
+    }
+    const client = new SkillRunnerClient({
+      baseUrl: candidate.backendBaseUrl,
+    });
+    const runState = await client.getRunState({
+      requestId: candidate.requestId,
+    });
+    const observed = normalizeStatusWithGuard({
+      value: runState.status,
+      fallback: "running",
+      requestId: candidate.requestId,
+    });
+    if (!isTerminal(observed.status)) {
+      const updatedAt = nowIso();
+      const nextState = normalizeStatus(observed.status, "running");
+      const nextError = normalizeString(runState.error) || undefined;
+      updateWorkflowTaskStateByRequest({
+        backendId: candidate.backendId,
+        requestId: candidate.requestId,
+        state: nextState,
+        error: nextError,
+        updatedAt,
+      });
+      updateTaskDashboardHistoryStateByRequest({
+        backendId: candidate.backendId,
+        requestId: candidate.requestId,
+        state: nextState,
+        error: nextError,
+        updatedAt,
+      });
+      return;
+    }
+    const confirmedTerminal = await resolveDoubleConfirmedTerminalRunState({
+      client,
+      requestId: candidate.requestId,
+      firstStatus: runState.status,
+      firstError: runState.error,
+    });
+    if (!confirmedTerminal) {
+      return;
+    }
+    const terminalState = normalizeStatus(confirmedTerminal.state, "running");
+    const terminalError = normalizeString(confirmedTerminal.error) || undefined;
+    updateWorkflowTaskStateByRequest({
+      backendId: candidate.backendId,
+      requestId: candidate.requestId,
+      state: terminalState,
+      error: terminalError,
+      updatedAt: nowIso(),
+    });
+    updateTaskDashboardHistoryStateByRequest({
+      backendId: candidate.backendId,
+      requestId: candidate.requestId,
+      state: terminalState,
+      error: terminalError,
+      updatedAt: nowIso(),
+    });
+    if (terminalState === "succeeded") {
+      appendRuntimeLog({
+        level: "warn",
+        scope: "job",
+        workflowId: undefined,
+        backendId: candidate.backendId,
+        backendType: candidate.backendType,
+        providerId: "skillrunner",
+        requestId: candidate.requestId,
+        component: "skillrunner-reconciler",
+        operation: "terminal-succeeded-missing-context",
+        phase: "terminal",
+        stage: "terminal-succeeded-missing-context",
+        message: "terminal succeeded but apply skipped due to missing recoverable context",
+        details: {
+          reason: "missing-context",
+          workflowLabel: candidate.workflowLabel,
+          taskName: candidate.taskName,
+        },
+      });
+      showWorkflowToast({
+        type: "default",
+        text: localizeWorkflowText(
+          "workflow-execute-toast-missing-context-apply-skipped",
+          "Task completed, but context was missing after restart so result could not be applied automatically. Please rerun this task.",
+        ),
+      });
+    }
+  }
+
+  private async reconcileMissingContextRunningTasks() {
+    const candidates = this.buildMissingContextCandidates();
+    for (const candidate of candidates) {
+      try {
+        await this.reconcileMissingContextCandidate(candidate);
+      } catch (error) {
+        appendRuntimeLog({
+          level: "warn",
+          scope: "job",
+          backendId: candidate.backendId,
+          backendType: candidate.backendType,
+          providerId: "skillrunner",
+          requestId: candidate.requestId,
+          component: "skillrunner-reconciler",
+          operation: "missing-context-reconcile-failed",
+          phase: "reconcile",
+          stage: "missing-context-reconcile-failed",
+          message: "missing-context running task reconcile failed; will retry",
+          error,
+        });
+      }
+    }
+  }
+
+  private ensureRunningSessionSync(context: ReconcileContext) {
+    const normalizedState = normalizeStatus(context.state, "running");
+    if (normalizedState !== "running" && normalizedState !== "queued") {
+      stopSessionSync({
+        backendId: context.backendId,
+        requestId: context.requestId,
+      });
+      return;
+    }
+    if (!getSkillRunnerBackendHealthState(context.backendId)) {
+      stopSessionSync({
+        backendId: context.backendId,
+        requestId: context.requestId,
+      });
+      return;
+    }
+    if (isSkillRunnerBackendReconcileFlagged(context.backendId)) {
+      stopSessionSync({
+        backendId: context.backendId,
+        requestId: context.requestId,
+      });
+      return;
+    }
+    ensureSkillRunnerSessionSync({
+      backend: {
+        id: context.backendId,
+        type: context.backendType,
+        baseUrl: context.backendBaseUrl,
+        displayName: undefined,
+      } as BackendInstance,
+      requestId: context.requestId,
+    });
+  }
+
   private logTransitionViolation(context: ReconcileContext, violation?: SkillRunnerStateMachineViolation) {
     appendStateMachineWarning({
       workflowId: context.workflowId,
@@ -635,6 +1205,117 @@ export class SkillRunnerTaskReconciler {
     this.reportedViolationKeysByContext.set(context.id, reported);
   }
 
+  private async refreshTrackedBackendHealth() {
+    let loadedBackends: BackendInstance[] = [];
+    try {
+      const loaded = await loadBackendsRegistry();
+      if (!loaded.fatalError) {
+        loadedBackends = loaded.backends.filter(
+          (entry) => normalizeString(entry.type) === "skillrunner",
+        );
+      }
+    } catch {
+      loadedBackends = [];
+    }
+    const backendIds = new Set<string>();
+    for (const backend of loadedBackends) {
+      const backendId = normalizeString(backend.id);
+      if (!backendId) {
+        continue;
+      }
+      backendIds.add(backendId);
+      registerSkillRunnerBackendForHealthTracking(backendId);
+    }
+    const managedLocalCandidate = readManagedLocalBackendProbeCandidate();
+    if (
+      managedLocalCandidate &&
+      !backendIds.has(managedLocalCandidate.backendId)
+    ) {
+      const syntheticManagedLocalBackend: BackendInstance = {
+        id: managedLocalCandidate.backendId,
+        type: "skillrunner",
+        baseUrl: managedLocalCandidate.baseUrl,
+        auth: { kind: "none" },
+      };
+      loadedBackends.push(syntheticManagedLocalBackend);
+      backendIds.add(managedLocalCandidate.backendId);
+      registerSkillRunnerBackendForHealthTracking(
+        managedLocalCandidate.backendId,
+      );
+    }
+    const prunedBackendIds = pruneSkillRunnerBackendHealth(backendIds.values());
+    for (const backendId of prunedBackendIds) {
+      this.backendReconcileFailureLogUntilByBackend.delete(backendId);
+      stopSessionSync({
+        backendId,
+      });
+    }
+    for (const backendId of backendIds.values()) {
+      if (!shouldProbeSkillRunnerBackendNow(backendId, Date.now())) {
+        continue;
+      }
+      const backend = loadedBackends.find(
+        (entry) => normalizeString(entry.id) === backendId,
+      );
+      if (!backend || !normalizeString(backend.baseUrl)) {
+        continue;
+      }
+      try {
+        const client = buildSkillRunnerManagementClient({
+          backend,
+          localize: (_key: string, fallback: string) => fallback,
+        });
+        await client.probeReachability();
+        const previousFlagged = isSkillRunnerBackendReconcileFlagged(backendId);
+        markSkillRunnerBackendHealthSuccess(backendId);
+        this.backendReconcileFailureLogUntilByBackend.delete(backendId);
+        if (previousFlagged) {
+          for (const context of this.contexts.values()) {
+            if (normalizeString(context.backendId) !== backendId) {
+              continue;
+            }
+            this.ensureRunningSessionSync(context);
+          }
+        }
+      } catch (error) {
+        const backoff = markSkillRunnerBackendHealthFailure({
+          backendId,
+          error,
+        });
+        const now = Date.now();
+        const throttleUntil =
+          this.backendReconcileFailureLogUntilByBackend.get(backendId) || 0;
+        if (now >= throttleUntil) {
+          this.backendReconcileFailureLogUntilByBackend.set(
+            backendId,
+            now + BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS,
+          );
+          appendRuntimeLog({
+            level: "warn",
+            scope: "job",
+            backendId,
+            backendType: "skillrunner",
+            component: "skillrunner-reconciler",
+            operation: "backend-health-probe-failed",
+            phase: "reconcile",
+            stage: "backend-health-probe-failed",
+            message: "backend reachability probe failed; backend may be reconcile-gated",
+            error,
+            details: {
+              failureStreak: backoff?.failureStreak,
+              reconcileFlag: backoff?.reconcileFlag,
+              backoffLevel: backoff?.backoffLevel,
+              nextProbeAt:
+                (backoff?.nextProbeAt || 0) > 0
+                  ? new Date(backoff?.nextProbeAt || 0).toISOString()
+                  : undefined,
+            },
+          });
+        }
+      }
+    }
+  }
+
   start() {
     if (this.timer) {
       return;
@@ -644,6 +1325,15 @@ export class SkillRunnerTaskReconciler {
       this.contexts.set(context.id, context);
       recordWorkflowTaskUpdate(contextToJobRecord(context));
       recordTaskDashboardHistoryFromJob(contextToJobRecord(context));
+      registerSkillRunnerRequestLedgerFromJob({
+        job: contextToJobRecord(context),
+        backendId: context.backendId,
+        backendType: context.backendType,
+        backendBaseUrl: context.backendBaseUrl,
+        providerId: context.providerId,
+        workflowId: context.workflowId,
+        workflowLabel: context.workflowLabel,
+      });
     }
     this.timer = setInterval(() => {
       void this.reconcilePending();
@@ -652,6 +1342,7 @@ export class SkillRunnerTaskReconciler {
     if (typeof timerLike.unref === "function") {
       timerLike.unref();
     }
+    void this.refreshTrackedBackendHealth();
     void this.reconcilePending();
   }
 
@@ -660,6 +1351,30 @@ export class SkillRunnerTaskReconciler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    stopAllSkillRunnerSessionSync();
+  }
+
+  purgeBackendContexts(backendIdRaw: string) {
+    const backendId = normalizeString(backendIdRaw);
+    if (!backendId) {
+      return 0;
+    }
+    let removed = 0;
+    for (const [contextId, context] of this.contexts.entries()) {
+      if (normalizeString(context.backendId) !== backendId) {
+        continue;
+      }
+      this.contexts.delete(contextId);
+      this.reportedViolationKeysByContext.delete(contextId);
+      removed += 1;
+    }
+    if (removed > 0) {
+      writePersistedContexts(Array.from(this.contexts.values()));
+    }
+    stopSessionSync({
+      backendId,
+    });
+    return removed;
   }
 
   registerFromJob(args: {
@@ -676,18 +1391,21 @@ export class SkillRunnerTaskReconciler {
       return;
     }
     const deferred = (args.job.result || {}) as DeferredResultLike;
-    if (normalizeString(deferred.status) !== "deferred") {
-      return;
-    }
     const requestId =
       normalizeString(deferred.requestId) ||
       normalizeString(args.job.meta.requestId);
     if (!requestId) {
       return;
     }
+    const existingContextId = `${normalizeString(args.backend.id)}:${requestId}`;
+    const existing = this.contexts.get(existingContextId);
+    const observedStatusRaw =
+      normalizeString(deferred.status) === "deferred"
+        ? deferred.backendStatus
+        : args.job.state;
     const normalized = normalizeStatusWithGuard({
-      value: deferred.backendStatus,
-      fallback: args.job.state,
+      value: observedStatusRaw,
+      fallback: existing?.state || args.job.state,
       requestId,
     });
     appendStateMachineWarning({
@@ -697,7 +1415,7 @@ export class SkillRunnerTaskReconciler {
       violation: normalized.violation,
     });
     const transition = validateTransition({
-      prev: args.job.state,
+      prev: existing?.state || args.job.state,
       next: normalized.status,
       requestId,
     });
@@ -707,44 +1425,86 @@ export class SkillRunnerTaskReconciler {
       requestId,
       violation: transition.violation,
     });
-    const state = transition.ok ? transition.nextState : transition.prevState;
-    const contextId = `${args.backend.id}:${requestId}`;
+    const transitionState = transition.ok ? transition.nextState : transition.prevState;
+    const state =
+      existing && isTerminal(existing.state) && !isTerminal(transitionState)
+        ? existing.state
+        : transitionState;
+    const contextId = existingContextId;
     const context: ReconcileContext = {
       id: contextId,
-      workflowId: args.workflowId,
-      workflowLabel: args.workflowLabel || args.workflowId,
-      requestKind: args.requestKind,
-      request: args.request,
-      backendId: args.backend.id,
-      backendType: args.backend.type,
-      backendBaseUrl: args.backend.baseUrl,
-      providerId: args.providerId,
-      providerOptions: args.providerOptions || {},
-      runId: normalizeString(args.job.meta.runId) || `${args.workflowId}:${args.job.createdAt}`,
-      jobId: args.job.id,
-      taskName: normalizeString(args.job.meta.taskName) || args.job.id,
-      inputUnitIdentity: normalizeString(args.job.meta.inputUnitIdentity) || undefined,
-      inputUnitLabel: normalizeString(args.job.meta.inputUnitLabel) || undefined,
+      workflowId: normalizeString(args.workflowId) || existing?.workflowId || "",
+      workflowLabel:
+        normalizeString(args.workflowLabel) ||
+        normalizeString(args.workflowId) ||
+        existing?.workflowLabel ||
+        "",
+      requestKind: normalizeString(args.requestKind) || existing?.requestKind || "",
+      request:
+        typeof args.request === "undefined"
+          ? existing?.request
+          : args.request,
+      backendId: normalizeString(args.backend.id) || existing?.backendId || "",
+      backendType: normalizeString(args.backend.type) || existing?.backendType || "",
+      backendBaseUrl:
+        normalizeString(args.backend.baseUrl) || existing?.backendBaseUrl || "",
+      providerId: normalizeString(args.providerId) || existing?.providerId || "",
+      providerOptions:
+        args.providerOptions && isObject(args.providerOptions)
+          ? { ...args.providerOptions }
+          : existing?.providerOptions || {},
+      runId:
+        normalizeString(args.job.meta.runId) ||
+        existing?.runId ||
+        `${args.workflowId}:${args.job.createdAt}`,
+      jobId: normalizeString(args.job.id) || existing?.jobId || "",
+      taskName:
+        normalizeString(args.job.meta.taskName) ||
+        normalizeString(args.job.id) ||
+        existing?.taskName ||
+        "",
+      inputUnitIdentity:
+        normalizeString(args.job.meta.inputUnitIdentity) ||
+        existing?.inputUnitIdentity ||
+        undefined,
+      inputUnitLabel:
+        normalizeString(args.job.meta.inputUnitLabel) ||
+        existing?.inputUnitLabel ||
+        undefined,
       targetParentID:
         typeof args.job.meta.targetParentID === "number"
           ? Math.floor(args.job.meta.targetParentID)
-          : undefined,
+          : existing?.targetParentID,
       requestId,
-      fetchType: normalizeString(deferred.fetchType) === "result" ? "result" : "bundle",
+      fetchType: resolveFetchTypeForContext({
+        request: args.request,
+        deferred,
+        existing,
+      }),
       state,
-      events: [],
-      applyAttempt: 0,
-      applyMaxAttempt: APPLY_MAX_ATTEMPTS,
-      createdAt: args.job.createdAt,
+      events: existing?.events || [],
+      applyAttempt: existing?.applyAttempt || 0,
+      applyMaxAttempt: existing?.applyMaxAttempt || APPLY_MAX_ATTEMPTS,
+      nextApplyRetryAt: existing?.nextApplyRetryAt,
+      lastApplyError: existing?.lastApplyError,
+      error: normalizeString(args.job.error) || existing?.error,
+      createdAt: existing?.createdAt || args.job.createdAt,
       updatedAt: nowIso(),
     };
-    this.trackEvent(context, {
-      kind: "request-created",
-    });
-    this.trackEvent(context, {
-      kind: "deferred",
-    });
-    if (isWaiting(state)) {
+    if (!existing) {
+      this.trackEvent(context, {
+        kind: "request-created",
+      });
+    }
+    if (normalizeString(deferred.status) === "deferred" && !existing) {
+      this.trackEvent(context, {
+        kind: "deferred",
+      });
+    }
+    if (
+      isWaiting(state) &&
+      (!existing || !isWaiting(normalizeStatus(existing.state, "running")))
+    ) {
       this.trackEvent(context, {
         kind: "waiting",
         status: state,
@@ -752,7 +1512,21 @@ export class SkillRunnerTaskReconciler {
     }
     this.contexts.set(context.id, context);
     writePersistedContexts(Array.from(this.contexts.values()));
-    if (isWaiting(state)) {
+    registerSkillRunnerRequestLedgerFromJob({
+      job: contextToJobRecord(context),
+      backendId: context.backendId,
+      backendType: context.backendType,
+      backendBaseUrl: context.backendBaseUrl,
+      providerId: context.providerId,
+      workflowId: context.workflowId,
+      workflowLabel: context.workflowLabel,
+    });
+    registerSkillRunnerBackendForHealthTracking(context.backendId);
+    this.ensureRunningSessionSync(context);
+    if (
+      isWaiting(state) &&
+      (!existing || !isWaiting(normalizeStatus(existing.state, "running")))
+    ) {
       this.showWaitingToast(context, state);
     }
   }
@@ -917,13 +1691,40 @@ export class SkillRunnerTaskReconciler {
     });
     const previousState = context.state;
     const backendFailureKey = normalizeString(context.backendId) || "__unknown_backend__";
-    let reconcileFailed = false;
     try {
       const runState = await client.getRunState({
         requestId: context.requestId,
       });
-      const normalized = normalizeStatusWithGuard({
+      this.backendReconcileFailureLogUntilByBackend.delete(backendFailureKey);
+      const observed = normalizeStatusWithGuard({
         value: runState.status,
+        fallback: context.state,
+        requestId: context.requestId,
+      });
+      this.logTransitionViolation(context, observed.violation);
+      if (!isTerminalState(observed.status)) {
+        const nextObservedState = normalizeStatus(observed.status, context.state);
+        if (nextObservedState !== context.state) {
+          context.state = nextObservedState;
+          context.updatedAt = nowIso();
+          writePersistedContexts(Array.from(this.contexts.values()));
+        }
+        if (normalizeStatus(observed.status, context.state) === "running") {
+          this.ensureRunningSessionSync(context);
+        }
+        return;
+      }
+      const confirmedTerminal = await resolveDoubleConfirmedTerminalRunState({
+        client,
+        requestId: context.requestId,
+        firstStatus: runState.status,
+        firstError: runState.error,
+      });
+      if (!confirmedTerminal) {
+        return;
+      }
+      const normalized = normalizeStatusWithGuard({
+        value: confirmedTerminal.state,
         fallback: context.state,
         requestId: context.requestId,
       });
@@ -940,21 +1741,22 @@ export class SkillRunnerTaskReconciler {
       context.state = nextState;
       context.error = nextError;
       context.updatedAt = nowIso();
+      updateSkillRunnerRequestLedgerSnapshot({
+        requestId: context.requestId,
+        source: "jobs-terminal",
+        status: nextState,
+        error: nextError,
+        updatedAt: context.updatedAt,
+      });
+      this.applySnapshotToTaskStores({
+        context,
+        state: nextState,
+        error: nextError,
+        updatedAt: context.updatedAt,
+      });
       if (changed) {
         recordWorkflowTaskUpdate(contextToJobRecord(context));
         recordTaskDashboardHistoryFromJob(contextToJobRecord(context));
-        if (isWaiting(nextState) && nextState !== previousState) {
-          this.trackEvent(context, {
-            kind: "waiting",
-            status: nextState,
-          });
-          this.showWaitingToast(context, nextState);
-        } else if (isWaiting(previousState) && !isWaiting(nextState)) {
-          this.trackEvent(context, {
-            kind: "waiting-resumed",
-            status: nextState,
-          });
-        }
         writePersistedContexts(Array.from(this.contexts.values()));
       }
       if (!isTerminalState(nextState)) {
@@ -1043,6 +1845,10 @@ export class SkillRunnerTaskReconciler {
             });
             this.contexts.delete(context.id);
             this.reportedViolationKeysByContext.delete(context.id);
+            stopSessionSync({
+              backendId: context.backendId,
+              requestId: context.requestId,
+            });
             writePersistedContexts(Array.from(this.contexts.values()));
             return;
           }
@@ -1054,9 +1860,13 @@ export class SkillRunnerTaskReconciler {
       }
       this.contexts.delete(context.id);
       this.reportedViolationKeysByContext.delete(context.id);
+      stopSessionSync({
+        backendId: context.backendId,
+        requestId: context.requestId,
+      });
       writePersistedContexts(Array.from(this.contexts.values()));
     } catch (error) {
-      reconcileFailed = true;
+      const health = getSkillRunnerBackendHealthState(context.backendId);
       const now = Date.now();
       const throttleUntil =
         this.backendReconcileFailureLogUntilByBackend.get(backendFailureKey) || 0;
@@ -1083,24 +1893,44 @@ export class SkillRunnerTaskReconciler {
         stage: "backend-reconcile-failed",
         message: "backend reconcile step failed; will retry",
         error,
+        details: {
+          backoffLevel: health?.backoffLevel,
+          nextAllowedAt:
+            (health?.nextProbeAt || 0) > 0
+              ? new Date(health?.nextProbeAt || 0).toISOString()
+              : undefined,
+        },
       });
-    } finally {
-      if (!reconcileFailed) {
-        this.backendReconcileFailureLogUntilByBackend.delete(backendFailureKey);
-      }
     }
   }
 
   async reconcilePending() {
-    if (this.isReconciling || this.contexts.size === 0) {
+    if (this.isReconciling) {
       return;
     }
     this.isReconciling = true;
     try {
+      await this.refreshTrackedBackendHealth();
       const entries = Array.from(this.contexts.values());
       for (const context of entries) {
-        await this.reconcileOneContext(context);
+      if (isSkillRunnerBackendReconcileFlagged(context.backendId)) {
+        stopSessionSync({
+          backendId: context.backendId,
+          requestId: context.requestId,
+        });
+        continue;
       }
+      if (!getSkillRunnerBackendHealthState(context.backendId)) {
+        stopSessionSync({
+          backendId: context.backendId,
+          requestId: context.requestId,
+        });
+        continue;
+      }
+      this.ensureRunningSessionSync(context);
+      await this.reconcileOneContext(context);
+      }
+      await this.reconcileMissingContextRunningTasks();
     } finally {
       this.isReconciling = false;
     }
@@ -1117,7 +1947,7 @@ export function stopSkillRunnerTaskReconciler() {
   defaultReconciler.stop();
 }
 
-export function registerSkillRunnerDeferredTask(args: {
+export function ensureSkillRunnerRecoverableContext(args: {
   workflowId: string;
   workflowLabel: string;
   requestKind: string;
@@ -1128,4 +1958,78 @@ export function registerSkillRunnerDeferredTask(args: {
   job: JobRecord;
 }) {
   defaultReconciler.registerFromJob(args);
+}
+
+export function registerSkillRunnerDeferredTask(args: {
+  workflowId: string;
+  workflowLabel: string;
+  requestKind: string;
+  request: unknown;
+  backend: BackendInstance;
+  providerId: string;
+  providerOptions?: Record<string, unknown>;
+  job: JobRecord;
+}) {
+  ensureSkillRunnerRecoverableContext(args);
+}
+
+export function purgeSkillRunnerBackendReconcileState(backendIdRaw: string) {
+  const backendId = normalizeString(backendIdRaw);
+  if (!backendId) {
+    return {
+      backendId,
+      removedContexts: 0,
+      removedActive: 0,
+      removedHistory: 0,
+      removedLedger: 0,
+    };
+  }
+  const requestIdSet = new Set<string>();
+  for (const row of listActiveWorkflowTasks()) {
+    if (normalizeString(row.backendId) !== backendId) {
+      continue;
+    }
+    const requestId = normalizeString(row.requestId);
+    if (!requestId) {
+      continue;
+    }
+    requestIdSet.add(requestId);
+  }
+  for (const row of listTaskDashboardHistory({ backendId })) {
+    const requestId = normalizeString(row.requestId);
+    if (!requestId) {
+      continue;
+    }
+    requestIdSet.add(requestId);
+  }
+  for (const context of readPersistedContexts()) {
+    if (normalizeString(context.backendId) !== backendId) {
+      continue;
+    }
+    const requestId = normalizeString(context.requestId);
+    if (!requestId) {
+      continue;
+    }
+    requestIdSet.add(requestId);
+  }
+  const requestIds = Array.from(requestIdSet.values());
+  const removedActive = removeWorkflowTasksByBackendAndRequestIds({
+    backendId,
+    requestIds,
+  });
+  const removedHistory = removeTaskDashboardHistoryByBackendAndRequestIds({
+    backendId,
+    requestIds,
+  });
+  const removedContexts = defaultReconciler.purgeBackendContexts(backendId);
+  const removedLedger = removeSkillRunnerRequestLedgerRecordsByBackendId(
+    backendId,
+  );
+  return {
+    backendId,
+    removedContexts,
+    removedActive,
+    removedHistory,
+    removedLedger,
+  };
 }

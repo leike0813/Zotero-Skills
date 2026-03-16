@@ -906,21 +906,43 @@
       if (!group || typeof group !== "object") return;
       const groupBox = document.createElement("section");
       groupBox.className = "workspace-group";
+      if (group.disabled === true) {
+        groupBox.classList.add("is-disabled");
+      }
       const groupHeader = document.createElement("button");
       groupHeader.type = "button";
       groupHeader.className = "workspace-group-header";
-      groupHeader.textContent = safeText(group.backendDisplayName) || safeText(group.backendId) || "-";
-      groupHeader.addEventListener("click", function () {
-        sendAction("toggle-group-collapse", {
-          backendId: safeText(group.backendId),
+      groupHeader.disabled = group.disabled === true;
+      groupHeader.textContent =
+        safeText(group.backendDisplayName) || safeText(group.backendId) || "-";
+      if (group.disabled === true) {
+        const disabledTag = document.createElement("span");
+        disabledTag.className = "workspace-group-disabled-tag";
+        disabledTag.textContent =
+          safeText(workspaceLabels().backendUnavailable) || "Unavailable";
+        groupHeader.appendChild(disabledTag);
+      } else {
+        groupHeader.addEventListener("click", function () {
+          sendAction("toggle-group-collapse", {
+            backendId: safeText(group.backendId),
+          });
         });
-      });
+      }
       groupBox.appendChild(groupHeader);
 
       const groupBody = document.createElement("div");
       groupBody.className = "workspace-group-body";
       if (group.collapsed === true) {
         groupBody.classList.add("hidden");
+      }
+      if (group.disabled === true) {
+        const disabledHint = document.createElement("div");
+        disabledHint.className = "workspace-group-disabled-hint";
+        disabledHint.textContent =
+          safeText(group.disabledReason) ||
+          safeText(workspaceLabels().backendUnavailable) ||
+          "Backend unavailable";
+        groupBody.appendChild(disabledHint);
       }
 
       const activeTasks = Array.isArray(group.activeTasks) ? group.activeTasks : [];

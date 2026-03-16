@@ -1,7 +1,6 @@
 import { config } from "../../package.json";
 import { getPref, setPref } from "../utils/prefs";
 import {
-  getBuiltinWorkflowDir,
   getDefaultWorkflowDir,
   getEffectiveWorkflowDir,
 } from "./workflowRuntime";
@@ -36,12 +35,6 @@ function bindPrefEvents() {
   const browseWorkflowDirButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-browse`,
   ) as XUL.Button | null;
-  const workflowDirEffectiveDescription = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-workflow-dir-effective`,
-  ) as HTMLElement | null;
-  const workflowBuiltinDirDescription = doc.querySelector(
-    `#zotero-prefpane-${config.addonRef}-workflow-builtin-dir`,
-  ) as HTMLElement | null;
   const scanButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-workflow-scan`,
   ) as XUL.Button | null;
@@ -69,6 +62,9 @@ function bindPrefEvents() {
   ) as XUL.Button | null;
   const localRuntimeOpenManagementButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-open-management`,
+  ) as XUL.Button | null;
+  const localRuntimeOpenSkillsFolderButton = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-skillrunner-local-open-skills-folder`,
   ) as XUL.Button | null;
   const localRuntimeRefreshModelCacheButton = doc.querySelector(
     `#zotero-prefpane-${config.addonRef}-skillrunner-local-refresh-model-cache`,
@@ -112,6 +108,7 @@ function bindPrefEvents() {
     localRuntimeStopButton,
     localRuntimeUninstallButton,
     localRuntimeOpenManagementButton,
+    localRuntimeOpenSkillsFolderButton,
     localRuntimeRefreshModelCacheButton,
   ].filter(Boolean) as XUL.Button[];
 
@@ -306,6 +303,8 @@ function bindPrefEvents() {
         "pref-skillrunner-local-status-stage-refresh-model-cache",
       "open-managed-backend-page":
         "pref-skillrunner-local-status-stage-open-managed-backend-page",
+      "open-managed-skills-folder":
+        "pref-skillrunner-local-status-stage-open-managed-skills-folder",
     };
     const normalizedStage = String(typed.stage || "")
       .trim()
@@ -418,6 +417,10 @@ function bindPrefEvents() {
     );
     setButtonDisabled(
       localRuntimeOpenManagementButton,
+      actionBusy || !running,
+    );
+    setButtonDisabled(
+      localRuntimeOpenSkillsFolderButton,
       actionBusy || !running,
     );
     setButtonDisabled(
@@ -759,26 +762,7 @@ function bindPrefEvents() {
     if (workflowDirInput) {
       workflowDirInput.value = nextValue;
     }
-    updateWorkflowDirDescriptions(nextValue);
     return nextValue;
-  };
-
-  const updateWorkflowDirDescriptions = (effectiveWorkflowDir?: string) => {
-    const currentUserDir =
-      String(effectiveWorkflowDir || "").trim() || getEffectiveWorkflowDir();
-    const builtinDir = String(getBuiltinWorkflowDir() || "").trim();
-    if (workflowDirEffectiveDescription) {
-      workflowDirEffectiveDescription.textContent = getString(
-        "pref-workflow-dir-effective" as any,
-        { args: { path: currentUserDir } },
-      );
-    }
-    if (workflowBuiltinDirDescription) {
-      workflowBuiltinDirDescription.textContent = getString(
-        "pref-workflow-builtin-dir" as any,
-        { args: { path: builtinDir } },
-      );
-    }
   };
 
   const persistWorkflowDirFromInput = (options?: {
@@ -788,7 +772,6 @@ function bindPrefEvents() {
     const normalized = rawValue.trim();
     if (options?.fallbackWhenEmpty === false) {
       setPref("workflowDir", normalized);
-      updateWorkflowDirDescriptions(normalized || getDefaultWorkflowDir());
       return normalized;
     }
     return persistWorkflowDir(normalized);
@@ -880,8 +863,6 @@ function bindPrefEvents() {
         fallbackWhenEmpty: true,
       });
     });
-  } else {
-    updateWorkflowDirDescriptions();
   }
 
   if (browseWorkflowDirButton) {
@@ -1027,6 +1008,12 @@ function bindPrefEvents() {
   if (localRuntimeOpenManagementButton) {
     localRuntimeOpenManagementButton.addEventListener("command", () => {
       void runLocalRuntimeAction("openSkillRunnerManagedBackendPage");
+    });
+  }
+
+  if (localRuntimeOpenSkillsFolderButton) {
+    localRuntimeOpenSkillsFolderButton.addEventListener("command", () => {
+      void runLocalRuntimeAction("openSkillRunnerManagedSkillsFolder");
     });
   }
 

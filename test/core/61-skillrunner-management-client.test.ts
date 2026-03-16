@@ -64,6 +64,7 @@ describe("skillrunner management client", function () {
 
   it("parses SSE chat frames", async function () {
     const frames: SkillRunnerManagementSseFrame[] = [];
+    const urls: string[] = [];
     const payload =
       "event: snapshot\n" +
       'data: {"status":"running","cursor":0}\n\n' +
@@ -75,13 +76,15 @@ describe("skillrunner management client", function () {
         controller.close();
       },
     });
-    const fetchImpl = async () =>
-      new Response(stream, {
+    const fetchImpl = async (url: string) => {
+      urls.push(url);
+      return new Response(stream, {
         status: 200,
         headers: {
           "content-type": "text/event-stream",
         },
       });
+    };
 
     const client = new SkillRunnerManagementClient({
       baseUrl: "http://127.0.0.1:8030",
@@ -100,6 +103,129 @@ describe("skillrunner management client", function () {
       seq: 1,
       text: "hello",
     });
+    assert.equal(
+      urls[0],
+      "http://127.0.0.1:8030/v1/jobs/req-1/chat?cursor=0",
+    );
+  });
+
+  it("parses SSE event frames from jobs events endpoint", async function () {
+    const frames: SkillRunnerManagementSseFrame[] = [];
+    const urls: string[] = [];
+    const payload =
+      "event: snapshot\n" +
+      'data: {"status":"running","cursor":8}\n\n' +
+      "event: chat_event\n" +
+      'data: {"type":"conversation.state.changed","data":{"to":"waiting_user"}}\n\n';
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(payload));
+        controller.close();
+      },
+    });
+    const fetchImpl = async (url: string) => {
+      urls.push(url);
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      });
+    };
+    const client = new SkillRunnerManagementClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl,
+    });
+    await client.streamRunEvents({
+      requestId: "req-1",
+      cursor: 8,
+      onFrame: (frame) => {
+        frames.push(frame);
+      },
+    });
+    assert.lengthOf(frames, 2);
+    assert.equal(frames[0].event, "snapshot");
+    assert.equal(frames[1].event, "chat_event");
+    assert.equal(
+      urls[0],
+      "http://127.0.0.1:8030/v1/jobs/req-1/events?cursor=8",
+    );
+  });
+
+  it("uses jobs endpoints for run state, pending and history", async function () {
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      requests.push({
+        url,
+        method: String(init?.method || "GET"),
+      });
+      if (url.endsWith("/chat/history?from_seq=2")) {
+        return new Response(
+          JSON.stringify({
+            request_id: "req-2",
+            events: [],
+            cursor_floor: 2,
+            cursor_ceiling: 2,
+            source: "jobs",
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        );
+      }
+      if (url.endsWith("/events/history?from_seq=3")) {
+        return new Response(
+          JSON.stringify({
+            request_id: "req-2",
+            events: [],
+            cursor_floor: 3,
+            cursor_ceiling: 3,
+            source: "jobs",
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          request_id: "req-2",
+          status: "running",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      );
+    };
+
+    const client = new SkillRunnerManagementClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl,
+    });
+
+    await client.getRun({ requestId: "req-2" });
+    await client.getPending({ requestId: "req-2" });
+    await client.listRunChatHistory({ requestId: "req-2", fromSeq: 2 });
+    await client.listRunEventHistory({ requestId: "req-2", fromSeq: 3 });
+
+    assert.deepEqual(
+      requests.map((entry) => `${entry.method} ${entry.url}`),
+      [
+        "GET http://127.0.0.1:8030/v1/jobs/req-2",
+        "GET http://127.0.0.1:8030/v1/jobs/req-2/interaction/pending",
+        "GET http://127.0.0.1:8030/v1/jobs/req-2/chat/history?from_seq=2",
+        "GET http://127.0.0.1:8030/v1/jobs/req-2/events/history?from_seq=3",
+      ],
+    );
   });
 
   it("posts reply/cancel to management endpoints with stable payload", async function () {
@@ -164,7 +290,7 @@ describe("skillrunner management client", function () {
     assert.lengthOf(requests, 2);
     assert.equal(
       requests[0].url,
-      "http://127.0.0.1:8030/v1/management/runs/req-1/reply",
+      "http://127.0.0.1:8030/v1/jobs/req-1/interaction/reply",
     );
     assert.equal(requests[0].method, "POST");
     assert.deepEqual(JSON.parse(requests[0].body), {
@@ -174,7 +300,7 @@ describe("skillrunner management client", function () {
     });
     assert.equal(
       requests[1].url,
-      "http://127.0.0.1:8030/v1/management/runs/req-1/cancel",
+      "http://127.0.0.1:8030/v1/jobs/req-1/cancel",
     );
     assert.equal(requests[1].method, "POST");
     assert.equal(requests[1].body, "{}");

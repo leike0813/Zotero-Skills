@@ -17,6 +17,10 @@ import {
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 import { reconcileSkillRunnerBackendTaskLedgerOnce } from "./skillRunnerTaskReconciler";
 import {
+  markSkillRunnerBackendHealthSuccess,
+  registerSkillRunnerBackendForHealthTracking,
+} from "./skillRunnerBackendHealthRegistry";
+import {
   MANAGED_LOCAL_BACKEND_ID,
   normalizeManagedLocalBackendId,
 } from "./skillRunnerLocalRuntimeConstants";
@@ -3455,6 +3459,30 @@ function resolveManagedLocalRoot(args?: { state?: ManagedLocalRuntimeState }) {
   };
 }
 
+export function resolveManagedLocalSkillsFolderPath(args?: {
+  state?: ManagedLocalRuntimeState;
+}) {
+  const localRootResolution = resolveManagedLocalRoot(args);
+  if (!localRootResolution.ok) {
+    return {
+      ok: false as const,
+      reason: localRootResolution.reason,
+      details: localRootResolution.details,
+    };
+  }
+  const localRoot = localRootResolution.localRoot;
+  const skillsFolder = joinPath(localRoot, "skills");
+  return {
+    ok: true as const,
+    localRoot,
+    skillsFolder,
+    details: {
+      ...localRootResolution.details,
+      skillsFolder,
+    },
+  };
+}
+
 type ManagedUninstallDeleteTarget = {
   id: string;
   path: string;
@@ -4334,6 +4362,11 @@ export async function ensureManagedLocalRuntimeForBackend(
           preflight: preflightResult?.details,
         },
       };
+    }
+    const managedBackendId = normalizeString(state.managedBackendId);
+    if (managedBackendId) {
+      registerSkillRunnerBackendForHealthTracking(managedBackendId);
+      markSkillRunnerBackendHealthSuccess(managedBackendId);
     }
     const finalEndpoint = resolveRuntimeEndpoint(state);
     if (didRunUp) {

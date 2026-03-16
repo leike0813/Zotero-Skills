@@ -11,6 +11,12 @@ function normalizeToken(value: string) {
     .slice(0, 32);
 }
 
+function buildIdNonce() {
+  const timestampPart = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).slice(2, 8);
+  return `${timestampPart}${randomPart}`.slice(-12);
+}
+
 export function normalizeBackendDisplayName(value: unknown, fallback: string) {
   const normalized = String(value || "").trim();
   if (normalized) {
@@ -39,17 +45,16 @@ export function generateBackendInternalId(args: {
   const typeToken = normalizeToken(args.type || "");
   const seed = [typeToken, displayToken].filter(Boolean).join("-");
   const base = `backend-${seed || "profile"}`;
-  let candidate = base;
+  let candidate = `${base}-${buildIdNonce()}`;
   let suffix = 2;
   while (
     args.usedIds.has(candidate) ||
     candidate === MANAGED_LOCAL_BACKEND_ID ||
     LEGACY_MANAGED_LOCAL_BACKEND_IDS.has(candidate)
   ) {
-    candidate = `${base}-${suffix}`;
+    candidate = `${base}-${buildIdNonce()}-${suffix}`;
     suffix += 1;
   }
   args.usedIds.add(candidate);
   return candidate;
 }
-

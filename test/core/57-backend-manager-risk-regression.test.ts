@@ -8,6 +8,11 @@ import {
   refreshSkillRunnerModelCacheFromRow,
   resolveSkillRunnerManagementLaunchPayloadFromRow,
 } from "../../src/modules/backendManager";
+import {
+  getSkillRunnerBackendHealthState,
+  registerSkillRunnerBackendForHealthTracking,
+  resetSkillRunnerBackendHealthRegistryForTests,
+} from "../../src/modules/skillRunnerBackendHealthRegistry";
 
 type FakeControl = {
   value?: string;
@@ -105,6 +110,7 @@ describe("backend manager risk regression", function () {
   afterEach(function () {
     const runtime = globalThis as { addon?: unknown };
     runtime.addon = previousAddon;
+    resetSkillRunnerBackendHealthRegistryForTests();
   });
 
   it("rejects duplicated backend internal ids during dialog collection", function () {
@@ -400,5 +406,46 @@ describe("backend manager risk regression", function () {
       username: "admin",
       password: "secret",
     });
+  });
+
+  it("untracks health probing immediately when a backend profile is deleted", function () {
+    const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
+    const previous = Zotero.Prefs.get(prefKey, true);
+    Zotero.Prefs.set(
+      prefKey,
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: "backend-skillrunner-removed",
+            displayName: "Removed Backend",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+
+    registerSkillRunnerBackendForHealthTracking("backend-skillrunner-removed");
+    assert.isOk(getSkillRunnerBackendHealthState("backend-skillrunner-removed"));
+
+    try {
+      persistBackendsConfig([], {
+        setPref: ((_: string, value: string) => {
+          Zotero.Prefs.set(prefKey, value, true);
+        }) as any,
+        refreshWorkflowMenus: () => {},
+      });
+    } finally {
+      if (typeof previous === "undefined") {
+        Zotero.Prefs.clear(prefKey, true);
+      } else {
+        Zotero.Prefs.set(prefKey, previous, true);
+      }
+    }
+
+    assert.isNull(getSkillRunnerBackendHealthState("backend-skillrunner-removed"));
   });
 });

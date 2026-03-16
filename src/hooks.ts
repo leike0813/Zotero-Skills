@@ -3,7 +3,10 @@ import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { registerSelectionSampleMenu } from "./modules/selectionSample";
 import { ensureWorkflowMenuForWindow, refreshWorkflowMenus } from "./modules/workflowMenu";
-import { rescanWorkflowRegistry } from "./modules/workflowRuntime";
+import {
+  ensureDefaultWorkflowDirExistsOnStartup,
+  rescanWorkflowRegistry,
+} from "./modules/workflowRuntime";
 import { syncBuiltinWorkflowsOnStartup } from "./modules/builtinWorkflowSync";
 import { openBackendManagerDialog } from "./modules/backendManager";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
@@ -31,6 +34,7 @@ import {
   previewLocalRuntimeUninstall,
   releaseManagedLocalRuntimeLeaseOnShutdown,
   runManagedRuntimeStartupPreflightProbe,
+  resolveManagedLocalSkillsFolderPath,
   startManagedLocalRuntimeAutoEnsureLoop,
   stopManagedLocalRuntimeAutoEnsureLoop,
   stopLocalRuntime,
@@ -193,6 +197,7 @@ async function onStartup() {
     }
   }
 
+  await ensureDefaultWorkflowDirExistsOnStartup();
   await rescanWorkflowRegistry();
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
@@ -310,6 +315,39 @@ async function resolveManagedLocalBackend() {
     throw new Error(`managed backend "${backendId}" is not found`);
   }
   return backend;
+}
+
+function openFolderInSystemFileManager(pathValue: string) {
+  const normalizedPath = String(pathValue || "").trim();
+  if (!normalizedPath) {
+    throw new Error("skills folder path is empty");
+  }
+  const pathToFile = Zotero?.File?.pathToFile;
+  if (typeof pathToFile !== "function") {
+    throw new Error("Zotero.File.pathToFile is unavailable");
+  }
+  const file = pathToFile(normalizedPath) as
+    | {
+        exists?: () => boolean;
+        launch?: () => unknown;
+        reveal?: () => unknown;
+      }
+    | undefined;
+  if (!file) {
+    throw new Error(`failed to resolve skills folder path: ${normalizedPath}`);
+  }
+  if (typeof file.exists === "function" && !file.exists()) {
+    throw new Error(`skills folder does not exist: ${normalizedPath}`);
+  }
+  if (typeof file.launch === "function") {
+    file.launch();
+    return;
+  }
+  if (typeof file.reveal === "function") {
+    file.reveal();
+    return;
+  }
+  throw new Error("nsIFile launch/reveal is unavailable");
 }
 
 /**
@@ -441,6 +479,35 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         return {
           ok: false,
           stage: "refresh-managed-model-cache",
+          message: String(error),
+        };
+      }
+    }
+    case "openSkillRunnerManagedSkillsFolder": {
+      try {
+        const resolved = resolveManagedLocalSkillsFolderPath();
+        if (!resolved.ok) {
+          return {
+            ok: false,
+            stage: "open-managed-skills-folder",
+            message: resolved.reason,
+            details: resolved.details,
+          };
+        }
+        openFolderInSystemFileManager(resolved.skillsFolder);
+        return {
+          ok: true,
+          stage: "open-managed-skills-folder",
+          message: "managed local backend skills folder opened",
+          details: {
+            localRoot: resolved.localRoot,
+            skillsFolder: resolved.skillsFolder,
+          },
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "open-managed-skills-folder",
           message: String(error),
         };
       }

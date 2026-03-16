@@ -15,7 +15,7 @@ import {
   rescanWorkflowRegistry,
 } from "../../src/modules/workflowRuntime";
 import type { LoadedWorkflow } from "../../src/workflows/types";
-import { joinPath, mkTempDir, writeUtf8 } from "./workflow-test-utils";
+import { joinPath, mkTempDir, workflowsPath, writeUtf8 } from "./workflow-test-utils";
 import { isFullTestMode } from "../zotero/testMode";
 
 type Listener = (event: Record<string, unknown>) => void;
@@ -253,12 +253,6 @@ function createPrefsWindow(args?: {
 
   const workflowDirInput = document.createXULElement("input");
   workflowDirInput.id = `zotero-prefpane-${config.addonRef}-workflow-dir`;
-  const workflowDirEffectiveDescription = document.createXULElement("description");
-  workflowDirEffectiveDescription.id =
-    `zotero-prefpane-${config.addonRef}-workflow-dir-effective`;
-  const workflowBuiltinDirDescription = document.createXULElement("description");
-  workflowBuiltinDirDescription.id =
-    `zotero-prefpane-${config.addonRef}-workflow-builtin-dir`;
 
   const workflowBrowseButton = document.createXULElement("button");
   workflowBrowseButton.id = `zotero-prefpane-${config.addonRef}-workflow-browse`;
@@ -286,6 +280,9 @@ function createPrefsWindow(args?: {
   const localRuntimeOpenManagementButton = document.createXULElement("button");
   localRuntimeOpenManagementButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-open-management`;
+  const localRuntimeOpenSkillsFolderButton = document.createXULElement("button");
+  localRuntimeOpenSkillsFolderButton.id =
+    `zotero-prefpane-${config.addonRef}-skillrunner-local-open-skills-folder`;
   const localRuntimeRefreshModelCacheButton = document.createXULElement("button");
   localRuntimeRefreshModelCacheButton.id =
     `zotero-prefpane-${config.addonRef}-skillrunner-local-refresh-model-cache`;
@@ -349,8 +346,6 @@ function createPrefsWindow(args?: {
       },
     } as unknown as Window,
     workflowDirInput,
-    workflowDirEffectiveDescription,
-    workflowBuiltinDirDescription,
     workflowBrowseButton,
     scanButton,
     workflowSettingsButton,
@@ -361,6 +356,7 @@ function createPrefsWindow(args?: {
     localRuntimeUninstallButton,
     localRuntimeOpenDebugConsoleButton,
     localRuntimeOpenManagementButton,
+    localRuntimeOpenSkillsFolderButton,
     localRuntimeRefreshModelCacheButton,
     localRuntimeLed,
     localRuntimeAutoStartIcon,
@@ -452,8 +448,6 @@ describe("gui: preference scripts", function () {
     const {
       window,
       workflowDirInput,
-      workflowDirEffectiveDescription,
-      workflowBuiltinDirDescription,
       workflowBrowseButton,
       scanButton,
       workflowSettingsButton,
@@ -469,14 +463,6 @@ describe("gui: preference scripts", function () {
 
     assert.isNotEmpty(workflowDirInput.value);
     assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), workflowDirInput.value);
-    assert.match(
-      workflowDirEffectiveDescription.textContent || "",
-      /zotero-skills[\\/]workflows|pref-workflow-dir-effective/,
-    );
-    assert.match(
-      workflowBuiltinDirDescription.textContent || "",
-      /workflows_builtin|pref-workflow-builtin-dir/,
-    );
 
     workflowDirInput.value = "D:/tmp/workflows-custom";
     workflowDirInput.dispatch("input", { target: workflowDirInput });
@@ -670,6 +656,7 @@ describe("gui: preference scripts", function () {
       localRuntimeUninstallButton,
       localRuntimeOpenDebugConsoleButton,
       localRuntimeOpenManagementButton,
+      localRuntimeOpenSkillsFolderButton,
       localRuntimeRefreshModelCacheButton,
       localRuntimeUninstallOptionsConfirmButton,
       localRuntimeLed,
@@ -704,6 +691,8 @@ describe("gui: preference scripts", function () {
       await flushTasks();
       localRuntimeOpenManagementButton.dispatch("command");
       await flushTasks();
+      localRuntimeOpenSkillsFolderButton.dispatch("command");
+      await flushTasks();
       localRuntimeRefreshModelCacheButton.dispatch("command");
       await flushTasks();
 
@@ -716,6 +705,7 @@ describe("gui: preference scripts", function () {
     assert.include(callTypes, "uninstallSkillRunnerLocalRuntime");
     assert.include(callTypes, "openSkillRunnerLocalDeployDebugConsole");
     assert.include(callTypes, "openSkillRunnerManagedBackendPage");
+    assert.include(callTypes, "openSkillRunnerManagedSkillsFolder");
     assert.include(callTypes, "refreshSkillRunnerManagedModelCache");
     assert.notInclude(callTypes, "statusSkillRunnerLocalRuntime");
     assert.notInclude(callTypes, "startSkillRunnerLocalRuntime");
@@ -1117,6 +1107,7 @@ describe("gui: preference scripts", function () {
       localRuntimeUninstallButton,
       localRuntimeOpenDebugConsoleButton,
       localRuntimeOpenManagementButton,
+      localRuntimeOpenSkillsFolderButton,
       localRuntimeRefreshModelCacheButton,
       localRuntimeStatusText,
     } = createPrefsWindow();
@@ -1128,6 +1119,7 @@ describe("gui: preference scripts", function () {
     assert.equal(localRuntimeStopButton.getAttribute("disabled"), "true");
     assert.equal(localRuntimeUninstallButton.getAttribute("disabled"), "true");
     assert.equal(localRuntimeOpenManagementButton.getAttribute("disabled"), "true");
+    assert.equal(localRuntimeOpenSkillsFolderButton.getAttribute("disabled"), "true");
     assert.equal(
       localRuntimeRefreshModelCacheButton.getAttribute("disabled"),
       "true",
@@ -1213,9 +1205,30 @@ describe("gui: workflow runtime scan", function () {
   });
 
   itFullOnly("falls back to default workflow dir when preference is empty", function () {
-    const effectiveDir = getEffectiveWorkflowDir();
-    assert.isTrue(/[\\/]workflows$/.test(effectiveDir), `effectiveDir=${effectiveDir}`);
-    assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), effectiveDir);
+    const processEnv =
+      (globalThis as { process?: { env?: Record<string, string | undefined> } })
+        .process?.env;
+    const previousOverride = processEnv?.ZOTERO_TEST_WORKFLOW_DIR;
+    try {
+      if (processEnv) {
+        processEnv.ZOTERO_TEST_WORKFLOW_DIR = workflowsPath();
+      }
+      const effectiveDir = getEffectiveWorkflowDir();
+      assert.isTrue(
+        /[\\/]workflows_builtin$/.test(effectiveDir),
+        `effectiveDir=${effectiveDir}`,
+      );
+      assert.equal(Zotero.Prefs.get(workflowDirPrefKey, true), effectiveDir);
+    } finally {
+      if (!processEnv) {
+        return;
+      }
+      if (typeof previousOverride === "undefined") {
+        delete processEnv.ZOTERO_TEST_WORKFLOW_DIR;
+      } else {
+        processEnv.ZOTERO_TEST_WORKFLOW_DIR = previousOverride;
+      }
+    }
   });
 });
 

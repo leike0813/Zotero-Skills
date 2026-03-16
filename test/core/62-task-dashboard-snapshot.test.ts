@@ -66,7 +66,7 @@ function makeHistory(args: {
 describe("task dashboard snapshot", function () {
   it("includes configured backends except pass-through", function () {
     const backends = normalizeDashboardBackends({
-      configured: [makeBackend("skillrunner-local", "skillrunner")],
+      configured: [makeBackend("skillrunner-primary", "skillrunner")],
       history: [
         makeHistory({
           id: "h-1",
@@ -88,17 +88,17 @@ describe("task dashboard snapshot", function () {
     });
     assert.deepEqual(
       backends.map((entry) => `${entry.id}:${entry.type}`),
-      ["skillrunner-local:skillrunner"],
+      ["skillrunner-primary:skillrunner"],
     );
   });
 
   it("merges running tasks over history rows for same task id", function () {
     const rows = mergeDashboardTaskRows({
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       history: [
         makeHistory({
           id: "task-1",
-          backendId: "skillrunner-local",
+          backendId: "skillrunner-primary",
           backendType: "skillrunner",
           state: "queued",
           updatedAt: "2026-03-09T00:00:01.000Z",
@@ -107,7 +107,7 @@ describe("task dashboard snapshot", function () {
       active: [
         makeTask({
           id: "task-1",
-          backendId: "skillrunner-local",
+          backendId: "skillrunner-primary",
           backendType: "skillrunner",
           state: "running",
           updatedAt: "2026-03-09T00:00:05.000Z",
@@ -123,7 +123,7 @@ describe("task dashboard snapshot", function () {
   it("normalizes invalid tab key back to home", function () {
     const normalized = normalizeDashboardTabKey({
       requestedTabKey: "backend:not-exists",
-      backends: [makeBackend("skillrunner-local", "skillrunner")],
+      backends: [makeBackend("skillrunner-primary", "skillrunner")],
     });
     assert.equal(normalized, "home");
   });
@@ -131,7 +131,7 @@ describe("task dashboard snapshot", function () {
   it("keeps workflow-options tab key when requested", function () {
     const normalized = normalizeDashboardTabKey({
       requestedTabKey: "workflow-options",
-      backends: [makeBackend("skillrunner-local", "skillrunner")],
+      backends: [makeBackend("skillrunner-primary", "skillrunner")],
     });
     assert.equal(normalized, "workflow-options");
   });
@@ -142,11 +142,9 @@ describe("task dashboard snapshot", function () {
     assert.isNotEmpty(displayName);
   });
 
-  it("maps legacy managed local backend id to the same localized display name", function () {
-    const canonical = resolveBackendDisplayName("local-skillrunner-backend");
+  it("does not apply managed-local localization alias to legacy removed backend id", function () {
     const legacy = resolveBackendDisplayName("skillrunner-local");
-    assert.equal(legacy, canonical);
-    assert.notEqual(legacy, "skillrunner-local");
+    assert.equal(legacy, "skillrunner-local");
   });
 
   it("prefers configured displayName for non-managed backend ids", function () {

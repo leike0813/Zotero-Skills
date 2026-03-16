@@ -22,6 +22,7 @@ import {
 } from "./providers/skillrunner/modelCache";
 import {
   reconcileSkillRunnerBackendTaskLedgerOnce,
+  purgeSkillRunnerBackendReconcileState,
   startSkillRunnerTaskReconciler,
   stopSkillRunnerTaskReconciler,
 } from "./modules/skillRunnerTaskReconciler";
@@ -46,9 +47,11 @@ import { openSkillRunnerManagementDialog } from "./modules/skillRunnerManagement
 import { refreshSkillRunnerModelCacheForBackend } from "./providers/skillrunner/modelCache";
 import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConstants";
 import { isDebugModeEnabled } from "./modules/debugMode";
+import { untrackSkillRunnerBackendHealth } from "./modules/skillRunnerBackendHealthRegistry";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
+const LEGACY_REMOVED_SKILLRUNNER_BACKEND_ID = "skillrunner-local";
 
 function registerPrefsPane() {
   const runtimeRootURI =
@@ -199,6 +202,8 @@ async function onStartup() {
 
   await ensureDefaultWorkflowDirExistsOnStartup();
   await rescanWorkflowRegistry();
+  purgeSkillRunnerBackendReconcileState(LEGACY_REMOVED_SKILLRUNNER_BACKEND_ID);
+  untrackSkillRunnerBackendHealth(LEGACY_REMOVED_SKILLRUNNER_BACKEND_ID);
   startSkillRunnerModelCacheAutoRefresh();
   startSkillRunnerTaskReconciler();
   void startupSkillRunnerBackendReconcileRunner();

@@ -83,6 +83,29 @@ describe("skillrunner local runtime manager", function () {
   let prevFetch: unknown;
   let prevIOUtils: unknown;
 
+  function setBackendsConfigWithManagedLocal(baseUrl = "http://127.0.0.1:29813") {
+    Zotero.Prefs.set(
+      backendsConfigPrefKey,
+      JSON.stringify({
+        backends: [
+          {
+            id: "generic-http-local",
+            type: "generic-http",
+            baseUrl: "http://127.0.0.1:9000",
+            auth: { kind: "none" },
+          },
+          {
+            id: "local-skillrunner-backend",
+            type: "skillrunner",
+            baseUrl,
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+  }
+
   beforeEach(function () {
     prevBackendsConfigPref = Zotero.Prefs.get(backendsConfigPrefKey, true);
     prevStatePref = Zotero.Prefs.get(localRuntimeStatePrefKey, true);
@@ -290,6 +313,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("one-click uses preflight->up->lease when runtime info exists and preflight passes", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -375,6 +399,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("emits runtime-up toast for one-click start", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -752,6 +777,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("ensures runtime with preflight -> up -> status and then acquires lease", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -870,6 +896,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("emits state-change notifications when background auto-ensure updates runtime state", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -1065,6 +1092,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("start keeps auto-start switch unchanged and still follows preflight startup chain", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({
@@ -1371,6 +1399,7 @@ describe("skillrunner local runtime manager", function () {
   });
 
   it("emits abnormal-stop toast when heartbeat fails and status probe reports stopped", async function () {
+    setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
     Zotero.Prefs.set(
       localRuntimeStatePrefKey,
       JSON.stringify({

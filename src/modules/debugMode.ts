@@ -1,4 +1,4 @@
-const HARDCODED_DEBUG_MODE = false;
+const HARDCODED_DEBUG_MODE = true;
 
 let debugModeOverrideForTests: boolean | undefined;
 
@@ -16,4 +16,3 @@ export function setDebugModeOverrideForTests(enabled?: boolean) {
   }
   debugModeOverrideForTests = undefined;
 }
-

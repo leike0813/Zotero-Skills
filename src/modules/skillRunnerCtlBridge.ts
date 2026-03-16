@@ -854,6 +854,14 @@ async function runCommand(args: {
     /(^|[\\/])(powershell|pwsh)(\.exe)?$/i.test(normalizeString(args.command));
   if (isWindowsPowerShellCommand) {
     try {
+      return await runWithWindowsNsIProcessHidden({
+        command: args.command,
+        argv: args.argv,
+      });
+    } catch {
+      // fallthrough
+    }
+    try {
       return await runWithMozillaSubprocess({
         command: args.command,
         argv: args.argv,
@@ -863,14 +871,6 @@ async function runCommand(args: {
     }
     try {
       return await runWithZoteroSubprocess({
-        command: args.command,
-        argv: args.argv,
-      });
-    } catch {
-      // fallthrough
-    }
-    try {
-      return await runWithWindowsNsIProcessHidden({
         command: args.command,
         argv: args.argv,
       });

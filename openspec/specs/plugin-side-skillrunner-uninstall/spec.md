@@ -46,7 +46,7 @@ TBD - created by archiving change plugin-side-skillrunner-uninstall. Update Purp
 
 #### Scenario: Full success clears profile and runtime state
 - **WHEN** 停服成功且目标路径删除全部成功
-- **THEN** 插件 SHALL 删除托管 profile `skillrunner-local`
+- **THEN** 插件 SHALL 删除托管 profile `local-skillrunner-backend`
 - **AND** 插件 SHALL 清空托管 runtime state
 
 #### Scenario: Any deletion failure keeps managed state
@@ -54,4 +54,3 @@ TBD - created by archiving change plugin-side-skillrunner-uninstall. Update Purp
 - **THEN** 卸载 SHALL 失败
 - **AND** 插件 MUST 保留托管 profile 与 runtime state
 - **AND** 返回结果 SHALL 包含 `removed_paths`、`failed_paths`、`preserved_paths`
-

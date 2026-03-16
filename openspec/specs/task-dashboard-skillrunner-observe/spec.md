@@ -145,7 +145,7 @@ The plugin MUST maintain machine-verifiable invariants for core SkillRunner obse
 - **WHEN** invariant files are validated
 - **THEN** they MUST cover at least state sets, write-source gates, backend health cadence and thresholds, stream lifecycle gates, startup reconnect scope, and backend-flagged UI gating
 - **AND** any missing required contract category MUST fail validation
-- **AND** provider invariant IDs MUST include `INV-PROV-STATE-SETS`, `INV-PROV-WRITE-NONTERMINAL-EVENTS`, `INV-PROV-WRITE-TERMINAL-JOBS`, `INV-PROV-BACKEND-HEALTH-BACKOFF`, `INV-PROV-BACKEND-HEALTH-THRESHOLDS`, `INV-PROV-STREAM-EVENT-RUNNING-ONLY`, `INV-PROV-STARTUP-RUNNING-ONLY-RECONNECT`, `INV-PROV-UI-GATING-BACKEND-FLAG`
+- **AND** provider invariant IDs MUST include `INV-PROV-STATE-SETS`, `INV-PROV-WRITE-NONTERMINAL-EVENTS`, `INV-PROV-WRITE-TERMINAL-JOBS`, `INV-PROV-BACKEND-HEALTH-BACKOFF`, `INV-PROV-BACKEND-HEALTH-THRESHOLDS`, `INV-PROV-STREAM-EVENT-RUNNING-ONLY`, `INV-PROV-STARTUP-RUNNING-ONLY-RECONNECT`, `INV-PROV-UI-GATING-BACKEND-FLAG`, `INV-PROV-NO-LEGACY-ID`, `INV-PROV-MANAGED-LOCAL-REGISTER-ONLY-AFTER-DEPLOY`
 
 ### Requirement: Invariant guard MUST be a blocking CI gate
 
@@ -198,6 +198,18 @@ trigger its reconcile only from local runtime up flow.
 - **THEN** managed local backend MUST remain excluded from startup full reconcile
 - **AND** managed local backend MUST reconcile only on `local-runtime-up`
 
+#### Scenario: managed local profile creation is deploy-gated
+
+- **WHEN** plugin startup or ensure/start flows execute without prior local deploy
+- **THEN** plugin MUST NOT auto-create `local-skillrunner-backend` profile
+- **AND** profile creation MUST only happen in successful deploy flow
+
+#### Scenario: legacy managed id is dropped at startup
+
+- **WHEN** startup encounters backend id `skillrunner-local`
+- **THEN** plugin MUST remove that backend id from runtime config and local task projections
+- **AND** plugin MUST NOT map it to `local-skillrunner-backend` automatically
+
 ### Requirement: SkillRunner backend list and gating MUST reflect configured profile lifecycle
 
 Dashboard and reconcile behavior MUST track configured backend profile lifecycle deterministically.
@@ -235,4 +247,3 @@ Managed local backend health view MUST not wait for next probe cycle once lease 
 - **WHEN** local managed backend completes lease acquire successfully
 - **THEN** backend health state MUST be set to reachable immediately
 - **AND** reconcile gating for that backend MUST be cleared without waiting a probe tick
-

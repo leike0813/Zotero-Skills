@@ -29,7 +29,6 @@ import {
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 import { localizeWorkflowText } from "./workflowExecution/messageFormatter";
 import { resolveTargetParentIDFromRequest } from "./workflowExecution/requestMeta";
-import { getPref } from "../utils/prefs";
 import {
   isTerminal,
   isWaiting,
@@ -62,6 +61,8 @@ import {
   shouldProbeSkillRunnerBackendNow,
 } from "./skillRunnerBackendHealthRegistry";
 import {
+  deletePluginTaskContextEntriesByBackend,
+  deletePluginTaskRowEntriesByBackend,
   PLUGIN_TASK_DOMAIN_SKILLRUNNER,
   listPluginTaskContextEntries,
   replacePluginTaskContextEntries,
@@ -113,7 +114,6 @@ type ReconcileContext = {
   updatedAt: string;
 };
 
-const LOCAL_RUNTIME_STATE_PREF_KEY = "skillRunnerLocalRuntimeStateJson";
 const POLL_INTERVAL_MS = 1600;
 const BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS = 60000;
 const APPLY_MAX_ATTEMPTS = 5;
@@ -255,32 +255,6 @@ function collectRequestIdsForBackend(backendId: string) {
     requestIds.add(requestId);
   }
   return Array.from(requestIds.values());
-}
-
-function readManagedLocalBackendProbeCandidate():
-  | { backendId: string; baseUrl: string }
-  | null {
-  const raw = normalizeString(getPref(LOCAL_RUNTIME_STATE_PREF_KEY));
-  if (!raw) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw) as {
-      managedBackendId?: unknown;
-      baseUrl?: unknown;
-    };
-    const backendId = normalizeString(parsed.managedBackendId);
-    const baseUrl = normalizeString(parsed.baseUrl);
-    if (!backendId || !baseUrl) {
-      return null;
-    }
-    return {
-      backendId,
-      baseUrl,
-    };
-  } catch {
-    return null;
-  }
 }
 
 type TerminalJobState = Extract<JobState, "succeeded" | "failed" | "canceled">;
@@ -1226,23 +1200,6 @@ export class SkillRunnerTaskReconciler {
       backendIds.add(backendId);
       registerSkillRunnerBackendForHealthTracking(backendId);
     }
-    const managedLocalCandidate = readManagedLocalBackendProbeCandidate();
-    if (
-      managedLocalCandidate &&
-      !backendIds.has(managedLocalCandidate.backendId)
-    ) {
-      const syntheticManagedLocalBackend: BackendInstance = {
-        id: managedLocalCandidate.backendId,
-        type: "skillrunner",
-        baseUrl: managedLocalCandidate.baseUrl,
-        auth: { kind: "none" },
-      };
-      loadedBackends.push(syntheticManagedLocalBackend);
-      backendIds.add(managedLocalCandidate.backendId);
-      registerSkillRunnerBackendForHealthTracking(
-        managedLocalCandidate.backendId,
-      );
-    }
     const prunedBackendIds = pruneSkillRunnerBackendHealth(backendIds.values());
     for (const backendId of prunedBackendIds) {
       this.backendReconcileFailureLogUntilByBackend.delete(backendId);
@@ -2021,15 +1978,24 @@ export function purgeSkillRunnerBackendReconcileState(backendIdRaw: string) {
     backendId,
     requestIds,
   });
-  const removedContexts = defaultReconciler.purgeBackendContexts(backendId);
+  const removedPersistedContexts = deletePluginTaskContextEntriesByBackend(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    backendId,
+  );
+  const removedPersistedRows = deletePluginTaskRowEntriesByBackend(
+    PLUGIN_TASK_DOMAIN_SKILLRUNNER,
+    backendId,
+  );
+  const removedContextsInMemory = defaultReconciler.purgeBackendContexts(backendId);
   const removedLedger = removeSkillRunnerRequestLedgerRecordsByBackendId(
     backendId,
   );
   return {
     backendId,
-    removedContexts,
+    removedContexts: removedPersistedContexts + removedContextsInMemory,
     removedActive,
     removedHistory,
     removedLedger,
+    removedRows: removedPersistedRows,
   };
 }

@@ -31,7 +31,6 @@ The managed local backend identity SHALL be fixed for internal logic, and user-v
 #### Scenario: Fixed backend ID with localized display text
 - **WHEN** managed local backend is created or loaded
 - **THEN** backend ID SHALL be `local-skillrunner-backend`
-- **THEN** legacy managed id `skillrunner-local` SHALL resolve to the same localized display-name path
 - **THEN** user-visible titles/tabs SHALL display localized name instead of raw ID
 
 ### Requirement: Preferences One-Click Section SHALL Confirm Deploy Intent
@@ -93,4 +92,3 @@ Preferences local-runtime status text SHALL use action-specific localized copy f
 - **WHEN** stage-localized copy is unavailable
 - **THEN** status renderer SHALL fallback to existing response `message`
 - **AND** if response `message` is empty, renderer SHALL fallback to localized unknown message
-

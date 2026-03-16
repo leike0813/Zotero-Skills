@@ -40,7 +40,7 @@ TBD - created by archiving change m2-baseline. Update Purpose after archive.
 SkillRunner interactive 执行 SHALL 将终态裁决权交给后端状态机，插件侧仅负责同步与收敛。
 
 #### Scenario: managed local backend ensures runtime before dispatch
-- **WHEN** provider dispatch targets managed local backend `skillrunner-local`
+- **WHEN** provider dispatch targets managed local backend `local-skillrunner-backend`
 - **THEN** provider chain SHALL ensure local runtime is running before sending job create request
 - **AND** ensure failure SHALL surface as provider error without mutating unrelated backend profiles
 

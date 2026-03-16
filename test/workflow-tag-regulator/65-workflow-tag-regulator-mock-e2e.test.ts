@@ -69,10 +69,13 @@ type RuntimeWithEditorBridge = typeof globalThis & {
 
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
 const TAG_VOCAB_STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
+const BACKENDS_CONFIG_PREF_KEY = `${config.prefsPrefix}.backendsConfigJson`;
+const WORKFLOW_SETTINGS_PREF_KEY = `${config.prefsPrefix}.workflowSettingsJson`;
 const MOCK_SKILLRUNNER_BASE_URL =
   (typeof process !== "undefined" &&
     process.env?.ZOTERO_TEST_SKILLRUNNER_ENDPOINT) ||
   "http://127.0.0.1:8030";
+const MOCK_BACKEND_ID = "skillrunner-mock";
 
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
@@ -158,12 +161,55 @@ async function getTagRegulatorWorkflow() {
 
 describe("integration: tag-regulator with mock skill-runner", function () {
   this.timeout(20000);
+  let prevBackendsConfigPref: unknown;
+  let prevWorkflowSettingsPref: unknown;
 
   beforeEach(function () {
+    prevBackendsConfigPref = Zotero.Prefs.get(BACKENDS_CONFIG_PREF_KEY, true);
+    prevWorkflowSettingsPref = Zotero.Prefs.get(WORKFLOW_SETTINGS_PREF_KEY, true);
+    Zotero.Prefs.set(
+      BACKENDS_CONFIG_PREF_KEY,
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: MOCK_BACKEND_ID,
+            displayName: MOCK_BACKEND_ID,
+            type: "skillrunner",
+            baseUrl: MOCK_SKILLRUNNER_BASE_URL,
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    Zotero.Prefs.set(
+      WORKFLOW_SETTINGS_PREF_KEY,
+      JSON.stringify({
+        "tag-regulator": {
+          backendId: MOCK_BACKEND_ID,
+        },
+      }),
+      true,
+    );
     clearTagVocabularyState();
   });
 
   afterEach(function () {
+    if (typeof prevBackendsConfigPref === "undefined") {
+      Zotero.Prefs.clear(BACKENDS_CONFIG_PREF_KEY, true);
+    } else {
+      Zotero.Prefs.set(BACKENDS_CONFIG_PREF_KEY, prevBackendsConfigPref, true);
+    }
+    if (typeof prevWorkflowSettingsPref === "undefined") {
+      Zotero.Prefs.clear(WORKFLOW_SETTINGS_PREF_KEY, true);
+    } else {
+      Zotero.Prefs.set(
+        WORKFLOW_SETTINGS_PREF_KEY,
+        prevWorkflowSettingsPref,
+        true,
+      );
+    }
     clearTagVocabularyState();
   });
 

@@ -1,5 +1,4 @@
 import {
-  LEGACY_MANAGED_LOCAL_BACKEND_IDS,
   MANAGED_LOCAL_BACKEND_ID,
 } from "../modules/skillRunnerLocalRuntimeConstants";
 
@@ -30,10 +29,7 @@ export function isManagedLocalBackendId(value: unknown) {
   if (!normalized) {
     return false;
   }
-  if (normalized === MANAGED_LOCAL_BACKEND_ID) {
-    return true;
-  }
-  return LEGACY_MANAGED_LOCAL_BACKEND_IDS.has(normalized);
+  return normalized === MANAGED_LOCAL_BACKEND_ID;
 }
 
 export function generateBackendInternalId(args: {
@@ -49,8 +45,7 @@ export function generateBackendInternalId(args: {
   let suffix = 2;
   while (
     args.usedIds.has(candidate) ||
-    candidate === MANAGED_LOCAL_BACKEND_ID ||
-    LEGACY_MANAGED_LOCAL_BACKEND_IDS.has(candidate)
+    candidate === MANAGED_LOCAL_BACKEND_ID
   ) {
     candidate = `${base}-${buildIdNonce()}-${suffix}`;
     suffix += 1;

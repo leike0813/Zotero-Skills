@@ -1,6 +1,6 @@
 export const DEFAULT_SKILLRUNNER_ENDPOINT = "http://127.0.0.1:8030";
 
-export const DEFAULT_BACKEND_ID = "skillrunner-local";
+export const DEFAULT_BACKEND_ID = "backend-default";
 
 export const DEFAULT_BACKEND_TYPE = "skillrunner";
 

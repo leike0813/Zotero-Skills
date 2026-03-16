@@ -1341,7 +1341,8 @@ function normalizeState(raw: unknown): ManagedLocalRuntimeState {
   const leaseRaw = isObjectRecord(raw.lease) ? raw.lease : {};
   const managedBackendId = normalizeManagedLocalBackendId(raw.managedBackendId);
   return {
-    managedBackendId: managedBackendId || undefined,
+    managedBackendId:
+      managedBackendId === MANAGED_PROFILE_ID ? managedBackendId : undefined,
     versionTag: normalizeString(raw.versionTag) || undefined,
     installDir: normalizeString(raw.installDir) || undefined,
     ctlPath: normalizeString(raw.ctlPath) || undefined,
@@ -2241,7 +2242,7 @@ async function reconcileAfterHeartbeatFail(reason: string) {
   ensureStatusReconcileLoop();
 }
 
-async function ensureManagedProfileConfigured(
+async function createManagedProfileOnDeploy(
   state: ManagedLocalRuntimeState,
   baseUrl: string,
 ) {
@@ -2276,6 +2277,37 @@ async function ensureManagedProfileConfigured(
   return {
     ok: true,
     message,
+    conflict: false,
+  };
+}
+
+async function syncManagedProfileIfExists(baseUrl: string) {
+  const loaded = await loadBackendsRegistry();
+  if (loaded.fatalError) {
+    return {
+      ok: false,
+      message: loaded.fatalError,
+      conflict: false,
+    };
+  }
+  const existing = loaded.backends.find((entry) => entry.id === MANAGED_PROFILE_ID);
+  if (!existing) {
+    return {
+      ok: false,
+      message: `managed backend profile '${MANAGED_PROFILE_ID}' is missing`,
+      conflict: false,
+    };
+  }
+  const mergedBackends = loaded.backends.map((entry) =>
+    entry.id === MANAGED_PROFILE_ID ? buildManagedSkillRunnerBackend(baseUrl) : entry,
+  );
+  setPref(
+    BACKENDS_CONFIG_PREF_KEY,
+    JSON.stringify(createBackendsPrefsDocument(mergedBackends)),
+  );
+  return {
+    ok: true,
+    message: "",
     conflict: false,
   };
 }
@@ -2684,8 +2716,7 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
           runtimeFailureCount: 0,
           runtimeError: "",
         });
-        const profileSyncResult = await ensureManagedProfileConfigured(
-          nextState,
+        const profileSyncResult = await syncManagedProfileIfExists(
           resolveManagedBaseUrl(nextState),
         );
         if (!profileSyncResult.ok) {
@@ -2990,10 +3021,7 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
       ...stagedState,
       managedBackendId: MANAGED_PROFILE_ID,
     };
-    const profileResult = await ensureManagedProfileConfigured(
-      profileEnsureState,
-      finalBaseUrl,
-    );
+    const profileResult = await createManagedProfileOnDeploy(profileEnsureState, finalBaseUrl);
     if (!profileResult.ok) {
       writeManagedLocalRuntimeState({
         ...stagedState,
@@ -4327,8 +4355,7 @@ export async function ensureManagedLocalRuntimeForBackend(
       runtimeFailureCount: 0,
       runtimeError: "",
     });
-    const profileSyncResult = await ensureManagedProfileConfigured(
-      state,
+    const profileSyncResult = await syncManagedProfileIfExists(
       resolveManagedBaseUrl(state),
     );
     if (!profileSyncResult.ok) {

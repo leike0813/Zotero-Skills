@@ -64,7 +64,7 @@ describe("provider/backend registry", function () {
       schemaVersion: 2,
       backends: [
         {
-          id: "skillrunner-local",
+          id: "skillrunner-primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -105,7 +105,7 @@ describe("provider/backend registry", function () {
     const loaded = await loadBackendsRegistry();
     assert.isUndefined(loaded.fatalError);
     assert.isAtLeast(loaded.backends.length, 2);
-    assert.isOk(loaded.backends.find((entry) => entry.id === "skillrunner-local"));
+    assert.isOk(loaded.backends.find((entry) => entry.id === "skillrunner-primary"));
     assert.isOk(loaded.backends.find((entry) => entry.id === "generic-http-local"));
   });
 
@@ -114,7 +114,7 @@ describe("provider/backend registry", function () {
       schemaVersion: 2,
       backends: [
         {
-          id: "skillrunner-local",
+          id: "skillrunner-primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -145,7 +145,7 @@ describe("provider/backend registry", function () {
     assert.isOk(workflow, "workflow literature-digest not found");
 
     const backend = await resolveBackendForWorkflow(workflow!);
-    assert.equal(backend.id, "skillrunner-local");
+    assert.equal(backend.id, "skillrunner-primary");
     assert.equal(backend.type, "skillrunner");
     assert.equal(backend.baseUrl, "http://127.0.0.1:8030");
   });
@@ -281,7 +281,7 @@ describe("provider/backend registry", function () {
       const result = await executeWithProvider({
         requestKind: "skillrunner.job.v1",
         backend: {
-          id: "skillrunner-local",
+          id: "skillrunner-primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -339,7 +339,7 @@ describe("provider/backend registry", function () {
 
     try {
       const backend = {
-        id: "skillrunner-local",
+        id: "skillrunner-primary",
         type: "skillrunner" as const,
         baseUrl: "http://127.0.0.1:8030",
         auth: { kind: "none" as const },
@@ -380,7 +380,7 @@ describe("provider/backend registry", function () {
       await executeWithProvider({
         requestKind: "skillrunner.job.v1",
         backend: {
-          id: "skillrunner-local",
+          id: "skillrunner-primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -504,7 +504,7 @@ describe("provider/backend registry", function () {
       schemaVersion: 2,
       backends: [
         {
-          id: "skillrunner-local",
+          id: "skillrunner-primary",
           type: "skillrunner",
           baseUrl: "http://127.0.0.1:8030",
           auth: { kind: "none" },
@@ -554,15 +554,13 @@ describe("provider/backend registry", function () {
     assert.match(String(thrown), /is invalid|Unknown backendId/);
   });
 
-  it("migrates legacy skillRunnerEndpoint on first load when backend prefs are empty", async function () {
+  it("does not auto-create default skillrunner backend when backend prefs are empty", async function () {
     Zotero.Prefs.clear(backendsConfigPrefKey, true);
     Zotero.Prefs.set(endpointPrefKey, "http://127.0.0.1:18030", true);
 
     const loaded = await loadBackendsRegistry();
     assert.isUndefined(loaded.fatalError);
-    const backend = loaded.backends.find((entry) => entry.id === "skillrunner-local");
-    assert.isOk(backend);
-    assert.equal(backend?.baseUrl, "http://127.0.0.1:18030");
+    assert.lengthOf(loaded.backends, 0);
   });
 
 });

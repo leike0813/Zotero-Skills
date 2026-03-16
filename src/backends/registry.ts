@@ -1,8 +1,5 @@
 import {
-  DEFAULT_BACKEND_ID,
-  DEFAULT_BACKEND_TYPE,
   DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
-  DEFAULT_SKILLRUNNER_ENDPOINT,
 } from "../config/defaults";
 import { getPref, setPref } from "../utils/prefs";
 import type { LoadedWorkflow } from "../workflows/types";
@@ -23,11 +20,10 @@ type BackendsDocShape = {
 };
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
-const LEGACY_SKILLRUNNER_ENDPOINT_PREF_KEY = "skillRunnerEndpoint";
 const WORKFLOW_SETTINGS_PREF_KEY = "workflowSettingsJson";
 const TASK_DASHBOARD_HISTORY_PREF_KEY = "taskDashboardHistoryJson";
-const DEFAULT_BACKEND_TIMEOUT_MS = 600000;
 const BACKENDS_SCHEMA_VERSION = 2;
+const LEGACY_REMOVED_BACKEND_IDS = new Set(["skillrunner-local"]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -50,27 +46,13 @@ function normalizeBackendsSchemaVersion(value: unknown) {
   return 0;
 }
 
-function buildMigratedDocument(skillRunnerEndpoint: string): {
+function buildInitialBackendsDocument(): {
   schemaVersion: number;
   backends: BackendInstance[];
 } {
   return {
     schemaVersion: BACKENDS_SCHEMA_VERSION,
-    backends: [
-      {
-        id: DEFAULT_BACKEND_ID,
-        displayName: DEFAULT_BACKEND_ID,
-        type: DEFAULT_BACKEND_TYPE,
-        baseUrl: skillRunnerEndpoint,
-        auth: {
-          kind: "none",
-        },
-        defaults: {
-          headers: {},
-          timeout_ms: DEFAULT_BACKEND_TIMEOUT_MS,
-        },
-      },
-    ],
+    backends: [],
   };
 }
 
@@ -80,14 +62,7 @@ function ensureBackendsPrefsDocument() {
     return raw;
   }
 
-  const legacySkillRunnerEndpoint = String(
-    getPref(LEGACY_SKILLRUNNER_ENDPOINT_PREF_KEY) ||
-      DEFAULT_SKILLRUNNER_ENDPOINT,
-  ).trim();
-  const migrated = buildMigratedDocument(
-    legacySkillRunnerEndpoint || DEFAULT_SKILLRUNNER_ENDPOINT,
-  );
-  const serialized = JSON.stringify(migrated);
+  const serialized = JSON.stringify(buildInitialBackendsDocument());
   setPref(BACKENDS_CONFIG_PREF_KEY, serialized);
   return serialized;
 }
@@ -504,9 +479,31 @@ export async function loadBackendsRegistry(): Promise<LoadedBackends> {
     }
   }
 
+  const removedLegacyIds = new Set<string>();
+  const finalBackends = validBackends.filter((backend) => {
+    if (!LEGACY_REMOVED_BACKEND_IDS.has(backend.id)) {
+      return true;
+    }
+    removedLegacyIds.add(backend.id);
+    return false;
+  });
+  if (removedLegacyIds.size > 0) {
+    setPref(
+      BACKENDS_CONFIG_PREF_KEY,
+      JSON.stringify(createBackendsPrefsDocument(finalBackends)),
+    );
+    syncBackendReferences({
+      idMapping: new Map<string, string>(),
+      removedIds: removedLegacyIds,
+    });
+    warnings.push(
+      `Removed legacy backend ids: ${Array.from(removedLegacyIds.values()).join(", ")}`,
+    );
+  }
+
   return {
     sourcePath,
-    backends: validBackends,
+    backends: finalBackends,
     warnings,
     errors,
     invalidBackends,
@@ -600,22 +597,5 @@ export async function resolveBackendForWorkflow(
     );
   }
 
-  const candidateIds = [backendsByType[0].id, DEFAULT_BACKEND_ID].filter(
-    Boolean,
-  );
-
-  for (const candidateId of candidateIds) {
-    const matched = byId.get(candidateId);
-    if (!matched) {
-      continue;
-    }
-    if (matched.type !== providerType) {
-      continue;
-    }
-    return matched;
-  }
-
-  throw new Error(
-    `No compatible backend profile resolved for workflow ${workflow.manifest.id} (provider=${providerType}, source=${loaded.sourcePath})`,
-  );
+  return backendsByType[0];
 }

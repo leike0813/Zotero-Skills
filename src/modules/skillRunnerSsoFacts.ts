@@ -11,10 +11,13 @@ import {
   SKILLRUNNER_EVENT_STREAM_CONNECT_SNAPSHOT,
   SKILLRUNNER_EVENT_STREAM_DISCONNECT_STATES,
 } from "./skillRunnerSessionSyncManager";
+import { MANAGED_LOCAL_BACKEND_ID } from "./skillRunnerLocalRuntimeConstants";
 
 export const SKILLRUNNER_SSOT_FACTS = {
   states: [...SKILLRUNNER_PROVIDER_STATES],
   terminalStates: [...SKILLRUNNER_TERMINAL_STATES],
+  legacyManagedBackendIds: [] as string[],
+  managedLocalBackendId: MANAGED_LOCAL_BACKEND_ID,
   nonTerminalWriteSource: "events",
   terminalWriteSource: "jobs-terminal",
   backendHealth: {
@@ -31,6 +34,10 @@ export const SKILLRUNNER_SSOT_FACTS = {
   },
   startup: {
     autoReconnectSnapshot: "running",
+  },
+  managedLocal: {
+    profileCreatePolicy: "deploy-only",
+    probePolicy: "probe-only-if-registry-present",
   },
   uiGating: {
     flaggedBackendBlocksRunDialog: true,

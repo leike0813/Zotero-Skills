@@ -1227,6 +1227,36 @@ export function deletePluginTaskContextEntry(domainRaw: string, contextIdRaw: st
   return true;
 }
 
+export function deletePluginTaskContextEntriesByBackend(
+  domainRaw: string,
+  backendIdRaw: string,
+) {
+  const domain = normalizeString(domainRaw);
+  const backendId = normalizeString(backendIdRaw);
+  if (!domain || !backendId) {
+    return 0;
+  }
+  const db = getAdapter();
+  const before = Number(
+    db.get(
+      `
+        SELECT COUNT(*) AS value
+        FROM plugin_task_contexts
+        WHERE domain=@domain AND backend_id=@backend_id
+      `,
+      { domain, backend_id: backendId },
+    )?.value || 0,
+  );
+  db.run(
+    "DELETE FROM plugin_task_contexts WHERE domain=@domain AND backend_id=@backend_id",
+    {
+      domain,
+      backend_id: backendId,
+    },
+  );
+  return Number.isFinite(before) ? before : 0;
+}
+
 export function listPluginTaskRowEntries(
   domainRaw: string,
   scopeRaw: PluginTaskScope,
@@ -1317,6 +1347,36 @@ export function clearPluginTaskRowEntries(domainRaw: string, scopeRaw: PluginTas
     domain,
     scope,
   });
+}
+
+export function deletePluginTaskRowEntriesByBackend(
+  domainRaw: string,
+  backendIdRaw: string,
+) {
+  const domain = normalizeString(domainRaw);
+  const backendId = normalizeString(backendIdRaw);
+  if (!domain || !backendId) {
+    return 0;
+  }
+  const db = getAdapter();
+  const before = Number(
+    db.get(
+      `
+        SELECT COUNT(*) AS value
+        FROM plugin_task_rows
+        WHERE domain=@domain AND backend_id=@backend_id
+      `,
+      { domain, backend_id: backendId },
+    )?.value || 0,
+  );
+  db.run(
+    "DELETE FROM plugin_task_rows WHERE domain=@domain AND backend_id=@backend_id",
+    {
+      domain,
+      backend_id: backendId,
+    },
+  );
+  return Number.isFinite(before) ? before : 0;
 }
 
 export function resetPluginStateStoreForTests() {

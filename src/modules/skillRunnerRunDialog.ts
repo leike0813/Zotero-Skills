@@ -935,8 +935,7 @@ function isSkillRunnerRecord(record: {
   const backendId = String(record.backendId || "").trim();
   return (
     backendType === SKILLRUNNER_BACKEND_TYPE ||
-    backendId === "local-skillrunner-backend" ||
-    backendId === "skillrunner-local"
+    backendId === "local-skillrunner-backend"
   );
 }
 

@@ -863,19 +863,19 @@ export function persistBackendsConfig(
           (entry) => isManagedLocalBackendId(entry.id),
         )
       ) {
-        const normalizedManaged = {
-          ...managed,
-          id: MANAGED_LOCAL_BACKEND_ID,
-          displayName: normalizeBackendDisplayName(
-            managed.displayName,
-            "Local Backend",
-          ),
-        };
-        const legacyManagedId = String(managed.id || "").trim();
-        if (legacyManagedId && legacyManagedId !== MANAGED_LOCAL_BACKEND_ID) {
-          idMapping.set(legacyManagedId, MANAGED_LOCAL_BACKEND_ID);
+        if (String(managed.id || "").trim() === MANAGED_LOCAL_BACKEND_ID) {
+          const normalizedManaged = {
+            ...managed,
+            id: MANAGED_LOCAL_BACKEND_ID,
+            displayName: normalizeBackendDisplayName(
+              managed.displayName,
+              "Local Backend",
+            ),
+          };
+          mergedBackends.push(normalizedManaged);
+        } else {
+          removedIds.add(String(managed.id || "").trim());
         }
-        mergedBackends.push(normalizedManaged);
       }
     } catch {
       // ignore parse failures and keep current mergedBackends

@@ -45,7 +45,7 @@
 {
   "backends": [
     {
-      "id": "skillrunner-local",
+      "id": "backend-skillrunner-primary",
       "type": "skillrunner",
       "baseUrl": "http://127.0.0.1:8030",
       "auth": { "kind": "none" },

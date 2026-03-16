@@ -21,7 +21,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: Provider 状态集合和终态集合必须固定，变更需先更新 SSOT/YAML/spec/code facts。
 
   - id: INV-PROV-WRITE-NONTERMINAL-EVENTS
@@ -34,7 +34,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 非终态写入仅允许来自 events 语义。
 
   - id: INV-PROV-WRITE-TERMINAL-JOBS
@@ -47,7 +47,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 终态允许 jobs-terminal 覆盖收敛，不允许非终态路径推断终态。
 
   - id: INV-PROV-BACKEND-HEALTH-BACKOFF
@@ -63,7 +63,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 后端可达性探测降频固定为 5s->15s->60s。
 
   - id: INV-PROV-BACKEND-HEALTH-THRESHOLDS
@@ -78,7 +78,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 两次失败进入 gate，首次成功恢复。
 
   - id: INV-PROV-STREAM-EVENT-RUNNING-ONLY
@@ -98,7 +98,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: event SSE 仅对 running 连接，进入 waiting/terminal 立即断开。
 
   - id: INV-PROV-STARTUP-RUNNING-ONLY-RECONNECT
@@ -111,7 +111,7 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 启动自动接线仅面向 snapshot=running 的请求。
 
   - id: INV-PROV-UI-GATING-BACKEND-FLAG
@@ -127,5 +127,35 @@ invariants:
     doc_refs:
       - doc/components/skillrunner-provider-state-machine-ssot.md
     spec_refs:
-      - openspec/changes/skillrunner-ssot-yaml-invariants-lockdown/specs/task-dashboard-skillrunner-observe/spec.md
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: backend reconcileFlag=true 时必须统一执行入口阻断和 UI 禁用规则。
+
+  - id: INV-PROV-NO-LEGACY-ID
+    domain: skillrunner-provider
+    type: id-governance
+    current_value:
+      legacyManagedBackendIds: []
+      managedLocalBackendId: local-skillrunner-backend
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.legacyManagedBackendIds
+      - SKILLRUNNER_SSOT_FACTS.managedLocalBackendId
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 旧 ID `skillrunner-local` 必须下线，不得作为运行时有效 backend id。
+
+  - id: INV-PROV-MANAGED-LOCAL-REGISTER-ONLY-AFTER-DEPLOY
+    domain: skillrunner-provider
+    type: managed-local-gating
+    current_value:
+      profileCreatePolicy: deploy-only
+      probePolicy: probe-only-if-registry-present
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.managedLocal.profileCreatePolicy
+      - SKILLRUNNER_SSOT_FACTS.managedLocal.probePolicy
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 本地托管后端仅在部署成功后入库并纳入探测，未入库前禁止探测。

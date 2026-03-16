@@ -26,9 +26,8 @@ Backend profiles SHALL use immutable internal IDs for runtime binding and editab
 - **AND** plugin SHALL generate a new unique internal `id`
 
 ### Requirement: Managed Local Backend Isolation
-Backend manager SHALL hide managed local backend entries in both legacy and new managed IDs.
+Backend manager SHALL hide managed local backend entries using canonical managed ID only.
 
 #### Scenario: Hide managed local backend
 - **WHEN** backend manager renders backend rows
-- **THEN** entries with ID `local-skillrunner-backend` or legacy `skillrunner-local` (managed legacy) SHALL NOT be shown in backend manager
-
+- **THEN** entries with ID `local-skillrunner-backend` SHALL NOT be shown in backend manager

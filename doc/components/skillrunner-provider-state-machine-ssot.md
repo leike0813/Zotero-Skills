@@ -115,6 +115,24 @@ Each invariant below is normative and machine-referenced by ID.
 - Forbidden: flagged backend entering interactive run paths.
 - Observability: dashboard/workspace snapshots + open-run guard branch.
 
+### INV-PROV-NO-LEGACY-ID
+
+- Trigger: backend config load/startup normalization.
+- Allowed: plugin runtime only treats `local-skillrunner-backend` as managed local backend ID.
+- Forbidden: keeping `skillrunner-local` as valid runtime backend id or compat alias.
+- Observability: registry sanitation warning + startup purge path for legacy id.
+
+### INV-PROV-MANAGED-LOCAL-REGISTER-ONLY-AFTER-DEPLOY
+
+- Trigger: local managed backend profile creation/sync.
+- Allowed:
+  - create `local-skillrunner-backend` profile only after deploy success.
+  - startup/ensure/start flows may sync existing profile but must not create it.
+- Forbidden:
+  - auto-injecting managed local backend during initialization.
+  - probing managed local backend when it is absent from registry.
+- Observability: local runtime deploy/start stages + backend health probe target set.
+
 ## 5. Ledger and Persistence Contract
 
 Ledger persistence is plugin-scope SQLite:
@@ -161,6 +179,11 @@ Backend unreachable:
 - apply backend-level UI/entry gating
 - do not clear tasks
 - do not downgrade/guess status
+
+Legacy managed local ID:
+
+- any persisted `skillrunner-local` reference is dropped on startup cleanup.
+- dropped legacy records are not migrated to `local-skillrunner-backend`.
 
 Backend terminal without terminal `state.changed`:
 

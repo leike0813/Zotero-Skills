@@ -31,6 +31,9 @@ import {
 } from "../../src/modules/pluginStateStore";
 import { getPref, setPref } from "../../src/utils/prefs";
 
+const TEST_SKILLRUNNER_BACKEND_ID = "remote-skillrunner";
+const TEST_SKILLRUNNER_BASE_URL = "http://127.0.0.1:8031";
+
 function createJsonResponse(payload: unknown, status = 200): Response {
   const text = JSON.stringify(payload);
   return {
@@ -67,9 +70,9 @@ function makeDeferredJob(args?: {
       taskName: "paper.md",
       workflowLabel: "Literature Explainer",
       requestId,
-      backendId: "skillrunner-local",
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
       backendType: "skillrunner",
-      backendBaseUrl: "http://127.0.0.1:8030",
+      backendBaseUrl: TEST_SKILLRUNNER_BASE_URL,
       providerId: "skillrunner",
       targetParentID,
     },
@@ -155,6 +158,20 @@ describe("skillrunner task reconciler", function () {
     setPref("skillRunnerRequestLedgerJson", "");
     setPref("skillRunnerDeferredTasksJson", "");
     setPref("taskDashboardHistoryJson", "");
+    setPref(
+      "backendsConfigJson",
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: TEST_SKILLRUNNER_BACKEND_ID,
+            type: "skillrunner",
+            baseUrl: TEST_SKILLRUNNER_BASE_URL,
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+    );
     resetPluginStateStoreForTests();
     resetWorkflowTasks();
     clearRuntimeLogs();
@@ -225,9 +242,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: parent.id,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -256,14 +273,14 @@ describe("skillrunner task reconciler", function () {
 
   it("restores pending contexts from sqlite store on start", async function () {
     const record = {
-      id: "skillrunner-local:req-restore-1",
+      id: `${TEST_SKILLRUNNER_BACKEND_ID}:req-restore-1`,
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
       requestKind: "skillrunner.job.v1",
       request: { kind: "skillrunner.job.v1", targetParentID: 123 },
-      backendId: "skillrunner-local",
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
       backendType: "skillrunner",
-      backendBaseUrl: "http://127.0.0.1:8030",
+      backendBaseUrl: TEST_SKILLRUNNER_BASE_URL,
       providerId: "skillrunner",
       providerOptions: { engine: "gemini" },
       runId: "run-restore-1",
@@ -309,14 +326,14 @@ describe("skillrunner task reconciler", function () {
 
   it("degrades persisted unknown state to running on restore", async function () {
     const unknownRecord = {
-      id: "skillrunner-local:req-restore-unknown",
+      id: `${TEST_SKILLRUNNER_BACKEND_ID}:req-restore-unknown`,
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
       requestKind: "skillrunner.job.v1",
       request: { kind: "skillrunner.job.v1", targetParentID: 123 },
-      backendId: "skillrunner-local",
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
       backendType: "skillrunner",
-      backendBaseUrl: "http://127.0.0.1:8030",
+      backendBaseUrl: TEST_SKILLRUNNER_BASE_URL,
       providerId: "skillrunner",
       providerOptions: { engine: "gemini" },
       runId: "run-restore-unknown",
@@ -385,9 +402,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: 123,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -452,9 +469,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: parent.id,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -522,9 +539,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: parent.id,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -578,9 +595,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: 123,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -632,9 +649,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: 123,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -684,9 +701,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: 123,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -987,9 +1004,9 @@ describe("skillrunner task reconciler", function () {
         targetParentID: 123,
       },
       backend: {
-        id: "skillrunner-local",
+        id: TEST_SKILLRUNNER_BACKEND_ID,
         type: "skillrunner",
-        baseUrl: "http://127.0.0.1:8030",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
         auth: { kind: "none" },
       },
       providerId: "skillrunner",
@@ -1006,7 +1023,7 @@ describe("skillrunner task reconciler", function () {
     await reconciler.reconcilePending();
     let failedLogs = listRuntimeLogs({
       operation: "backend-health-probe-failed",
-      backendId: "skillrunner-local",
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
       order: "asc",
     });
     assert.lengthOf(failedLogs, 1);
@@ -1015,7 +1032,7 @@ describe("skillrunner task reconciler", function () {
     await reconciler.reconcilePending();
     failedLogs = listRuntimeLogs({
       operation: "backend-health-probe-failed",
-      backendId: "skillrunner-local",
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
       order: "asc",
     });
     assert.lengthOf(failedLogs, 1);
@@ -1031,10 +1048,10 @@ describe("skillrunner task reconciler", function () {
         schemaVersion: 2,
         backends: [
           {
-            id: "skillrunner-local",
+            id: TEST_SKILLRUNNER_BACKEND_ID,
             displayName: "Local Backend",
             type: "skillrunner",
-            baseUrl: "http://127.0.0.1:8030",
+            baseUrl: TEST_SKILLRUNNER_BASE_URL,
             auth: { kind: "none" },
           },
         ],
@@ -1076,9 +1093,9 @@ describe("skillrunner task reconciler", function () {
           targetParentID: 123,
         },
         backend: {
-          id: "skillrunner-local",
+          id: TEST_SKILLRUNNER_BACKEND_ID,
           type: "skillrunner",
-          baseUrl: "http://127.0.0.1:8030",
+          baseUrl: TEST_SKILLRUNNER_BASE_URL,
           auth: { kind: "none" },
         },
         providerId: "skillrunner",
@@ -1091,7 +1108,7 @@ describe("skillrunner task reconciler", function () {
         }),
       });
 
-      const key = "skillrunner-local";
+      const key = TEST_SKILLRUNNER_BACKEND_ID;
 
       await reconciler.reconcilePending();
       assert.isAtLeast(fetchCount, 1);

@@ -45,8 +45,8 @@ describe("workflow settings execution", function () {
         schemaVersion: 2,
         backends: [
           {
-            id: "skillrunner-local",
-            displayName: "skillrunner-local",
+            id: "skillrunner-primary",
+            displayName: "skillrunner-primary",
             type: "skillrunner",
             baseUrl: "http://127.0.0.1:8030",
             auth: { kind: "none" },
@@ -155,7 +155,7 @@ describe("workflow settings execution", function () {
 
   it("applies per-submit execution overrides without mutating persisted settings", async function () {
     updateWorkflowSettings("literature-digest", {
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
       providerOptions: {
         engine: "gemini",
@@ -189,7 +189,7 @@ describe("workflow settings execution", function () {
     assert.equal(overridden.providerOptions.no_cache, true);
 
     const persisted = await resolveWorkflowExecutionContext({ workflow: workflow! });
-    assert.equal(persisted.backend.id, "skillrunner-local");
+    assert.equal(persisted.backend.id, "skillrunner-primary");
     assert.equal(persisted.workflowParams.language, "zh-CN");
     assert.equal(persisted.providerOptions.engine, "gemini");
     assert.equal(persisted.providerOptions.model, "");
@@ -198,7 +198,7 @@ describe("workflow settings execution", function () {
 
   it("persists explicit A->B updates for default settings", async function () {
     updateWorkflowSettings("literature-digest", {
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
       providerOptions: {
         engine: "gemini",
@@ -207,7 +207,7 @@ describe("workflow settings execution", function () {
       },
     });
     updateWorkflowSettings("literature-digest", {
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       workflowParams: { language: "en-US" },
       providerOptions: {
         engine: "gemini",
@@ -419,7 +419,7 @@ describe("workflow settings execution", function () {
 
   it("returns persisted snapshot when settings page opens", async function () {
     updateWorkflowSettings("literature-digest", {
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
       providerOptions: {
         engine: "gemini",
@@ -429,7 +429,7 @@ describe("workflow settings execution", function () {
     });
 
     const defaults = resetRunOnceOverridesForSettingsOpen("literature-digest");
-    assert.equal(defaults.backendId, "skillrunner-local");
+    assert.equal(defaults.backendId, "skillrunner-primary");
     assert.equal(defaults.workflowParams?.language, "zh-CN");
     assert.equal(defaults.providerOptions?.model, "");
     assert.equal(defaults.providerOptions?.no_cache, false);
@@ -443,7 +443,7 @@ describe("workflow settings execution", function () {
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
     });
-    assert.equal(context.backend.id, "skillrunner-local");
+    assert.equal(context.backend.id, "skillrunner-primary");
     assert.equal(context.workflowParams.language, "zh-CN");
     assert.equal(context.providerOptions.model, "");
     assert.equal(context.providerOptions.no_cache, false);
@@ -465,7 +465,7 @@ describe("workflow settings execution", function () {
     });
 
     const profileIds = descriptor.profiles.map((entry) => entry.id).sort();
-    assert.deepEqual(profileIds, ["skillrunner-alt", "skillrunner-local"].sort());
+    assert.deepEqual(profileIds, ["skillrunner-alt", "skillrunner-primary"].sort());
     assert.isFalse(profileIds.includes("generic-http-local"));
   });
 
@@ -496,7 +496,7 @@ describe("workflow settings execution", function () {
 
   it("uses latest persisted values for settings defaults after persistent update", function () {
     updateWorkflowSettings("literature-digest", {
-      backendId: "skillrunner-local",
+      backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
       providerOptions: {
         engine: "gemini",

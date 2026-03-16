@@ -31,7 +31,7 @@ Rule: a key belongs to one owner file. Cross-file duplicates are forbidden unles
    - raw key echo,
    - prefixed id echo (`<addonRef>-<key>`).
 2. Managed local backend display-name fallback is centralized:
-   - `local-skillrunner-backend` and `skillrunner-local` resolve through one path.
+   - `local-skillrunner-backend` resolves through one path.
 3. Runtime toast fallback is locale-aware:
    - `zh*` locale uses Chinese fallback text,
    - otherwise uses English fallback text.

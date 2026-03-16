@@ -9,7 +9,7 @@ TBD - created by archiving change add-skillrunner-oneclick-local-deploy. Update 
 #### Scenario: Deploy and configure managed local profile successfully
 - **WHEN** 用户在 Preferences 点击 `Deploy & Configure`
 - **THEN** 插件 SHALL 顺序执行 `release download/checksum/extract -> ctl bootstrap -> read bootstrap report -> ctl up(local, host=127.0.0.1, requested_port=29813, port_fallback_span=10) -> ctl status`
-- **AND** 成功后插件 SHALL 自动创建托管 backend profile `skillrunner-local`，并以 `up/status` 返回的实际 `host/port/url` 作为 profile `baseUrl` SSOT
+- **AND** 成功后插件 SHALL 自动创建托管 backend profile `local-skillrunner-backend`，并以 `up/status` 返回的实际 `host/port/url` 作为 profile `baseUrl` SSOT
 - **AND** 插件 MUST 记录下载/校验/解包证据以支持排障
 
 #### Scenario: Reference directory is not executable runtime dependency
@@ -48,7 +48,7 @@ TBD - created by archiving change add-skillrunner-oneclick-local-deploy. Update 
 - **AND** 插件 MUST NOT 修改已安装 Skill-Runner 发布目录中的后端源码文件
 
 #### Scenario: Profile id conflict blocks auto-write
-- **WHEN** 插件检测到 `skillrunner-local` 已存在且不属于托管 profile
+- **WHEN** 插件检测到 `local-skillrunner-backend` 已存在且不属于托管 profile
 - **THEN** 插件 MUST 提示人工处理冲突
 - **AND** 插件 MUST NOT 覆盖或重命名现有 profile
 
@@ -59,7 +59,7 @@ TBD - created by archiving change add-skillrunner-oneclick-local-deploy. Update 
 
 #### Scenario: Uninstall clears managed profile and runtime state
 - **WHEN** 用户在 Preferences 点击 `Uninstall` 且卸载脚本成功返回
-- **THEN** 插件 SHALL 删除托管 profile `skillrunner-local`
+- **THEN** 插件 SHALL 删除托管 profile `local-skillrunner-backend`
 - **AND** 插件 SHALL 清空托管运行状态（deployment/runtime/lease）
 - **AND** 插件 SHOULD 默认不清理 data/agent-home（除非显式请求）
 
@@ -67,7 +67,7 @@ TBD - created by archiving change add-skillrunner-oneclick-local-deploy. Update 
 插件托管本地 profile MUST 在首次使用时接管 local runtime lease，并在插件生命周期内维持心跳。
 
 #### Scenario: Managed backend execution ensures runtime and acquires lease
-- **WHEN** 托管 `skillrunner-local` backend 被用于 SkillRunner 执行
+- **WHEN** 托管 `local-skillrunner-backend` backend 被用于 SkillRunner 执行
 - **THEN** 插件 SHALL 先 ensure runtime `running`（必要时执行 `up --mode local`）
 - **AND** 插件 SHALL acquire lease（请求体包含 `owner_id` 与 `metadata`）
 - **AND** 插件 SHALL 使用 acquire 响应中的 `heartbeat_interval_seconds` 作为心跳周期（回退默认 20s）
@@ -102,4 +102,3 @@ TBD - created by archiving change add-skillrunner-oneclick-local-deploy. Update 
 - **WHEN** 维护 bootstrap spec 的运行时行为描述
 - **THEN** bootstrap spec SHALL 仅保留入口链路与能力边界
 - **AND** SHALL NOT 复制状态机转移矩阵或按钮门禁细则
-

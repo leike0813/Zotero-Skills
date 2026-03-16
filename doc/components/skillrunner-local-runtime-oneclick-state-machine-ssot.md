@@ -5,6 +5,8 @@
 本文档作为 SkillRunner 本地一键部署/启动能力的状态机 SSOT，约束按钮动作、状态收敛、监测启停与不变量守护。  
 该文档只定义行为合同，不包含业务实现代码。
 
+当前实现约束：本地控制面由插件桥接器原生动作实现（`bootstrap/preflight/up/down/status/doctor`），运行期不再依赖 `skill_runnerctl` 返回作为真源。
+
 ## State Model
 
 ### States
@@ -129,14 +131,14 @@ stateDiagram-v2
 sequenceDiagram
     participant UI as Preferences UI
     participant SM as State Machine
-    participant Ctl as skill-runnerctl
+    participant Bridge as Plugin Bridge Local Controller
     participant Lease as Local Runtime Lease API
 
     UI->>SM: oneclick_clicked
-    SM->>Ctl: preflight
+    SM->>Bridge: preflightLocalRuntime
     alt preflight_ok
-      SM->>Ctl: up --mode local
-      Ctl-->>SM: up_ok
+      SM->>Bridge: upLocalRuntime
+      Bridge-->>SM: up_ok
       SM->>Lease: acquire
       Lease-->>SM: lease_acquire_ok
       SM-->>UI: running
@@ -152,15 +154,15 @@ sequenceDiagram
     participant UI as Preferences UI
     participant SM as State Machine
     participant Lease as Local Runtime Lease API
-    participant Ctl as skill-runnerctl
+    participant Bridge as Plugin Bridge Local Controller
 
     UI->>SM: stop_clicked
     SM->>Lease: release
     Lease-->>SM: release_ok/release_fail
     SM->>SM: auto-start off (immediate)
-    SM->>Ctl: down --mode local
-    Ctl-->>SM: down_ok/down_fail
-    SM->>Ctl: status (single probe)
+    SM->>Bridge: downLocalRuntime
+    Bridge-->>SM: down_ok/down_fail
+    SM->>Bridge: statusLocalRuntime (single probe)
     alt status_running
       SM-->>UI: running (warn)
     else status_stopped
@@ -176,11 +178,11 @@ sequenceDiagram
 sequenceDiagram
     participant Monitor as Runtime Monitor
     participant Lease as Local Runtime Lease API
-    participant Ctl as skill-runnerctl
+    participant Bridge as Plugin Bridge Local Controller
     participant SM as State Machine
 
     Lease-->>Monitor: heartbeat_fail
-    Monitor->>Ctl: status (first probe)
+    Monitor->>Bridge: statusLocalRuntime (first probe)
     alt status_stopped
       SM-->>Monitor: stopped (end)
     else status_running
@@ -188,8 +190,8 @@ sequenceDiagram
         par heartbeat channel
           Lease-->>Monitor: heartbeat_ok/heartbeat_fail
         and status channel
-          Monitor->>Ctl: status
-          Ctl-->>Monitor: status_running/status_stopped/status_error
+          Monitor->>Bridge: statusLocalRuntime
+          Bridge-->>Monitor: status_running/status_stopped/status_error
         end
         alt heartbeat_ok
           SM-->>Monitor: running; stop status polling
@@ -301,7 +303,7 @@ sequenceDiagram
 - Runtime info is bound to managed backend context and isolated from normal backend overwrite flow.
 
 9. Script Existence Rule
-- With runtime info present, missing `skill-runnerctl` must raise visible error.
+- With runtime info present, missing `installDir` must raise visible error.
 
 10. Interactive Confirm and Progress Rule
 - one-click SHALL only show deploy confirmation when planned action is deploy.

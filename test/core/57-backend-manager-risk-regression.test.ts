@@ -163,6 +163,12 @@ describe("backend manager risk regression", function () {
     assert.equal(collected.backends[0].displayName, "SkillRunner Primary");
   });
 
+  it("allows empty backend profile list from dialog collection", function () {
+    const doc = makeDoc([]);
+    const collected = collectBackendsFromDialog(doc);
+    assert.deepEqual(collected.backends, []);
+  });
+
   it("exposes management action only for skillrunner rows", function () {
     assert.deepEqual(getBackendRowActionKindsForType("skillrunner"), [
       "manage-ui",
@@ -342,6 +348,67 @@ describe("backend manager risk regression", function () {
     assert.equal(parsed.backends?.[0]?.id, "backend-skillrunner-primary");
     assert.equal(parsed.backends?.[0]?.displayName, "SkillRunner Primary");
     assert.equal(refreshCalls, 1);
+  });
+
+  it("triggers silent model-cache refresh when a new skillrunner backend is added", function () {
+    const prefKey = `${config.prefsPrefix}.backendsConfigJson`;
+    const previous = Zotero.Prefs.get(prefKey, true);
+    Zotero.Prefs.set(
+      prefKey,
+      JSON.stringify({
+        schemaVersion: 2,
+        backends: [
+          {
+            id: "backend-skillrunner-existing",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+          },
+        ],
+      }),
+      true,
+    );
+    const refreshedIds: string[] = [];
+    try {
+      persistBackendsConfig(
+        [
+          {
+            id: "backend-skillrunner-existing",
+            displayName: "Existing",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:8030",
+            auth: { kind: "none" },
+            defaults: { timeout_ms: 600000 },
+          },
+          {
+            id: "backend-skillrunner-new",
+            displayName: "New",
+            type: "skillrunner",
+            baseUrl: "http://127.0.0.1:9030",
+            auth: { kind: "none" },
+            defaults: { timeout_ms: 600000 },
+          },
+        ],
+        {
+          setPref: (() => {}) as any,
+          refreshWorkflowMenus: () => {},
+          refreshModelCache: async ({ backend }) => {
+            refreshedIds.push(String(backend.id || ""));
+            return {
+              ok: true,
+              backendId: String(backend.id || ""),
+            };
+          },
+        },
+      );
+    } finally {
+      if (typeof previous === "undefined") {
+        Zotero.Prefs.clear(prefKey, true);
+      } else {
+        Zotero.Prefs.set(prefKey, previous, true);
+      }
+    }
+    assert.deepEqual(refreshedIds, ["backend-skillrunner-new"]);
   });
 
   it("preserves existing management_auth when dialog row omits it", function () {

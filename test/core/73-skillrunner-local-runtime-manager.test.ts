@@ -15,6 +15,7 @@ import {
   planLocalRuntimeOneclick,
   previewLocalRuntimeUninstall,
   setManagedLocalRuntimePostUpTaskReconcileRunnerForTests,
+  setSkillRunnerModelCacheRefresherForTests,
   resetLocalRuntimeAutoStartSessionState,
   releaseManagedLocalRuntimeLeaseOnShutdown,
   runManagedRuntimeAutoEnsureTickForTests,
@@ -199,6 +200,7 @@ describe("skillrunner local runtime manager", function () {
     resetManagedRuntimeAsyncTriggerForTests();
     resetLocalRuntimeToastStateForTests();
     setManagedLocalRuntimePostUpTaskReconcileRunnerForTests();
+    setSkillRunnerModelCacheRefresherForTests();
     setSuppressManagedRuntimeAutoEnsureTriggerForTests(false);
     await releaseManagedLocalRuntimeLeaseOnShutdown();
   });
@@ -285,7 +287,7 @@ describe("skillrunner local runtime manager", function () {
     assert.include(String(result.message || ""), "bootstrap warning");
   });
 
-  it("fails deploy when ctl bootstrap payload misses bootstrap report path", async function () {
+  it("deploys when bootstrap report path is inferred from managed local root", async function () {
     const commands: string[] = [];
     setSkillRunnerCtlBridgeFactoryForTests(
       () =>
@@ -296,6 +298,11 @@ describe("skillrunner local runtime manager", function () {
             commands.push(args.command);
             return makeCtlResult({ ok: true });
           },
+          runDirectAgentBootstrap: async () =>
+            makeCtlResult({
+              ok: true,
+              details: {},
+            }),
         }) as any,
     );
 
@@ -303,13 +310,9 @@ describe("skillrunner local runtime manager", function () {
       version: "v0.5.2",
     });
 
-    assert.isFalse(result.ok);
-    assert.equal(result.stage, "deploy-bootstrap-report");
-    assert.include(
-      String(result.message || ""),
-      "bootstrap report path missing in ctl bootstrap response",
-    );
-    assert.deepEqual(commands, ["bootstrap"]);
+    assert.isTrue(result.ok, JSON.stringify(result));
+    assert.equal(result.stage, "deploy-complete");
+    assert.equal(commands[0], "preflight");
   });
 
   it("one-click uses preflight->up->lease when runtime info exists and preflight passes", async function () {
@@ -373,16 +376,30 @@ describe("skillrunner local runtime manager", function () {
             : JSON.stringify({ ok: true }),
       }) as Response;
     const postUpReconcileCalls: Array<{ backendId: string; source: string }> = [];
+    const modelCacheRefreshIds: string[] = [];
     setManagedLocalRuntimePostUpTaskReconcileRunnerForTests(async (args) => {
       postUpReconcileCalls.push({
         backendId: args.backendId,
         source: args.source,
       });
     });
+    setSkillRunnerModelCacheRefresherForTests(async ({ backend }) => {
+      modelCacheRefreshIds.push(String(backend.id || ""));
+      return {
+        ok: true,
+        backendId: String(backend.id || ""),
+      } as any;
+    });
 
     const result = await deployAndConfigureLocalSkillRunner({
       version: "v0.5.2",
     });
+    for (let i = 0; i < 30; i++) {
+      if (modelCacheRefreshIds.length > 0) {
+        break;
+      }
+      await sleepMsForTest(20);
+    }
 
     assert.isTrue(result.ok);
     assert.equal(result.stage, "oneclick-start-complete");
@@ -396,6 +413,7 @@ describe("skillrunner local runtime manager", function () {
         source: "local-runtime-up",
       },
     ]);
+    assert.deepEqual(modelCacheRefreshIds, ["local-skillrunner-backend"]);
   });
 
   it("emits runtime-up toast for one-click start", async function () {
@@ -1029,14 +1047,20 @@ describe("skillrunner local runtime manager", function () {
     await setLocalRuntimeAutoPullEnabled(true);
 
     const ensurePromise = runManagedRuntimeAutoEnsureTickForTests();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const busySnapshot = getManagedLocalRuntimeStateSnapshot();
-    assert.equal(busySnapshot.details?.inFlightAction, "auto-ensure-starting");
-
-    upDeferred.resolve();
-    await ensurePromise;
+    try {
+      let busySnapshot = getManagedLocalRuntimeStateSnapshot();
+      for (let i = 0; i < 80; i++) {
+        if (busySnapshot.details?.inFlightAction === "auto-ensure-starting") {
+          break;
+        }
+        await sleepMsForTest(5);
+        busySnapshot = getManagedLocalRuntimeStateSnapshot();
+      }
+      assert.equal(busySnapshot.details?.inFlightAction, "auto-ensure-starting");
+    } finally {
+      upDeferred.resolve();
+      await ensurePromise;
+    }
 
     const idleSnapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(idleSnapshot.details?.inFlightAction, "");
@@ -1634,7 +1658,7 @@ describe("skillrunner local runtime manager", function () {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
       }),
       true,
     );
@@ -2019,7 +2043,6 @@ describe("skillrunner local runtime manager", function () {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
         ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
       }),
       true,
@@ -2427,7 +2450,7 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(snapshot.details?.autoStartPaused, false);
   });
 
-  it("builds manual deploy commands with preflight before up", async function () {
+  it("builds manual deploy commands using bridge-equivalent bootstrap and up flow", async function () {
     const commandText = buildManualDeployCommands({
       version: "v0.4.5",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
@@ -2435,16 +2458,16 @@ describe("skillrunner local runtime manager", function () {
       port: 29813,
       portFallbackSpan: 10,
     });
-    assert.include(commandText, "bootstrap --json");
-    assert.include(commandText, "preflight");
-    assert.include(commandText, "up --mode local");
+    assert.include(commandText, "agent_manager.py --ensure");
+    assert.include(commandText, "uvicorn server.main:app");
+    assert.notInclude(commandText, "skill-runnerctl");
 
     const result = await getLocalRuntimeManualDeployCommands({
       version: "v0.4.5",
     });
     assert.isTrue(result.ok);
     assert.equal(result.stage, "manual-deploy-commands");
-    assert.include(String(result.details?.commands || ""), "preflight");
+    assert.include(String(result.details?.commands || ""), "agent_manager.py --ensure");
   });
 
   it("state snapshot omits deployment state", async function () {

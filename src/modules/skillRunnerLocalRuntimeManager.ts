@@ -4,7 +4,11 @@ import {
 } from "../backends/registry";
 import type { BackendInstance } from "../backends/types";
 import { getPref, setPref } from "../utils/prefs";
-import { SkillRunnerCtlBridge, type SkillRunnerCtlCommandResult } from "./skillRunnerCtlBridge";
+import {
+  SkillRunnerCtlBridge,
+  type SkillRunnerCtlCommandResult,
+  type SkillRunnerLocalRuntimeBridgeArgs,
+} from "./skillRunnerCtlBridge";
 import {
   installSkillRunnerRelease,
   type ReleaseInstallResult,
@@ -26,6 +30,7 @@ import {
 } from "./skillRunnerLocalRuntimeConstants";
 import { resolveManagedLocalRuntimeToastText } from "../utils/localizationGovernance";
 import { appendRuntimeLog } from "./runtimeLogManager";
+import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner/modelCache";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -355,6 +360,60 @@ function triggerManagedLocalRuntimePostUpTaskReconcile(state: ManagedLocalRuntim
     baseUrl,
     source: "local-runtime-up",
   });
+}
+
+function triggerSilentManagedModelCacheRefresh(state: ManagedLocalRuntimeState) {
+  const backendId = normalizeString(state.managedBackendId) || MANAGED_PROFILE_ID;
+  void (async () => {
+    try {
+      const loaded = await loadBackendsRegistry();
+      if (loaded.fatalError) {
+        appendLocalRuntimeLog({
+          level: "warn",
+          operation: "refresh-managed-model-cache-silent",
+          stage: "refresh-managed-model-cache-silent-load-failed",
+          message: loaded.fatalError,
+        });
+        return;
+      }
+      const backend = loaded.backends.find(
+        (entry) =>
+          String(entry.id || "").trim() === backendId &&
+          String(entry.type || "").trim() === "skillrunner",
+      );
+      if (!backend) {
+        appendLocalRuntimeLog({
+          level: "warn",
+          operation: "refresh-managed-model-cache-silent",
+          stage: "refresh-managed-model-cache-silent-backend-missing",
+          message: `backend profile not found: ${backendId}`,
+          details: { backendId },
+        });
+        return;
+      }
+      const refreshed = await skillRunnerModelCacheRefresher({
+        backend,
+      });
+      appendLocalRuntimeLog({
+        level: refreshed.ok ? "info" : "warn",
+        operation: "refresh-managed-model-cache-silent",
+        stage: refreshed.ok
+          ? "refresh-managed-model-cache-silent-ok"
+          : "refresh-managed-model-cache-silent-failed",
+        message: refreshed.ok
+          ? "managed backend model cache refreshed silently"
+          : String(refreshed.error || "managed backend model cache refresh failed"),
+        details: refreshed as Record<string, unknown>,
+      });
+    } catch (error) {
+      appendLocalRuntimeLog({
+        level: "warn",
+        operation: "refresh-managed-model-cache-silent",
+        stage: "refresh-managed-model-cache-silent-error",
+        message: String(error),
+      });
+    }
+  })();
 }
 
 export function resetManagedRuntimeAsyncTriggerForTests() {
@@ -1196,11 +1255,27 @@ async function readBootstrapReport(args: {
   reportFilePath?: string;
 }) {
   const explicitReportFilePath = normalizeString(args.reportFilePath);
-  if (!explicitReportFilePath) {
+  const inferredReportFilePath = (() => {
+    if (explicitReportFilePath) {
+      return explicitReportFilePath;
+    }
+    const dataDirFromEnv = normalizeString(readProcessEnv("SKILL_RUNNER_DATA_DIR"));
+    if (isAbsoluteFsPath(dataDirFromEnv)) {
+      return joinPath(dataDirFromEnv, "agent_bootstrap_report.json");
+    }
+    const installDir = normalizeString(args.installDir);
+    const releasesDir = getParentPath(installDir);
+    const localRoot = getParentPath(releasesDir);
+    if (isAbsoluteFsPath(localRoot) && !isFsRootPath(localRoot)) {
+      return joinPath(localRoot, "data", "agent_bootstrap_report.json");
+    }
+    return "";
+  })();
+  if (!inferredReportFilePath) {
     return {
       ok: false as const,
       stage: "deploy-bootstrap-report",
-      message: "bootstrap report path missing in ctl bootstrap response (details.bootstrap_report_file)",
+      message: "bootstrap report path could not be inferred",
       details: {
         bootstrapReportFile: "",
         installDir: args.installDir,
@@ -1209,7 +1284,7 @@ async function readBootstrapReport(args: {
   }
   let source = "";
   try {
-    source = await readTextFile(explicitReportFilePath);
+    source = await readTextFile(inferredReportFilePath);
   } catch (error) {
     const message = normalizeString(
       error && typeof error === "object" && "message" in error
@@ -1221,7 +1296,7 @@ async function readBootstrapReport(args: {
       stage: "deploy-bootstrap-report",
       message: `failed to read bootstrap report: ${message || "unknown error"}`,
       details: {
-        bootstrapReportFile: explicitReportFilePath,
+        bootstrapReportFile: inferredReportFilePath,
       },
     };
   }
@@ -1234,18 +1309,18 @@ async function readBootstrapReport(args: {
       stage: "deploy-bootstrap-report",
       message: "bootstrap report is not valid JSON",
       details: {
-        bootstrapReportFile: explicitReportFilePath,
+        bootstrapReportFile: inferredReportFilePath,
       },
     };
   }
-  const normalized = normalizeBootstrapReport(explicitReportFilePath, parsed);
+  const normalized = normalizeBootstrapReport(inferredReportFilePath, parsed);
   if (!normalized) {
     return {
       ok: false as const,
       stage: "deploy-bootstrap-report",
       message: "bootstrap report is missing required summary.outcome",
       details: {
-        bootstrapReportFile: explicitReportFilePath,
+        bootstrapReportFile: inferredReportFilePath,
       },
     };
   }
@@ -1438,6 +1513,7 @@ function getCtlBridge() {
 
 let ctlBridgeFactory = () => new SkillRunnerCtlBridge();
 let releaseInstaller = installSkillRunnerRelease;
+let skillRunnerModelCacheRefresher = refreshSkillRunnerModelCacheForBackend;
 
 function shouldPersistLocalRuntimeLog(args: {
   operation: string;
@@ -1501,6 +1577,13 @@ export function setSkillRunnerReleaseInstallerForTests(
   releaseInstaller = installer || installSkillRunnerRelease;
 }
 
+export function setSkillRunnerModelCacheRefresherForTests(
+  refresher?: typeof refreshSkillRunnerModelCacheForBackend,
+) {
+  skillRunnerModelCacheRefresher =
+    refresher || refreshSkillRunnerModelCacheForBackend;
+}
+
 function appendLocalRuntimeLog(args: {
   level: "info" | "warn" | "error";
   operation: string;
@@ -1533,6 +1616,332 @@ function appendLocalRuntimeLog(args: {
     details: args.details,
     error: args.error,
   });
+}
+
+function buildLocalBridgeArgs(args: {
+  state: ManagedLocalRuntimeState;
+  host?: string;
+  port?: number;
+  portFallbackSpan?: number;
+  waitSeconds?: number;
+}): SkillRunnerLocalRuntimeBridgeArgs | null {
+  const installDir = resolveEffectiveInstallDir(args.state);
+  if (!installDir) {
+    return null;
+  }
+  const localRootResolution = resolveManagedLocalRoot({
+    state: args.state,
+  });
+  return {
+    installDir,
+    localRoot: localRootResolution.ok ? localRootResolution.localRoot : undefined,
+    host: normalizeString(args.host) || undefined,
+    port:
+      typeof args.port === "number" && Number.isFinite(args.port)
+        ? Math.floor(args.port)
+        : undefined,
+    portFallbackSpan:
+      typeof args.portFallbackSpan === "number" && Number.isFinite(args.portFallbackSpan)
+        ? Math.floor(args.portFallbackSpan)
+        : undefined,
+    waitSeconds:
+      typeof args.waitSeconds === "number" && Number.isFinite(args.waitSeconds)
+        ? Math.floor(args.waitSeconds)
+        : undefined,
+  };
+}
+
+function resolveEffectiveInstallDir(state: ManagedLocalRuntimeState | undefined) {
+  const target = state || {};
+  const configuredInstallDir = normalizeString(target.installDir);
+  if (configuredInstallDir) {
+    return configuredInstallDir;
+  }
+  const ctlPath = normalizeString(target.ctlPath);
+  if (!ctlPath) {
+    return "";
+  }
+  return getParentPath(getParentPath(ctlPath));
+}
+
+async function runLocalBridgeStatus(args: {
+  bridge: SkillRunnerCtlBridge;
+  state: ManagedLocalRuntimeState;
+  host?: string;
+  port?: number;
+}): Promise<SkillRunnerCtlCommandResult> {
+  const bridgeArgs = buildLocalBridgeArgs({
+    state: args.state,
+    host: args.host,
+    port: args.port,
+  });
+  if (!bridgeArgs) {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: "managed local runtime installDir is missing",
+      stdout: "",
+      stderr: "",
+      details: {},
+      command: "bridge-local-status",
+      args: [],
+    };
+  }
+  const bridgeCandidate = args.bridge as unknown as {
+    statusLocalRuntime?: (bridgeArgs: SkillRunnerLocalRuntimeBridgeArgs) => Promise<SkillRunnerCtlCommandResult>;
+    runCtlCommand?: (ctlArgs: {
+      ctlPath: string;
+      command: "status";
+      mode?: "local" | "docker";
+      port?: number;
+    }) => Promise<SkillRunnerCtlCommandResult>;
+  };
+  if (typeof bridgeCandidate.statusLocalRuntime === "function") {
+    return bridgeCandidate.statusLocalRuntime(bridgeArgs);
+  }
+  const ctlPath = normalizeString(args.state.ctlPath);
+  if (ctlPath && typeof bridgeCandidate.runCtlCommand === "function") {
+    return bridgeCandidate.runCtlCommand({
+      ctlPath,
+      command: "status",
+      mode: "local",
+      port: bridgeArgs.port,
+    });
+  }
+  return {
+    ok: false,
+    exitCode: 2,
+    message: "bridge statusLocalRuntime is unavailable",
+    stdout: "",
+    stderr: "",
+    details: {},
+    command: "bridge-local-status",
+    args: [],
+  };
+}
+
+async function runLocalBridgePreflight(args: {
+  bridge: SkillRunnerCtlBridge;
+  state: ManagedLocalRuntimeState;
+  host?: string;
+  port?: number;
+  portFallbackSpan?: number;
+}): Promise<SkillRunnerCtlCommandResult> {
+  const bridgeArgs = buildLocalBridgeArgs({
+    state: args.state,
+    host: args.host,
+    port: args.port,
+    portFallbackSpan: args.portFallbackSpan,
+  });
+  if (!bridgeArgs) {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: "managed local runtime installDir is missing",
+      stdout: "",
+      stderr: "",
+      details: {},
+      command: "bridge-local-preflight",
+      args: [],
+    };
+  }
+  const bridgeCandidate = args.bridge as unknown as {
+    preflightLocalRuntime?: (bridgeArgs: SkillRunnerLocalRuntimeBridgeArgs) => Promise<SkillRunnerCtlCommandResult>;
+    runCtlCommand?: (ctlArgs: {
+      ctlPath: string;
+      command: "preflight";
+      host?: string;
+      port?: number;
+      portFallbackSpan?: number;
+    }) => Promise<SkillRunnerCtlCommandResult>;
+  };
+  if (typeof bridgeCandidate.preflightLocalRuntime === "function") {
+    return bridgeCandidate.preflightLocalRuntime(bridgeArgs);
+  }
+  const ctlPath = normalizeString(args.state.ctlPath);
+  if (ctlPath && typeof bridgeCandidate.runCtlCommand === "function") {
+    return bridgeCandidate.runCtlCommand({
+      ctlPath,
+      command: "preflight",
+      host: bridgeArgs.host,
+      port: bridgeArgs.port,
+      portFallbackSpan: bridgeArgs.portFallbackSpan,
+    });
+  }
+  return {
+    ok: false,
+    exitCode: 2,
+    message: "bridge preflightLocalRuntime is unavailable",
+    stdout: "",
+    stderr: "",
+    details: {},
+    command: "bridge-local-preflight",
+    args: [],
+  };
+}
+
+async function runLocalBridgeUp(args: {
+  bridge: SkillRunnerCtlBridge;
+  state: ManagedLocalRuntimeState;
+  host?: string;
+  port?: number;
+  portFallbackSpan?: number;
+  waitSeconds?: number;
+}): Promise<SkillRunnerCtlCommandResult> {
+  const bridgeArgs = buildLocalBridgeArgs({
+    state: args.state,
+    host: args.host,
+    port: args.port,
+    portFallbackSpan: args.portFallbackSpan,
+    waitSeconds: args.waitSeconds,
+  });
+  if (!bridgeArgs) {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: "managed local runtime installDir is missing",
+      stdout: "",
+      stderr: "",
+      details: {},
+      command: "bridge-local-up",
+      args: [],
+    };
+  }
+  const bridgeCandidate = args.bridge as unknown as {
+    upLocalRuntime?: (bridgeArgs: SkillRunnerLocalRuntimeBridgeArgs) => Promise<SkillRunnerCtlCommandResult>;
+    runCtlCommand?: (ctlArgs: {
+      ctlPath: string;
+      command: "up";
+      mode?: "local" | "docker";
+      host?: string;
+      port?: number;
+      portFallbackSpan?: number;
+      waitSeconds?: number;
+    }) => Promise<SkillRunnerCtlCommandResult>;
+  };
+  if (typeof bridgeCandidate.upLocalRuntime === "function") {
+    return bridgeCandidate.upLocalRuntime(bridgeArgs);
+  }
+  const ctlPath = normalizeString(args.state.ctlPath);
+  if (ctlPath && typeof bridgeCandidate.runCtlCommand === "function") {
+    return bridgeCandidate.runCtlCommand({
+      ctlPath,
+      command: "up",
+      mode: "local",
+      host: bridgeArgs.host,
+      port: bridgeArgs.port,
+      portFallbackSpan: bridgeArgs.portFallbackSpan,
+      waitSeconds: bridgeArgs.waitSeconds,
+    });
+  }
+  return {
+    ok: false,
+    exitCode: 2,
+    message: "bridge upLocalRuntime is unavailable",
+    stdout: "",
+    stderr: "",
+    details: {},
+    command: "bridge-local-up",
+    args: [],
+  };
+}
+
+async function runLocalBridgeDown(args: {
+  bridge: SkillRunnerCtlBridge;
+  state: ManagedLocalRuntimeState;
+}): Promise<SkillRunnerCtlCommandResult> {
+  const bridgeArgs = buildLocalBridgeArgs({
+    state: args.state,
+  });
+  if (!bridgeArgs) {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: "managed local runtime installDir is missing",
+      stdout: "",
+      stderr: "",
+      details: {},
+      command: "bridge-local-down",
+      args: [],
+    };
+  }
+  const bridgeCandidate = args.bridge as unknown as {
+    downLocalRuntime?: (bridgeArgs: SkillRunnerLocalRuntimeBridgeArgs) => Promise<SkillRunnerCtlCommandResult>;
+    runCtlCommand?: (ctlArgs: {
+      ctlPath: string;
+      command: "down";
+      mode?: "local" | "docker";
+    }) => Promise<SkillRunnerCtlCommandResult>;
+  };
+  if (typeof bridgeCandidate.downLocalRuntime === "function") {
+    return bridgeCandidate.downLocalRuntime(bridgeArgs);
+  }
+  const ctlPath = normalizeString(args.state.ctlPath);
+  if (ctlPath && typeof bridgeCandidate.runCtlCommand === "function") {
+    return bridgeCandidate.runCtlCommand({
+      ctlPath,
+      command: "down",
+      mode: "local",
+    });
+  }
+  return {
+    ok: false,
+    exitCode: 2,
+    message: "bridge downLocalRuntime is unavailable",
+    stdout: "",
+    stderr: "",
+    details: {},
+    command: "bridge-local-down",
+    args: [],
+  };
+}
+
+async function runLocalBridgeDoctor(args: {
+  bridge: SkillRunnerCtlBridge;
+  state: ManagedLocalRuntimeState;
+}): Promise<SkillRunnerCtlCommandResult> {
+  const bridgeArgs = buildLocalBridgeArgs({
+    state: args.state,
+  });
+  if (!bridgeArgs) {
+    return {
+      ok: false,
+      exitCode: 2,
+      message: "managed local runtime installDir is missing",
+      stdout: "",
+      stderr: "",
+      details: {},
+      command: "bridge-local-doctor",
+      args: [],
+    };
+  }
+  const bridgeCandidate = args.bridge as unknown as {
+    doctorLocalRuntime?: (bridgeArgs: SkillRunnerLocalRuntimeBridgeArgs) => Promise<SkillRunnerCtlCommandResult>;
+    runCtlCommand?: (ctlArgs: {
+      ctlPath: string;
+      command: "doctor";
+    }) => Promise<SkillRunnerCtlCommandResult>;
+  };
+  if (typeof bridgeCandidate.doctorLocalRuntime === "function") {
+    return bridgeCandidate.doctorLocalRuntime(bridgeArgs);
+  }
+  const ctlPath = normalizeString(args.state.ctlPath);
+  if (ctlPath && typeof bridgeCandidate.runCtlCommand === "function") {
+    return bridgeCandidate.runCtlCommand({
+      ctlPath,
+      command: "doctor",
+    });
+  }
+  return {
+    ok: false,
+    exitCode: 2,
+    message: "bridge doctorLocalRuntime is unavailable",
+    stdout: "",
+    stderr: "",
+    details: {},
+    command: "bridge-local-doctor",
+    args: [],
+  };
 }
 
 function resultFromCtl(
@@ -1753,8 +2162,7 @@ function hasRuntimeInfo(state: ManagedLocalRuntimeState | undefined) {
   const target = state || {};
   return (
     !!normalizeString(target.managedBackendId) &&
-    !!normalizeString(target.ctlPath) &&
-    !!normalizeString(target.installDir)
+    !!resolveEffectiveInstallDir(target)
   );
 }
 
@@ -2104,20 +2512,20 @@ function ensureHeartbeatLoop(intervalSeconds?: number) {
 
 async function runHeartbeatFailStatusProbe() {
   const state = readManagedLocalRuntimeState();
-  const ctlPath = normalizeString(state.ctlPath);
-  if (!ctlPath) {
+  const installDir = resolveEffectiveInstallDir(state);
+  if (!installDir) {
     return {
       ok: false,
       status: "error",
-      message: "managed local runtime ctl path is missing",
+      message: "managed local runtime installDir is missing",
     } as const;
   }
   const endpoint = resolveRuntimeEndpoint(state);
   const bridge = getCtlBridge();
-  const result = await bridge.runCtlCommand({
-    ctlPath,
-    command: "status",
-    mode: "local",
+  const result = await runLocalBridgeStatus({
+    bridge,
+    state,
+    host: endpoint.host,
     port: endpoint.port,
   });
   const statusValue = normalizeString(result.details?.status).toLowerCase();
@@ -2380,7 +2788,8 @@ function applyRuntimeStatePatch(args: {
 
 async function pollStatusUntilRunning(args: {
   bridge: SkillRunnerCtlBridge;
-  ctlPath: string;
+  state: ManagedLocalRuntimeState;
+  host?: string;
   port: number;
   attempts?: number;
   intervalMs?: number;
@@ -2396,10 +2805,10 @@ async function pollStatusUntilRunning(args: {
   let lastStatus: SkillRunnerCtlCommandResult | undefined;
   const statusTrail: string[] = [];
   for (let index = 0; index < attempts; index++) {
-    const status = await args.bridge.runCtlCommand({
-      ctlPath: args.ctlPath,
-      command: "status",
-      mode: "local",
+    const status = await runLocalBridgeStatus({
+      bridge: args.bridge,
+      state: args.state,
+      host: args.host,
       port: args.port,
     });
     lastStatus = status;
@@ -2450,7 +2859,7 @@ async function runManagedRuntimeAutoEnsureTick(): Promise<AutoEnsureTickResult> 
   autoEnsureRunning = true;
   try {
     const state = readManagedLocalRuntimeState();
-    if (!normalizeString(state.managedBackendId) || !normalizeString(state.ctlPath)) {
+    if (!normalizeString(state.managedBackendId) || !resolveEffectiveInstallDir(state)) {
       return {
         ok: true,
         stage: "auto-ensure-skip-not-configured",
@@ -2500,20 +2909,20 @@ export async function runManagedRuntimeStartupPreflightProbe(): Promise<SkillRun
         message: "startup preflight skipped because runtime info is missing",
       };
     }
-    const ctlPath = normalizeString(state.ctlPath);
-    if (!ctlPath) {
+    const installDir = resolveEffectiveInstallDir(state);
+    if (!installDir) {
       setAutoStartEnabledInSession(false);
       return {
         ok: false,
-        stage: "startup-preflight-missing-ctl",
-        message: "startup preflight skipped because ctl path is missing",
+        stage: "startup-preflight-missing-install-dir",
+        message: "startup preflight skipped because installDir is missing",
       };
     }
     const endpoint = resolveRuntimeEndpoint(state);
     const bridge = getCtlBridge();
-    const preflight = await bridge.runCtlCommand({
-      ctlPath,
-      command: "preflight",
+    const preflight = await runLocalBridgePreflight({
+      bridge,
+      state,
       host: endpoint.host,
       port: endpoint.requestedPort,
       portFallbackSpan: endpoint.portFallbackSpan,
@@ -2559,16 +2968,16 @@ export async function planLocalRuntimeOneclick(args?: {
         },
       };
     }
-    const ctlPath = normalizeString(state.ctlPath);
-    if (!ctlPath) {
+    const installDir = resolveEffectiveInstallDir(state);
+    if (!installDir) {
       setAutoStartEnabledInSession(false);
       return {
         ok: true,
         stage: "oneclick-plan-deploy",
-        message: "one-click plan selects deploy because ctl path is missing",
+        message: "one-click plan selects deploy because installDir is missing",
         details: {
           plannedAction: "deploy",
-          reason: "missing-ctl",
+          reason: "missing-install-dir",
           version,
           installLayout,
         },
@@ -2576,9 +2985,9 @@ export async function planLocalRuntimeOneclick(args?: {
     }
     const endpoint = resolveRuntimeEndpoint(state);
     const bridge = getCtlBridge();
-    const preflight = await bridge.runCtlCommand({
-      ctlPath,
-      command: "preflight",
+    const preflight = await runLocalBridgePreflight({
+      bridge,
+      state,
       host: endpoint.host,
       port: endpoint.requestedPort,
       portFallbackSpan: endpoint.portFallbackSpan,
@@ -2652,21 +3061,19 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
     const stateBeforeOneClick = readManagedLocalRuntimeState();
     try {
       if (!forceDeploy && hasRuntimeInfo(stateBeforeOneClick)) {
-      const ctlPath = normalizeString(stateBeforeOneClick.ctlPath);
       const endpoint = resolveRuntimeEndpoint(stateBeforeOneClick);
-      const preflight = await bridge.runCtlCommand({
-        ctlPath,
-        command: "preflight",
+      const preflight = await runLocalBridgePreflight({
+        bridge,
+        state: stateBeforeOneClick,
         host: endpoint.host,
         port: endpoint.requestedPort,
         portFallbackSpan: endpoint.portFallbackSpan,
       });
       if (preflight.ok) {
         setAutoStartEnabledInSession(true);
-        const upResult = await bridge.runCtlCommand({
-          ctlPath,
-          command: "up",
-          mode: "local",
+        const upResult = await runLocalBridgeUp({
+          bridge,
+          state: stateBeforeOneClick,
           host: endpoint.host,
           port: endpoint.requestedPort,
           portFallbackSpan: endpoint.portFallbackSpan,
@@ -2681,7 +3088,8 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
         const endpointAfterUp = resolveRuntimeEndpoint(nextState);
         const statusPoll = await pollStatusUntilRunning({
           bridge,
-          ctlPath,
+          state: nextState,
+          host: endpointAfterUp.host,
           port: endpointAfterUp.port,
         });
         if (!statusPoll.ok) {
@@ -2740,6 +3148,7 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
           };
         }
         const finalEndpoint = resolveRuntimeEndpoint(nextState);
+        triggerSilentManagedModelCacheRefresh(nextState);
         triggerManagedLocalRuntimePostUpTaskReconcile(nextState);
         emitLocalRuntimeToast("runtime-up");
         return {
@@ -2897,17 +3306,6 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
     const ctlPath =
       bridge.resolveCtlPathFromInstallDir(normalizedInstallDir) ||
       normalizeString("");
-    if (!ctlPath) {
-      return {
-        ok: false,
-        stage: "deploy-install",
-        message: "ctl path was not resolved from installer installDir",
-        details: {
-          installDir: normalizedInstallDir,
-          installRoot,
-        },
-      };
-    }
       setActionProgress({
         action: "deploy",
         current: 4,
@@ -2915,10 +3313,33 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
         stage: "deploy-bootstrap",
         label: resolveDeployProgressLabel("deploy-bootstrap"),
       });
-    const ctlBootstrap = await bridge.runCtlCommand({
-      ctlPath,
-      command: "bootstrap",
-    });
+    const ctlBootstrap =
+      typeof (bridge as { bootstrapLocalRuntime?: unknown }).bootstrapLocalRuntime ===
+      "function"
+        ? await (
+            bridge as {
+              bootstrapLocalRuntime: (args: {
+                installDir: string;
+              }) => Promise<SkillRunnerCtlCommandResult>;
+            }
+          ).bootstrapLocalRuntime({
+            installDir: normalizedInstallDir,
+          })
+        : typeof (bridge as { runDirectAgentBootstrap?: unknown }).runDirectAgentBootstrap ===
+          "function"
+        ? await (
+            bridge as {
+              runDirectAgentBootstrap: (args: {
+                installDir: string;
+              }) => Promise<SkillRunnerCtlCommandResult>;
+            }
+          ).runDirectAgentBootstrap({
+            installDir: normalizedInstallDir,
+          })
+        : await bridge.runCtlCommand({
+            ctlPath,
+            command: "bootstrap",
+          });
     if (!ctlBootstrap.ok) {
       const stateBeforeFail = readManagedLocalRuntimeState();
       const endpoint = resolveRuntimeEndpoint(stateBeforeFail);
@@ -3039,9 +3460,9 @@ export async function deployAndConfigureLocalSkillRunner(args?: {
       managedBackendId: MANAGED_PROFILE_ID,
     });
     const postDeployEndpoint = resolveRuntimeEndpoint(nextState);
-    const postDeployPreflight = await bridge.runCtlCommand({
-      ctlPath,
-      command: "preflight",
+    const postDeployPreflight = await runLocalBridgePreflight({
+      bridge,
+      state: nextState,
       host: postDeployEndpoint.host,
       port: postDeployEndpoint.requestedPort,
       portFallbackSpan: postDeployEndpoint.portFallbackSpan,
@@ -3202,9 +3623,16 @@ export function buildManualDeployCommands(args?: {
   const artifactName = `skill-runner-${version}.tar.gz`;
   const checksumName = `${artifactName}.sha256`;
   const baseUrl = `https://github.com/${DEFAULT_SKILL_RUNNER_RELEASE_REPO}/releases/download/${version}`;
+  const releaseDir = joinPath(installRoot, version);
+  const localRoot = resolveManagedLocalRootFromInstallRoot(installRoot);
+  const dataDir = joinPath(localRoot, "data");
+  const agentCacheDir = joinPath(localRoot, "agent-cache");
+  const agentHomeDir = joinPath(agentCacheDir, "agent-home");
+  const npmPrefixDir = joinPath(agentCacheDir, "npm");
+  const uvCacheDir = joinPath(agentCacheDir, "uv_cache");
+  const uvVenvDir = joinPath(agentCacheDir, "uv_venv");
+  const bootstrapReportFile = joinPath(dataDir, "agent_bootstrap_report.json");
   if (detectWindows()) {
-    const releaseDir = joinPath(installRoot, version);
-    const ctl = joinPath(releaseDir, "scripts", "skill-runnerctl.ps1");
     const uninstall = joinPath(releaseDir, "scripts", "skill-runner-uninstall.ps1");
     const artifactPath = joinPath("$tempDir", artifactName);
     const checksumPath = joinPath("$tempDir", checksumName);
@@ -3228,18 +3656,25 @@ export function buildManualDeployCommands(args?: {
       `$releaseDir = ${quoteShellArg(releaseDir)}`,
       `New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null`,
       `tar -xzf $artifactPath -C $releaseDir`,
-      `$ctl = ${quoteShellArg(ctl)}`,
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(ctl)} bootstrap --json`,
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(ctl)} preflight --host ${host} --port ${port} --port-fallback-span ${portFallbackSpan} --json`,
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(ctl)} up --mode local --host ${host} --port ${port} --port-fallback-span ${portFallbackSpan} --json`,
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(ctl)} status --mode local --port ${port} --json`,
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(ctl)} doctor --json`,
+      `$env:SKILL_RUNNER_RUNTIME_MODE = 'local'`,
+      `$env:SKILL_RUNNER_LOCAL_ROOT = ${quoteShellArg(localRoot)}`,
+      `$env:SKILL_RUNNER_DATA_DIR = ${quoteShellArg(dataDir)}`,
+      `$env:SKILL_RUNNER_AGENT_CACHE_DIR = ${quoteShellArg(agentCacheDir)}`,
+      `$env:SKILL_RUNNER_AGENT_HOME = ${quoteShellArg(agentHomeDir)}`,
+      `$env:SKILL_RUNNER_NPM_PREFIX = ${quoteShellArg(npmPrefixDir)}`,
+      `$env:NPM_CONFIG_PREFIX = $env:SKILL_RUNNER_NPM_PREFIX`,
+      `$env:UV_CACHE_DIR = ${quoteShellArg(uvCacheDir)}`,
+      `$env:UV_PROJECT_ENVIRONMENT = ${quoteShellArg(uvVenvDir)}`,
+      `$env:SKILL_RUNNER_LOCAL_PORT_FALLBACK_SPAN = ${quoteShellArg(String(portFallbackSpan))}`,
+      `Set-Location -LiteralPath $releaseDir`,
+      `uv run python scripts/agent_manager.py --ensure --bootstrap-report-file ${quoteShellArg(
+        bootstrapReportFile,
+      )}`,
+      `uv run uvicorn server.main:app --host ${host} --port ${port}`,
       `$uninstall = ${quoteShellArg(uninstall)}`,
       `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteShellArg(uninstall)} -Json`,
     ].join("\n");
   }
-  const releaseDir = joinPath(installRoot, version);
-  const ctl = joinPath(releaseDir, "scripts", "skill-runnerctl");
   const uninstall = joinPath(releaseDir, "scripts", "skill-runner-uninstall.sh");
   const artifactPath = joinPath("${TMP_DIR}", artifactName);
   const checksumPath = joinPath("${TMP_DIR}", checksumName);
@@ -3256,11 +3691,21 @@ export function buildManualDeployCommands(args?: {
     `if command -v sha256sum >/dev/null 2>&1; then (cd "$TMP_DIR" && sha256sum -c "$CHECKSUM"); else EXPECTED="$(awk '{print $1}' ${quoteShellArg(checksumPath)})"; ACTUAL="$(shasum -a 256 ${quoteShellArg(artifactPath)} | awk '{print $1}')"; [ "$EXPECTED" = "$ACTUAL" ] || { echo "SHA256 mismatch"; exit 1; }; fi`,
     `mkdir -p ${quoteShellArg(releaseDir)}`,
     `tar -xzf ${quoteShellArg(artifactPath)} -C ${quoteShellArg(releaseDir)}`,
-    `sh ${quoteShellArg(ctl)} bootstrap --json`,
-    `sh ${quoteShellArg(ctl)} preflight --host ${host} --port ${port} --port-fallback-span ${portFallbackSpan} --json`,
-    `sh ${quoteShellArg(ctl)} up --mode local --host ${host} --port ${port} --port-fallback-span ${portFallbackSpan} --json`,
-    `sh ${quoteShellArg(ctl)} status --mode local --port ${port} --json`,
-    `sh ${quoteShellArg(ctl)} doctor --json`,
+    `export SKILL_RUNNER_RUNTIME_MODE=${quoteShellArg("local")}`,
+    `export SKILL_RUNNER_LOCAL_ROOT=${quoteShellArg(localRoot)}`,
+    `export SKILL_RUNNER_DATA_DIR=${quoteShellArg(dataDir)}`,
+    `export SKILL_RUNNER_AGENT_CACHE_DIR=${quoteShellArg(agentCacheDir)}`,
+    `export SKILL_RUNNER_AGENT_HOME=${quoteShellArg(agentHomeDir)}`,
+    `export SKILL_RUNNER_NPM_PREFIX=${quoteShellArg(npmPrefixDir)}`,
+    "export NPM_CONFIG_PREFIX=\"$SKILL_RUNNER_NPM_PREFIX\"",
+    `export UV_CACHE_DIR=${quoteShellArg(uvCacheDir)}`,
+    `export UV_PROJECT_ENVIRONMENT=${quoteShellArg(uvVenvDir)}`,
+    `export SKILL_RUNNER_LOCAL_PORT_FALLBACK_SPAN=${quoteShellArg(String(portFallbackSpan))}`,
+    `cd ${quoteShellArg(releaseDir)}`,
+    `uv run python scripts/agent_manager.py --ensure --bootstrap-report-file ${quoteShellArg(
+      bootstrapReportFile,
+    )}`,
+    `uv run uvicorn server.main:app --host ${host} --port ${port}`,
     `sh ${quoteShellArg(uninstall)} --json`,
   ].join("\n");
 }
@@ -3350,13 +3795,13 @@ export async function toggleLocalRuntimeAutoPull(): Promise<SkillRunnerLocalRunt
   return setLocalRuntimeAutoPullEnabled(enable);
 }
 
-function getManagedCtlPath() {
+function getManagedInstallDir() {
   const state = readManagedLocalRuntimeState();
-  const ctlPath = normalizeString(state.ctlPath);
-  if (!ctlPath) {
+  const installDir = resolveEffectiveInstallDir(state);
+  if (!installDir) {
     return "";
   }
-  return ctlPath;
+  return installDir;
 }
 
 function getParentPath(pathValue: string) {
@@ -3429,7 +3874,7 @@ function isFsRootPath(pathValue: string) {
 
 function resolveManagedLocalRoot(args?: { state?: ManagedLocalRuntimeState }) {
   const state = args?.state || readManagedLocalRuntimeState();
-  const installDir = normalizeString(state.installDir);
+  const installDir = resolveEffectiveInstallDir(state);
   if (!installDir) {
     return {
       ok: false as const,
@@ -3604,8 +4049,8 @@ export async function previewLocalRuntimeUninstall(args?: {
   });
   const removableTargets = targets.filter((target) => !target.preserve);
   const preservedTargets = targets.filter((target) => target.preserve);
-  const ctlPath = normalizeString(stateBeforeUninstall.ctlPath);
-  const canInvokeDown = !!ctlPath && (await pathExists(ctlPath));
+  const installDir = normalizeString(stateBeforeUninstall.installDir);
+  const canInvokeDown = !!installDir;
   const totalSteps = removableTargets.length + (canInvokeDown ? 1 : 0) + 1;
   return {
     ok: true,
@@ -3726,8 +4171,8 @@ async function deleteManagedLocalRuntimePaths(args: {
 }
 
 export async function getLocalRuntimeStatus(): Promise<SkillRunnerLocalRuntimeActionResult> {
-  const ctlPath = getManagedCtlPath();
-  if (!ctlPath) {
+  const installDir = getManagedInstallDir();
+  if (!installDir) {
     return {
       ok: false,
       stage: "status",
@@ -3737,10 +4182,10 @@ export async function getLocalRuntimeStatus(): Promise<SkillRunnerLocalRuntimeAc
   const bridge = getCtlBridge();
   const stateBeforeStatus = readManagedLocalRuntimeState();
   const endpoint = resolveRuntimeEndpoint(stateBeforeStatus);
-  const result = await bridge.runCtlCommand({
-    ctlPath,
-    command: "status",
-    mode: "local",
+  const result = await runLocalBridgeStatus({
+    bridge,
+    state: stateBeforeStatus,
+    host: endpoint.host,
     port: endpoint.port,
   });
   if (result.ok) {
@@ -3752,8 +4197,8 @@ export async function getLocalRuntimeStatus(): Promise<SkillRunnerLocalRuntimeAc
 export async function stopLocalRuntime(): Promise<SkillRunnerLocalRuntimeActionResult> {
   return withRuntimeActionMutex("stop", async () => {
     setAutoStartEnabledInSession(false);
-    const ctlPath = getManagedCtlPath();
-    if (!ctlPath) {
+    const installDir = getManagedInstallDir();
+    if (!installDir) {
       return {
         ok: false,
         stage: "stop",
@@ -3762,20 +4207,19 @@ export async function stopLocalRuntime(): Promise<SkillRunnerLocalRuntimeActionR
     }
     await releaseManagedLocalRuntimeLeaseOnShutdown();
     const bridge = getCtlBridge();
-    const downResult = await bridge.runCtlCommand({
-      ctlPath,
-      command: "down",
-      mode: "local",
+    const downResult = await runLocalBridgeDown({
+      bridge,
+      state: readManagedLocalRuntimeState(),
     });
     if (!downResult.ok) {
       return resultFromCtl("stop-down", downResult);
     }
     const stateAfterDown = readManagedLocalRuntimeState();
     const endpoint = resolveRuntimeEndpoint(stateAfterDown);
-    const statusResult = await bridge.runCtlCommand({
-      ctlPath,
-      command: "status",
-      mode: "local",
+    const statusResult = await runLocalBridgeStatus({
+      bridge,
+      state: stateAfterDown,
+      host: endpoint.host,
       port: endpoint.port,
     });
     const statusValue = normalizeString(statusResult.details?.status).toLowerCase();
@@ -3843,7 +4287,7 @@ export async function uninstallLocalRuntime(args?: {
     });
     try {
       const stateBeforeUninstall = readManagedLocalRuntimeState();
-      const ctlPath = normalizeString(stateBeforeUninstall.ctlPath);
+      const installDir = normalizeString(stateBeforeUninstall.installDir);
       const clearData = args?.clearData === true;
       const clearAgentHome = args?.clearAgentHome === true;
       appendLocalRuntimeLog({
@@ -3856,8 +4300,7 @@ export async function uninstallLocalRuntime(args?: {
           clearData,
           clearAgentHome,
           managedBackendId: normalizeString(stateBeforeUninstall.managedBackendId),
-          installDir: normalizeString(stateBeforeUninstall.installDir),
-          ctlPath,
+          installDir,
         },
       });
       setAutoStartEnabledInSession(false);
@@ -3887,7 +4330,7 @@ export async function uninstallLocalRuntime(args?: {
         clearAgentHome,
       });
       const removableTargets = targets.filter((target) => !target.preserve);
-      const canInvokeDown = !!ctlPath && (await pathExists(ctlPath));
+      const canInvokeDown = !!installDir;
       appendLocalRuntimeLog({
         level: "info",
         operation: "uninstall-plan",
@@ -3932,7 +4375,7 @@ export async function uninstallLocalRuntime(args?: {
         invoked: false,
         ok: true,
         exitCode: 0,
-        message: "ctl path unavailable; skip down and continue uninstall cleanup",
+        message: "installDir unavailable; skip down and continue uninstall cleanup",
         command: "",
         args: [],
         details: {},
@@ -3943,12 +4386,11 @@ export async function uninstallLocalRuntime(args?: {
           level: "info",
           operation: "uninstall-down",
           stage: "uninstall-down-start",
-          message: "invoking ctl down before uninstall delete steps",
+          message: "invoking bridge down before uninstall delete steps",
         });
-        const downResult = await bridge.runCtlCommand({
-          ctlPath,
-          command: "down",
-          mode: "local",
+        const downResult = await runLocalBridgeDown({
+          bridge,
+          state: stateBeforeUninstall,
         });
         downResultDetails.invoked = true;
         downResultDetails.ok = downResult.ok;
@@ -3982,7 +4424,7 @@ export async function uninstallLocalRuntime(args?: {
           level: "info",
           operation: "uninstall-down",
           stage: "uninstall-down-complete",
-          message: "ctl down completed before uninstall delete steps",
+          message: "bridge down completed before uninstall delete steps",
           details: {
             localRoot,
             down_result: downResultDetails,
@@ -3995,7 +4437,7 @@ export async function uninstallLocalRuntime(args?: {
           level: "info",
           operation: "uninstall-down",
           stage: "uninstall-down-skipped",
-          message: "ctl down skipped because ctl path is unavailable",
+          message: "bridge down skipped because installDir is unavailable",
           details: {
             localRoot,
             down_result: downResultDetails,
@@ -4173,8 +4615,8 @@ export async function startLocalRuntime(): Promise<SkillRunnerLocalRuntimeAction
 }
 
 export async function runLocalDoctor(): Promise<SkillRunnerLocalRuntimeActionResult> {
-  const ctlPath = getManagedCtlPath();
-  if (!ctlPath) {
+  const installDir = getManagedInstallDir();
+  if (!installDir) {
     return {
       ok: false,
       stage: "doctor",
@@ -4182,9 +4624,9 @@ export async function runLocalDoctor(): Promise<SkillRunnerLocalRuntimeActionRes
     };
   }
   const bridge = getCtlBridge();
-  const result = await bridge.runCtlCommand({
-    ctlPath,
-    command: "doctor",
+  const result = await runLocalBridgeDoctor({
+    bridge,
+    state: readManagedLocalRuntimeState(),
   });
   return resultFromCtl("doctor", result);
 }
@@ -4210,20 +4652,20 @@ export async function ensureManagedLocalRuntimeForBackend(
         message: "managed local runtime auto start is disabled",
       };
     }
-    const ctlPath = normalizeString(state.ctlPath);
-    if (!ctlPath) {
+    const installDir = resolveEffectiveInstallDir(state);
+    if (!installDir) {
       return {
         ok: false,
         stage: "ensure",
-        message: "managed local runtime ctl path is missing",
+        message: "managed local runtime installDir is missing",
       };
     }
     const bridge = getCtlBridge();
     let endpoint = resolveRuntimeEndpoint(state);
-    const status = await bridge.runCtlCommand({
-      ctlPath,
-      command: "status",
-      mode: "local",
+    const status = await runLocalBridgeStatus({
+      bridge,
+      state,
+      host: endpoint.host,
       port: endpoint.port,
     });
     state = applyRuntimeEndpointFromDetails(state, status.details);
@@ -4244,9 +4686,9 @@ export async function ensureManagedLocalRuntimeForBackend(
             status.details?.status || status.message || "runtime not running",
           ),
         });
-        preflightResult = await bridge.runCtlCommand({
-          ctlPath,
-          command: "preflight",
+        preflightResult = await runLocalBridgePreflight({
+          bridge,
+          state,
           host: endpoint.host,
           port: endpoint.requestedPort,
           portFallbackSpan: endpoint.portFallbackSpan,
@@ -4273,10 +4715,9 @@ export async function ensureManagedLocalRuntimeForBackend(
           };
         }
         setAutoStartEnabledInSession(true);
-        const up = await bridge.runCtlCommand({
-          ctlPath,
-          command: "up",
-          mode: "local",
+        const up = await runLocalBridgeUp({
+          bridge,
+          state,
           host: endpoint.host,
           port: endpoint.requestedPort,
           portFallbackSpan: endpoint.portFallbackSpan,
@@ -4306,7 +4747,8 @@ export async function ensureManagedLocalRuntimeForBackend(
         didRunUp = true;
         const statusPoll = await pollStatusUntilRunning({
           bridge,
-          ctlPath,
+          state,
+          host: endpoint.host,
           port: endpoint.port,
         });
         if (statusPoll.status) {
@@ -4397,6 +4839,7 @@ export async function ensureManagedLocalRuntimeForBackend(
     }
     const finalEndpoint = resolveRuntimeEndpoint(state);
     if (didRunUp) {
+      triggerSilentManagedModelCacheRefresh(state);
       triggerManagedLocalRuntimePostUpTaskReconcile(state);
       emitLocalRuntimeToast("runtime-up");
     }

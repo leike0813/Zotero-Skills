@@ -589,6 +589,17 @@
     }
     const toolbar = el("div", "toolbar");
     toolbar.appendChild(el("h2", "page-title", backend.title));
+    const refreshModelCache = el(
+      "button",
+      "btn",
+      labels.refreshModelCache || "Refresh Model Cache",
+    );
+    refreshModelCache.addEventListener("click", function () {
+      sendAction("refresh-model-cache", {
+        backendId: backend.backendId,
+      });
+    });
+    toolbar.appendChild(refreshModelCache);
     const openManagement = el("button", "btn", labels.openManagement);
     openManagement.addEventListener("click", function () {
       sendAction("open-management", {

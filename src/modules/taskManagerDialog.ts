@@ -27,6 +27,7 @@ import {
   type WorkflowTaskRecord,
 } from "./taskRuntime";
 import { openSkillRunnerManagementDialog } from "./skillRunnerManagementDialog";
+import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner/modelCache";
 import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
@@ -943,6 +944,10 @@ async function buildDashboardSnapshot(args: {
     noHistory: localize("task-dashboard-detail-empty", "Select one backend from sidebar."),
     backendNoTasks: localize("task-dashboard-backend-empty", "No tasks for this backend."),
     openManagement: localize("task-dashboard-open-management", "Open Backend UI"),
+    refreshModelCache: localize(
+      "backend-manager-refresh-model-cache",
+      "Refresh Model Cache",
+    ),
     openRun: localize("task-dashboard-open-run", "Open Run"),
     cancelRun: localize("task-dashboard-skillrunner-cancel", "Cancel Run"),
     logsTitle: localize("task-dashboard-generic-logs-title", "Runtime Logs"),
@@ -1729,6 +1734,45 @@ export async function openTaskManagerDialog(args?: {
               error: compactError(error),
             },
           }),
+        );
+      }
+      return;
+    }
+    if (action === "refresh-model-cache") {
+      const backendId = String(payload.backendId || "").trim();
+      const backend = state.backends.find((entry) => entry.id === backendId);
+      if (!backend || !isSkillRunnerBackend(backend)) {
+        return;
+      }
+      try {
+        const refreshed = await refreshSkillRunnerModelCacheForBackend({
+          backend,
+        });
+        if (!refreshed.ok) {
+          throw new Error(String(refreshed.error || "unknown error"));
+        }
+        taskManagerDialog?.window?.alert?.(
+          localize(
+            "backend-manager-refresh-model-cache-success",
+            "Model cache refreshed. updatedAt={refreshedAt}",
+            {
+              args: {
+                refreshedAt: String(refreshed.refreshedAt || ""),
+              },
+            },
+          ),
+        );
+      } catch (error) {
+        taskManagerDialog?.window?.alert?.(
+          localize(
+            "backend-manager-refresh-model-cache-failed",
+            "Failed to refresh model cache: {error}",
+            {
+              args: {
+                error: compactError(error),
+              },
+            },
+          ),
         );
       }
       return;

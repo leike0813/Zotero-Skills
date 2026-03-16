@@ -79,6 +79,65 @@ describe("skillrunner ctl bridge", function () {
     assert.include(commandScript, "--json");
   });
 
+  it("supports direct agent bootstrap with injected runtime env", async function () {
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const bridge = new SkillRunnerCtlBridge({
+      runCommand: async (args) => {
+        commands.push({ command: args.command, args: args.args });
+        return {
+          exitCode: 0,
+          stdout: "agent ensure finished",
+          stderr: "",
+        };
+      },
+    });
+
+    const result = await bridge.runDirectAgentBootstrap({
+      installDir: "C:\\SkillRunner\\releases\\v0.4.5",
+    });
+
+    assert.isTrue(result.ok);
+    assert.equal(commands.length, 1);
+    const commandScript = commands[0].args[commands[0].args.length - 1] || "";
+    assert.include(commandScript, "scripts/agent_manager.py");
+    assert.include(commandScript, "SKILL_RUNNER_DATA_DIR");
+    assert.include(
+      String(result.details?.bootstrap_report_file || ""),
+      "agent_bootstrap_report.json",
+    );
+  });
+
+  it("retries direct bootstrap once when uv venv is broken (missing pyvenv.cfg)", async function () {
+    let callCount = 0;
+    const bridge = new SkillRunnerCtlBridge({
+      runCommand: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            exitCode: 2,
+            stdout: "",
+            stderr:
+              "error: Querying Python at `C:\\\\Users\\\\u\\\\agent-cache\\\\uv_venv\\\\Scripts\\\\python.exe` failed with exit status exit code: 106\n\n[stderr]\nfailed to locate pyvenv.cfg: ?????",
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: "agent ensure finished",
+          stderr: "",
+        };
+      },
+    });
+
+    const result = await bridge.runDirectAgentBootstrap({
+      installDir: "C:\\SkillRunner\\releases\\v0.4.5",
+    });
+
+    assert.equal(callCount, 2);
+    assert.isTrue(result.ok);
+    assert.equal(result.details?.retry_attempted, true);
+    assert.equal(result.details?.retry_reason, "broken-uv-venv-pyvenv-cfg");
+  });
+
   it("supports preflight command with host/port/fallback args", async function () {
     const commands: Array<{ command: string; args: string[] }> = [];
     const bridge = new SkillRunnerCtlBridge({
@@ -115,6 +174,102 @@ describe("skillrunner ctl bridge", function () {
     assert.include(commandScript, "--port-fallback-span");
     assert.include(commandScript, "10");
     assert.include(commandScript, "--json");
+  });
+
+  it("preflight accepts available port via mozilla server-socket probe", async function () {
+    const fs = await import("fs/promises");
+    const os = await import("os");
+    const path = await import("path");
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "zotero-skills-bridge-preflight-"));
+    const installDir = path.join(tempRoot, "releases", "v0.4.5");
+    const serverDir = path.join(installDir, "server");
+    const scriptsDir = path.join(installDir, "scripts");
+    const dataDir = path.join(tempRoot, "data");
+    const reportPath = path.join(dataDir, "agent_bootstrap_report.json");
+    await fs.mkdir(serverDir, { recursive: true });
+    await fs.mkdir(scriptsDir, { recursive: true });
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(serverDir, "main.py"), "# mock\n", "utf8");
+    await fs.writeFile(path.join(scriptsDir, "agent_manager.py"), "# mock\n", "utf8");
+    await fs.writeFile(
+      reportPath,
+      JSON.stringify({ summary: { outcome: "ok" } }, null, 2),
+      "utf8",
+    );
+    const runtime = globalThis as {
+      Components?: {
+        classes?: Record<string, { createInstance?: (iface: unknown) => unknown }>;
+        interfaces?: Record<string, unknown>;
+      };
+      Cc?: Record<string, { createInstance?: (iface: unknown) => unknown }>;
+      Ci?: Record<string, unknown>;
+    };
+    const prevCc = runtime.Cc;
+    const prevCi = runtime.Ci;
+    const prevComponents = runtime.Components;
+    let socketInitCount = 0;
+    runtime.Cc = {
+      ...(prevCc || {}),
+      "@mozilla.org/network/server-socket;1": {
+        createInstance: () => ({
+          init: () => {
+            socketInitCount += 1;
+          },
+          close: () => {
+            // no-op
+          },
+        }),
+      },
+    };
+    runtime.Ci = {
+      ...(prevCi || {}),
+      nsIServerSocket: {},
+    };
+    if (prevComponents) {
+      runtime.Components = {
+        ...prevComponents,
+        classes: runtime.Cc,
+        interfaces: runtime.Ci,
+      };
+    }
+    try {
+      const bridge = new SkillRunnerCtlBridge({
+        runCommand: async () => ({
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        }),
+      });
+      const result = await bridge.preflightLocalRuntime({
+        installDir,
+        localRoot: tempRoot,
+        host: "127.0.0.1",
+        port: 29813,
+        portFallbackSpan: 0,
+      });
+      assert.isTrue(result.ok);
+      assert.equal(socketInitCount, 1);
+      const checks = result.details?.checks as Record<string, unknown>;
+      const port = checks?.port as Record<string, unknown>;
+      assert.equal(Number(port?.selected_port || 0), 29813);
+    } finally {
+      if (typeof prevCc === "undefined") {
+        delete runtime.Cc;
+      } else {
+        runtime.Cc = prevCc;
+      }
+      if (typeof prevCi === "undefined") {
+        delete runtime.Ci;
+      } else {
+        runtime.Ci = prevCi;
+      }
+      if (typeof prevComponents === "undefined") {
+        delete runtime.Components;
+      } else {
+        runtime.Components = prevComponents;
+      }
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("passes --port-fallback-span when running ctl up", async function () {

@@ -50,6 +50,21 @@ type CtlArgs = {
   waitSeconds?: number;
 };
 
+export type SkillRunnerAgentBootstrapArgs = {
+  installDir: string;
+  localRoot?: string;
+  reportFilePath?: string;
+};
+
+export type SkillRunnerLocalRuntimeBridgeArgs = {
+  installDir: string;
+  localRoot?: string;
+  host?: string;
+  port?: number;
+  portFallbackSpan?: number;
+  waitSeconds?: number;
+};
+
 type UninstallArgs = {
   uninstallPath: string;
   clearData?: boolean;
@@ -286,6 +301,33 @@ function joinFsPath(...segments: string[]) {
   return joined;
 }
 
+function getParentFsPath(pathValue: string) {
+  const normalized = normalizeString(pathValue).replace(/[\\/]+$/g, "");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized === "/" || normalized === "\\") {
+    return normalized;
+  }
+  if (/^[A-Za-z]:$/i.test(normalized)) {
+    return `${normalized}\\`;
+  }
+  const lastSlashIndex = Math.max(
+    normalized.lastIndexOf("/"),
+    normalized.lastIndexOf("\\"),
+  );
+  if (lastSlashIndex < 0) {
+    return "";
+  }
+  if (lastSlashIndex === 0) {
+    return normalized[0];
+  }
+  if (lastSlashIndex === 2 && /^[A-Za-z]:/.test(normalized)) {
+    return `${normalized.slice(0, 2)}\\`;
+  }
+  return normalized.slice(0, lastSlashIndex);
+}
+
 function isAbsoluteFsPath(pathValue: string) {
   const normalized = normalizeString(pathValue);
   if (!normalized) {
@@ -295,6 +337,11 @@ function isAbsoluteFsPath(pathValue: string) {
     return /^[A-Za-z]:[\\/]/.test(normalized) || /^\\\\/.test(normalized);
   }
   return normalized.startsWith("/");
+}
+
+function toPosixSingleQuotedLiteral(raw: string) {
+  const normalized = String(raw || "");
+  return `'${normalized.replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeSafeLocalRootArg(localRoot: unknown) {
@@ -393,6 +440,150 @@ async function removePath(pathValue: string) {
     await fs.rm(normalized, { recursive: true, force: true });
   } catch {
     // ignore cleanup failures
+  }
+}
+
+async function writeUtf8File(pathValue: string, content: string) {
+  const normalized = normalizeString(pathValue);
+  if (!normalized) {
+    return;
+  }
+  const runtime = globalThis as {
+    IOUtils?: { writeUTF8?: (path: string, data: string) => Promise<unknown> };
+  };
+  if (typeof runtime.IOUtils?.writeUTF8 === "function") {
+    await runtime.IOUtils.writeUTF8(normalized, String(content || ""));
+    return;
+  }
+  const fs = await dynamicImport("fs/promises");
+  await fs.writeFile(normalized, String(content || ""), "utf8");
+}
+
+async function readJsonObject(pathValue: string) {
+  const content = await readUtf8File(pathValue);
+  const normalized = normalizeString(content);
+  if (!normalized) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(normalized);
+    if (isObjectRecord(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function writeJsonObject(pathValue: string, value: Record<string, unknown>) {
+  await writeUtf8File(pathValue, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+async function sleepMs(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
+}
+
+function toInteger(value: unknown, fallback: number) {
+  const numeric =
+    typeof value === "number" && Number.isFinite(value)
+      ? value
+      : Number.parseInt(String(value || "").trim(), 10);
+  if (Number.isFinite(numeric)) {
+    return Math.floor(numeric);
+  }
+  return fallback;
+}
+
+function normalizePort(value: unknown, fallback: number) {
+  const next = toInteger(value, fallback);
+  if (next >= 1 && next <= 65535) {
+    return next;
+  }
+  return fallback;
+}
+
+function normalizePortFallbackSpan(value: unknown, fallback = 0) {
+  const next = toInteger(value, fallback);
+  if (next >= 0) {
+    return next;
+  }
+  return fallback;
+}
+
+function buildServiceUrl(host: string, port: number, path = "/") {
+  const normalizedHost = normalizeString(host) || "127.0.0.1";
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `http://${normalizedHost}:${port}${normalizedPath}`;
+}
+
+function getGlobalFetch() {
+  const runtime = globalThis as {
+    fetch?: unknown;
+  };
+  if (typeof runtime.fetch === "function") {
+    return runtime.fetch as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  }
+  return undefined;
+}
+
+async function isTcpPortAvailable(host: string, port: number) {
+  const mozillaRuntime = globalThis as {
+    Components?: {
+      classes?: Record<string, { createInstance?: (iface: unknown) => unknown }>;
+      interfaces?: Record<string, unknown>;
+    };
+    Cc?: Record<string, { createInstance?: (iface: unknown) => unknown }>;
+    Ci?: Record<string, unknown>;
+  };
+  try {
+    const classes = mozillaRuntime.Components?.classes || mozillaRuntime.Cc;
+    const interfaces = mozillaRuntime.Components?.interfaces || mozillaRuntime.Ci;
+    const serverSocketFactory = classes?.["@mozilla.org/network/server-socket;1"];
+    const nsIServerSocket = interfaces?.nsIServerSocket;
+    if (serverSocketFactory?.createInstance && nsIServerSocket) {
+      const serverSocket = serverSocketFactory.createInstance(nsIServerSocket) as {
+        init?: (port: number, loopbackOnly: boolean, backLog: number) => void;
+        close?: () => void;
+      };
+      if (typeof serverSocket.init === "function" && typeof serverSocket.close === "function") {
+        const normalizedHost = normalizeString(host).toLowerCase();
+        const loopbackOnly = normalizedHost === "127.0.0.1" || normalizedHost === "localhost" || normalizedHost === "::1";
+        serverSocket.init(port, loopbackOnly, -1);
+        serverSocket.close();
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  try {
+    const net = await dynamicImport("net");
+    return await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      let settled = false;
+      const finalize = (value: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        try {
+          server.close();
+        } catch {
+          // ignore
+        }
+        resolve(value);
+      };
+      server.once("error", () => finalize(false));
+      server.once("listening", () => finalize(true));
+      server.listen(port, host);
+    });
+  } catch {
+    return false;
   }
 }
 
@@ -1266,6 +1457,1307 @@ export class SkillRunnerCtlBridge {
       "scripts",
       detectWindows() ? "skill-runnerctl.ps1" : "skill-runnerctl",
     );
+  }
+
+  private resolveLocalRuntimeLayout(args: {
+    installDir: string;
+    localRoot?: string;
+    reportFilePath?: string;
+  }) {
+    const base = this.resolveDirectBootstrapLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+      reportFilePath: args.reportFilePath,
+    });
+    if (!base.ok) {
+      return base;
+    }
+    const stateFile = joinFsPath(base.agentCacheDir, "local_runtime_service.json");
+    const localLogFile = joinFsPath(base.dataDir, "logs", "local_runtime_service.log");
+    const localErrLogFile = joinFsPath(base.dataDir, "logs", "local_runtime_service.stderr.log");
+    return {
+      ...base,
+      stateFile,
+      localLogFile,
+      localErrLogFile,
+    };
+  }
+
+  private async commandExists(command: string) {
+    const normalized = normalizeString(command);
+    if (!normalized) {
+      return false;
+    }
+    if (detectWindows()) {
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        `$cmd=Get-Command ${toPowerShellSingleQuotedLiteral(normalized)} -ErrorAction SilentlyContinue`,
+        "if ($cmd -and $cmd.Source) { exit 0 }",
+        "exit 1",
+      ].join("; ");
+      const output = await this.runCommandImpl({
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ],
+        timeoutMs: 30 * 1000,
+      });
+      return output.exitCode === 0;
+    }
+    const output = await this.runCommandImpl({
+      command: "sh",
+      args: ["-lc", `command -v ${toPosixSingleQuotedLiteral(normalized)} >/dev/null 2>&1`],
+      timeoutMs: 30 * 1000,
+    });
+    return output.exitCode === 0;
+  }
+
+  private async isPidAlive(pid: number) {
+    const targetPid = toInteger(pid, 0);
+    if (targetPid <= 0) {
+      return false;
+    }
+    if (detectWindows()) {
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        `$proc=Get-Process -Id ${targetPid} -ErrorAction SilentlyContinue`,
+        "if ($proc) { exit 0 }",
+        "exit 1",
+      ].join("; ");
+      const output = await this.runCommandImpl({
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ],
+        timeoutMs: 30 * 1000,
+      });
+      return output.exitCode === 0;
+    }
+    try {
+      const runtime = globalThis as {
+        process?: { kill?: (pid: number, signal?: number | string) => void };
+      };
+      if (typeof runtime.process?.kill === "function") {
+        runtime.process.kill(targetPid, 0);
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
+  private async terminatePid(pid: number) {
+    const targetPid = toInteger(pid, 0);
+    if (targetPid <= 0) {
+      return;
+    }
+    if (detectWindows()) {
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        `Stop-Process -Id ${targetPid} -Force -ErrorAction SilentlyContinue`,
+        "exit 0",
+      ].join("; ");
+      await this.runCommandImpl({
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ],
+        timeoutMs: 30 * 1000,
+      });
+      return;
+    }
+    try {
+      const runtime = globalThis as {
+        process?: { kill?: (pid: number, signal?: number | string) => void };
+      };
+      if (typeof runtime.process?.kill === "function") {
+        runtime.process.kill(targetPid, "SIGTERM");
+        await sleepMs(800);
+        if (await this.isPidAlive(targetPid)) {
+          runtime.process.kill(targetPid, "SIGKILL");
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private async resolveListeningPidByPort(host: string, port: number) {
+    const normalizedHost = normalizeString(host) || "127.0.0.1";
+    const normalizedPort = normalizePort(port, 0);
+    if (normalizedPort <= 0) {
+      return 0;
+    }
+    if (detectWindows()) {
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        `$targetHost=${toPowerShellSingleQuotedLiteral(normalizedHost)}`,
+        `$targetPort=${normalizedPort}`,
+        "$conn = $null",
+        "try {",
+        "  $conn = Get-NetTCPConnection -LocalPort $targetPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1",
+        "} catch {}",
+        "if ($conn -and $conn.OwningProcess) { Write-Output $conn.OwningProcess; exit 0 }",
+        "exit 1",
+      ].join("; ");
+      const output = await this.runCommandImpl({
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ],
+        timeoutMs: 30 * 1000,
+      });
+      if (output.exitCode !== 0) {
+        return 0;
+      }
+      return toInteger(
+        String(output.stdout || "")
+          .split(/\r?\n/)
+          .map((entry) => normalizeString(entry))
+          .filter(Boolean)
+          .pop(),
+        0,
+      );
+    }
+    const output = await this.runCommandImpl({
+      command: "sh",
+      args: [
+        "-lc",
+        `lsof -tiTCP:${normalizedPort} -sTCP:LISTEN | head -n 1`,
+      ],
+      timeoutMs: 30 * 1000,
+    });
+    if (output.exitCode !== 0) {
+      return 0;
+    }
+    return toInteger(
+      String(output.stdout || "")
+        .split(/\r?\n/)
+        .map((entry) => normalizeString(entry))
+        .filter(Boolean)
+        .pop(),
+      0,
+    );
+  }
+
+  private async probeLocalService(host: string, port: number) {
+    const fetchImpl = getGlobalFetch();
+    if (!fetchImpl) {
+      return { ok: false, status: 0, body: null as unknown };
+    }
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            // ignore
+          }
+        }, 1500)
+      : undefined;
+    try {
+      const response = await fetchImpl(buildServiceUrl(host, port, "/"), {
+        method: "GET",
+        signal: controller?.signal,
+      });
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return { ok: response.ok, status: response.status, body };
+    } catch {
+      return { ok: false, status: 0, body: null as unknown };
+    } finally {
+      if (typeof timer !== "undefined") {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private async selectPortWithFallback(host: string, requestedPort: number, span: number) {
+    const triedPorts: number[] = [];
+    const fallbackSpan = normalizePortFallbackSpan(span, 0);
+    for (let offset = 0; offset <= fallbackSpan; offset++) {
+      const candidate = requestedPort + offset;
+      if (candidate < 1 || candidate > 65535) {
+        continue;
+      }
+      triedPorts.push(candidate);
+      if (await isTcpPortAvailable(host, candidate)) {
+        return {
+          selectedPort: candidate,
+          triedPorts,
+        };
+      }
+    }
+    return {
+      selectedPort: 0,
+      triedPorts,
+    };
+  }
+
+  private async readLocalRuntimeState(stateFile: string) {
+    if (!(await pathExists(stateFile))) {
+      return null;
+    }
+    return readJsonObject(stateFile);
+  }
+
+  private async writeLocalRuntimeState(
+    stateFile: string,
+    payload: Record<string, unknown>,
+  ) {
+    await ensureDirectory(getParentFsPath(stateFile));
+    await writeJsonObject(stateFile, payload);
+  }
+
+  private async buildLocalStatus(args: {
+    layout: {
+      stateFile: string;
+    };
+    hostFallback: string;
+    portFallback: number;
+  }) {
+    const statePayload = await this.readLocalRuntimeState(args.layout.stateFile);
+    const host = normalizeString(statePayload?.host) || args.hostFallback;
+    const port = normalizePort(statePayload?.port, args.portFallback);
+    const pid = toInteger(statePayload?.pid, 0);
+    const pidAlive = pid > 0 ? await this.isPidAlive(pid) : false;
+    const health = await this.probeLocalService(host, port);
+    const healthy = health.status === 200;
+    const status = healthy ? "running" : pidAlive ? "starting" : "stopped";
+    return {
+      ok: true,
+      exitCode: 0,
+      message: `Local runtime status: ${status}.`,
+      stdout: "",
+      stderr: "",
+      details: {
+        mode: "local",
+        status,
+        pid: pid > 0 ? pid : undefined,
+        pid_alive: pidAlive,
+        service_healthy: healthy,
+        host,
+        port,
+        url: buildServiceUrl(host, port, "/"),
+        state_file: args.layout.stateFile,
+      },
+      command: "bridge-local-status",
+      args: [] as string[],
+    } as SkillRunnerCtlCommandResult;
+  }
+
+  private resolveDirectBootstrapLayout(args: SkillRunnerAgentBootstrapArgs) {
+    const installDir = normalizeString(args.installDir);
+    if (!installDir || !isAbsoluteFsPath(installDir)) {
+      return {
+        ok: false as const,
+        message: "invalid installDir for direct bootstrap",
+      };
+    }
+    const releasesDir = getParentFsPath(installDir);
+    const inferredLocalRoot = getParentFsPath(releasesDir);
+    const localRoot =
+      normalizeSafeLocalRootArg(args.localRoot) ||
+      normalizeSafeLocalRootArg(inferredLocalRoot);
+    if (!localRoot) {
+      return {
+        ok: false as const,
+        message: "failed to resolve safe localRoot for direct bootstrap",
+      };
+    }
+    const agentCacheDir = joinFsPath(localRoot, "agent-cache");
+    const dataDir = joinFsPath(localRoot, "data");
+    const reportFilePath =
+      normalizeString(args.reportFilePath) ||
+      joinFsPath(dataDir, "agent_bootstrap_report.json");
+    const agentHome = joinFsPath(agentCacheDir, "agent-home");
+    const npmPrefix = joinFsPath(agentCacheDir, "npm");
+    const uvCacheDir = joinFsPath(agentCacheDir, "uv_cache");
+    const uvVenvDir = joinFsPath(agentCacheDir, "uv_venv");
+    return {
+      ok: true as const,
+      installDir,
+      localRoot,
+      dataDir,
+      agentCacheDir,
+      reportFilePath,
+      agentHome,
+      npmPrefix,
+      uvCacheDir,
+      uvVenvDir,
+    };
+  }
+
+  async runDirectAgentBootstrap(
+    args: SkillRunnerAgentBootstrapArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveDirectBootstrapLayout(args);
+    if (!layout.ok) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "",
+        args: [],
+      };
+    }
+    const directStdoutFile = joinFsPath(
+      layout.dataDir,
+      "logs",
+      "plugin_direct_bootstrap_stdout.log",
+    );
+    const directStderrFile = joinFsPath(
+      layout.dataDir,
+      "logs",
+      "plugin_direct_bootstrap_stderr.log",
+    );
+    const invocation = detectWindows()
+      ? {
+          command: "powershell.exe",
+          args: [
+            "-NoLogo",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            [
+              "$ErrorActionPreference='Stop'",
+              "if ([string]::IsNullOrWhiteSpace($env:PATH) -and -not [string]::IsNullOrWhiteSpace($env:Path)) { $env:PATH = $env:Path }",
+              "$npmCommand = Get-Command npm -ErrorAction SilentlyContinue",
+              "if ($npmCommand -and $npmCommand.Source) { $npmDir = Split-Path -Parent $npmCommand.Source; if ($npmDir -and ($env:PATH -notlike \"*${npmDir}*\")) { $env:PATH = \"$npmDir;$env:PATH\" } }",
+              "$uvCommand = Get-Command uv -ErrorAction SilentlyContinue",
+              "if ($uvCommand -and $uvCommand.Source) { $uvDir = Split-Path -Parent $uvCommand.Source; if ($uvDir -and ($env:PATH -notlike \"*${uvDir}*\")) { $env:PATH = \"$uvDir;$env:PATH\" }; $uvExe = $uvCommand.Source } else { $uvExe = 'uv' }",
+              `$env:SKILL_RUNNER_RUNTIME_MODE = ${toPowerShellSingleQuotedLiteral("local")}`,
+              `$env:SKILL_RUNNER_LOCAL_ROOT = ${toPowerShellSingleQuotedLiteral(layout.localRoot)}`,
+              `$env:SKILL_RUNNER_DATA_DIR = ${toPowerShellSingleQuotedLiteral(layout.dataDir)}`,
+              `$env:SKILL_RUNNER_AGENT_CACHE_DIR = ${toPowerShellSingleQuotedLiteral(layout.agentCacheDir)}`,
+              `$env:SKILL_RUNNER_AGENT_HOME = ${toPowerShellSingleQuotedLiteral(layout.agentHome)}`,
+              `$env:SKILL_RUNNER_NPM_PREFIX = ${toPowerShellSingleQuotedLiteral(layout.npmPrefix)}`,
+              "$env:NPM_CONFIG_PREFIX = $env:SKILL_RUNNER_NPM_PREFIX",
+              `$env:UV_CACHE_DIR = ${toPowerShellSingleQuotedLiteral(layout.uvCacheDir)}`,
+              `$env:UV_PROJECT_ENVIRONMENT = ${toPowerShellSingleQuotedLiteral(layout.uvVenvDir)}`,
+              `Set-Location -LiteralPath ${toPowerShellSingleQuotedLiteral(layout.installDir)}`,
+              "New-Item -ItemType Directory -Path $env:SKILL_RUNNER_DATA_DIR -Force | Out-Null",
+              "New-Item -ItemType Directory -Path $env:SKILL_RUNNER_AGENT_CACHE_DIR -Force | Out-Null",
+              "New-Item -ItemType Directory -Path $env:SKILL_RUNNER_AGENT_HOME -Force | Out-Null",
+              `New-Item -ItemType Directory -Path ${toPowerShellSingleQuotedLiteral(joinFsPath(layout.dataDir, "logs"))} -Force | Out-Null`,
+              `$directStdoutFile = ${toPowerShellSingleQuotedLiteral(directStdoutFile)}`,
+              `$directStderrFile = ${toPowerShellSingleQuotedLiteral(directStderrFile)}`,
+              "if (Test-Path -LiteralPath $directStdoutFile) { Remove-Item -LiteralPath $directStdoutFile -Force -ErrorAction SilentlyContinue }",
+              "if (Test-Path -LiteralPath $directStderrFile) { Remove-Item -LiteralPath $directStderrFile -Force -ErrorAction SilentlyContinue }",
+              "try {",
+              "  $proc = Start-Process -FilePath $uvExe -ArgumentList @('run','python','scripts/agent_manager.py','--ensure','--bootstrap-report-file'," +
+                toPowerShellSingleQuotedLiteral(layout.reportFilePath) +
+                ") -Wait -PassThru -NoNewWindow -RedirectStandardOutput $directStdoutFile -RedirectStandardError $directStderrFile",
+              "  exit [int]$proc.ExitCode",
+              "} catch {",
+              "  $_ | Out-File -LiteralPath $directStderrFile -Encoding utf8 -Append",
+              "  exit 1",
+              "}",
+            ].join("; "),
+          ],
+        }
+      : {
+          command: "sh",
+          args: [
+            "-lc",
+            [
+              "set -e",
+              `cd ${toPosixSingleQuotedLiteral(layout.installDir)}`,
+              `export SKILL_RUNNER_RUNTIME_MODE=${toPosixSingleQuotedLiteral("local")}`,
+              `export SKILL_RUNNER_LOCAL_ROOT=${toPosixSingleQuotedLiteral(layout.localRoot)}`,
+              `export SKILL_RUNNER_DATA_DIR=${toPosixSingleQuotedLiteral(layout.dataDir)}`,
+              `export SKILL_RUNNER_AGENT_CACHE_DIR=${toPosixSingleQuotedLiteral(layout.agentCacheDir)}`,
+              `export SKILL_RUNNER_AGENT_HOME=${toPosixSingleQuotedLiteral(layout.agentHome)}`,
+              `export SKILL_RUNNER_NPM_PREFIX=${toPosixSingleQuotedLiteral(layout.npmPrefix)}`,
+              "export NPM_CONFIG_PREFIX=\"$SKILL_RUNNER_NPM_PREFIX\"",
+              `export UV_CACHE_DIR=${toPosixSingleQuotedLiteral(layout.uvCacheDir)}`,
+              `export UV_PROJECT_ENVIRONMENT=${toPosixSingleQuotedLiteral(layout.uvVenvDir)}`,
+              "mkdir -p \"$SKILL_RUNNER_DATA_DIR\" \"$SKILL_RUNNER_AGENT_CACHE_DIR\" \"$SKILL_RUNNER_AGENT_HOME\"",
+              `mkdir -p ${toPosixSingleQuotedLiteral(joinFsPath(layout.dataDir, "logs"))}`,
+              `DIRECT_STDOUT=${toPosixSingleQuotedLiteral(directStdoutFile)}`,
+              `DIRECT_STDERR=${toPosixSingleQuotedLiteral(directStderrFile)}`,
+              "rm -f \"$DIRECT_STDOUT\" \"$DIRECT_STDERR\"",
+              `uv run python scripts/agent_manager.py --ensure --bootstrap-report-file ${toPosixSingleQuotedLiteral(layout.reportFilePath)} 1>\"$DIRECT_STDOUT\" 2>\"$DIRECT_STDERR\"`,
+            ].join(" && "),
+          ],
+        };
+    const runOnce = async () => {
+      const output = await this.runCommandImpl({
+        command: invocation.command,
+        args: invocation.args,
+        timeoutMs: 20 * 60 * 1000,
+      });
+      const normalized = normalizeCtlResult({
+        output,
+        command: invocation.command,
+        argv: invocation.args,
+        fallbackMessage: "direct agent bootstrap finished",
+      });
+      let directStdoutPreview = "";
+      let directStderrPreview = "";
+      if (await pathExists(directStdoutFile)) {
+        try {
+          directStdoutPreview = previewText(
+            await readUtf8File(directStdoutFile),
+            1200,
+          );
+        } catch {
+          directStdoutPreview = "";
+        }
+      }
+      if (await pathExists(directStderrFile)) {
+        try {
+          directStderrPreview = previewText(
+            await readUtf8File(directStderrFile),
+            1200,
+          );
+        } catch {
+          directStderrPreview = "";
+        }
+      }
+      return {
+        normalized,
+        directStdoutPreview,
+        directStderrPreview,
+      };
+    };
+
+    const shouldRetryBrokenUvVenv = (text: string) =>
+      /failed to locate pyvenv\.cfg/i.test(text) ||
+      /pyvenv\.cfg/i.test(text);
+
+    let retryAttempted = false;
+    let retryReason = "";
+    let runResult = await runOnce();
+    if (!runResult.normalized.ok) {
+      const failureText = [
+        normalizeString(runResult.normalized.message),
+        normalizeString(runResult.normalized.stderr),
+        normalizeString(runResult.directStderrPreview),
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (shouldRetryBrokenUvVenv(failureText)) {
+        retryAttempted = true;
+        retryReason = "broken-uv-venv-pyvenv-cfg";
+        await removePath(layout.uvVenvDir);
+        appendSkillRunnerLocalDeployDebugLog({
+          level: "warn",
+          operation: "local-direct-agent-bootstrap-retry",
+          stage: "local-direct-agent-bootstrap-retry",
+          message:
+            "direct bootstrap detected broken uv venv, removed uv_venv and retrying once",
+          details: {
+            uvVenvDir: layout.uvVenvDir,
+            reason: retryReason,
+          },
+        });
+        runResult = await runOnce();
+      }
+    }
+
+    const refinedMessage =
+      !runResult.normalized.ok &&
+      !normalizeString(runResult.normalized.stderr) &&
+      !normalizeString(runResult.normalized.stdout) &&
+      (runResult.directStderrPreview || runResult.directStdoutPreview)
+        ? runResult.directStderrPreview || runResult.directStdoutPreview
+        : runResult.normalized.message;
+    const details = {
+      ...(isObjectRecord(runResult.normalized.details)
+        ? runResult.normalized.details
+        : {}),
+      bootstrap_report_file: layout.reportFilePath,
+      local_root: layout.localRoot,
+      data_dir: layout.dataDir,
+      agent_cache_dir: layout.agentCacheDir,
+      strategy: "direct-agent-manager",
+      direct_stdout_file: directStdoutFile,
+      direct_stderr_file: directStderrFile,
+      direct_stdout_preview: runResult.directStdoutPreview,
+      direct_stderr_preview: runResult.directStderrPreview,
+      retry_attempted: retryAttempted,
+      retry_reason: retryReason || undefined,
+    };
+    const result = {
+      ...runResult.normalized,
+      message: refinedMessage,
+      details,
+    };
+    appendCtlLog({
+      level: result.ok ? "info" : "warn",
+      operation: "local-direct-agent-bootstrap",
+      message: result.ok
+        ? "direct agent bootstrap succeeded"
+        : "direct agent bootstrap failed",
+      result,
+    });
+    return result;
+  }
+
+  async bootstrapLocalRuntime(
+    args: SkillRunnerAgentBootstrapArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    return this.runDirectAgentBootstrap(args);
+  }
+
+  async preflightLocalRuntime(
+    args: SkillRunnerLocalRuntimeBridgeArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveLocalRuntimeLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+    });
+    if (!layout.ok) {
+      const result: SkillRunnerCtlCommandResult = {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "bridge-local-preflight",
+        args: [],
+      };
+      appendCtlLog({
+        level: "warn",
+        operation: "local-bridge-preflight",
+        message: "bridge local preflight failed to resolve layout",
+        result,
+      });
+      return result;
+    }
+    const host = normalizeString(args.host) || "127.0.0.1";
+    const requestedPort = normalizePort(args.port, 29813);
+    const fallbackSpan = normalizePortFallbackSpan(args.portFallbackSpan, 10);
+    const blockingIssues: Record<string, unknown>[] = [];
+    const warnings: Record<string, unknown>[] = [];
+
+    const uvExists = await this.commandExists("uv");
+    const nodeExists = await this.commandExists("node");
+    const npmExists = await this.commandExists("npm");
+    if (!uvExists) {
+      blockingIssues.push({
+        code: "missing_dependency",
+        message: "Missing required dependency: uv.",
+        component: "uv",
+      });
+    }
+    const requiredFiles = [
+      {
+        id: "server-main",
+        path: joinFsPath(layout.installDir, "server", "main.py"),
+      },
+      {
+        id: "agent-manager",
+        path: joinFsPath(layout.installDir, "scripts", "agent_manager.py"),
+      },
+    ];
+    const requiredFileChecks: Record<string, unknown> = {};
+    for (const target of requiredFiles) {
+      const exists = await pathExists(target.path);
+      requiredFileChecks[target.id] = {
+        path: target.path,
+        exists,
+        readable: exists,
+      };
+      if (!exists) {
+        blockingIssues.push({
+          code: "required_file_missing",
+          message: `Required entry file missing: ${target.path}.`,
+          file_id: target.id,
+          path: target.path,
+        });
+      }
+    }
+    const portSelection = await this.selectPortWithFallback(host, requestedPort, fallbackSpan);
+    if (portSelection.selectedPort <= 0) {
+      blockingIssues.push({
+        code: "port_unavailable",
+        message: "No available port found in fallback range.",
+        host,
+        requested_port: requestedPort,
+        port_fallback_span: fallbackSpan,
+        tried_ports: portSelection.triedPorts,
+      });
+    }
+    const bootstrapReportExists = await pathExists(layout.reportFilePath);
+    let bootstrapOutcome = "";
+    if (bootstrapReportExists) {
+      const report = await readJsonObject(layout.reportFilePath);
+      const summary = isObjectRecord(report?.summary) ? report.summary : {};
+      bootstrapOutcome = normalizeString(summary?.outcome);
+      if (!report) {
+        warnings.push({
+          code: "bootstrap_report_unreadable",
+          message: `Bootstrap report is unreadable: ${layout.reportFilePath}.`,
+          path: layout.reportFilePath,
+        });
+      } else if (bootstrapOutcome === "partial_failure") {
+        warnings.push({
+          code: "bootstrap_partial_failure",
+          message: "Bootstrap report indicates partial_failure.",
+          path: layout.reportFilePath,
+          outcome: bootstrapOutcome,
+        });
+      }
+    } else {
+      warnings.push({
+        code: "bootstrap_report_missing",
+        message: `Bootstrap report not found: ${layout.reportFilePath}.`,
+        path: layout.reportFilePath,
+      });
+    }
+
+    const statePayload = await this.readLocalRuntimeState(layout.stateFile);
+    const statePid = toInteger(statePayload?.pid, 0);
+    const statePidAlive = statePid > 0 ? await this.isPidAlive(statePid) : false;
+    const stateStale = !!statePayload && !statePidAlive;
+    if (stateStale) {
+      warnings.push({
+        code: "stale_state_file",
+        message: "State file exists but recorded pid is not alive.",
+        path: layout.stateFile,
+        pid: statePid > 0 ? statePid : undefined,
+      });
+    }
+
+    const ok = blockingIssues.length === 0;
+    const result: SkillRunnerCtlCommandResult = {
+      ok,
+      exitCode: ok ? 0 : 2,
+      message: ok
+        ? warnings.length > 0
+          ? "Preflight passed with warnings."
+          : "Preflight passed."
+        : "Preflight failed with blocking issues.",
+      stdout: "",
+      stderr: "",
+      details: {
+        mode: "local",
+        checks: {
+          dependencies: {
+            uv: uvExists,
+            node: nodeExists,
+            npm: npmExists,
+          },
+          required_files: requiredFileChecks,
+          integrity: {
+            checked: false,
+            source: "plugin-bridge",
+          },
+          port: {
+            host,
+            requested_port: requestedPort,
+            port_fallback_span: fallbackSpan,
+            selected_port:
+              portSelection.selectedPort > 0
+                ? portSelection.selectedPort
+                : null,
+            tried_ports: portSelection.triedPorts,
+            available: portSelection.selectedPort > 0,
+          },
+          bootstrap_report: {
+            path: layout.reportFilePath,
+            exists: bootstrapReportExists,
+            parse_ok: bootstrapReportExists,
+            outcome: bootstrapOutcome || null,
+          },
+          state_file: {
+            path: layout.stateFile,
+            exists: !!statePayload,
+            parse_ok: statePayload ? true : !(await pathExists(layout.stateFile)),
+            pid: statePid > 0 ? statePid : null,
+            pid_alive: statePidAlive,
+            stale: stateStale,
+          },
+        },
+        blocking_issues: blockingIssues,
+        warnings,
+        suggested_next: {
+          mode: "local",
+          host,
+          requested_port: requestedPort,
+          port:
+            portSelection.selectedPort > 0
+              ? portSelection.selectedPort
+              : requestedPort,
+          port_fallback_span: fallbackSpan,
+          command:
+            "plugin-bridge up --mode local " +
+            `--host ${host} --port ${
+              portSelection.selectedPort > 0
+                ? portSelection.selectedPort
+                : requestedPort
+            } --port-fallback-span ${fallbackSpan}`,
+        },
+        strategy: "plugin-bridge-native",
+      },
+      command: "bridge-local-preflight",
+      args: [],
+    };
+    appendCtlLog({
+      level: result.ok ? "info" : "warn",
+      operation: "local-bridge-preflight",
+      message: result.ok
+        ? "bridge local preflight succeeded"
+        : "bridge local preflight failed",
+      result,
+    });
+    return result;
+  }
+
+  async statusLocalRuntime(
+    args: SkillRunnerLocalRuntimeBridgeArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveLocalRuntimeLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+    });
+    if (!layout.ok) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "bridge-local-status",
+        args: [],
+      };
+    }
+    const host = normalizeString(args.host) || "127.0.0.1";
+    const port = normalizePort(args.port, 29813);
+    const result = await this.buildLocalStatus({
+      layout: {
+        stateFile: layout.stateFile,
+      },
+      hostFallback: host,
+      portFallback: port,
+    });
+    appendCtlLog({
+      level: result.ok ? "info" : "warn",
+      operation: "local-bridge-status",
+      message: "bridge local status completed",
+      result,
+    });
+    return result;
+  }
+
+  async downLocalRuntime(
+    args: SkillRunnerLocalRuntimeBridgeArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveLocalRuntimeLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+    });
+    if (!layout.ok) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "bridge-local-down",
+        args: [],
+      };
+    }
+    const statePayload = await this.readLocalRuntimeState(layout.stateFile);
+    const host = normalizeString(statePayload?.host) || normalizeString(args.host) || "127.0.0.1";
+    const port = normalizePort(
+      statePayload?.port,
+      normalizePort(args.port, 29813),
+    );
+    let pid = toInteger(statePayload?.pid, 0);
+    if (pid <= 0) {
+      pid = await this.resolveListeningPidByPort(host, port);
+    }
+    if (pid > 0 && (await this.isPidAlive(pid))) {
+      await this.terminatePid(pid);
+    }
+    await removePath(layout.stateFile);
+    const health = await this.probeLocalService(host, port);
+    if (health.status === 200) {
+      const result: SkillRunnerCtlCommandResult = {
+        ok: false,
+        exitCode: 1,
+        message: "Local runtime is still running after stop attempt.",
+        stdout: "",
+        stderr: "",
+        details: {
+          mode: "local",
+          host,
+          port,
+          pid: pid > 0 ? pid : null,
+          state_file: layout.stateFile,
+          strategy: "plugin-bridge-native",
+        },
+        command: "bridge-local-down",
+        args: [],
+      };
+      appendCtlLog({
+        level: "warn",
+        operation: "local-bridge-down",
+        message: "bridge local down failed to stop service",
+        result,
+      });
+      return result;
+    }
+    const result: SkillRunnerCtlCommandResult = {
+      ok: true,
+      exitCode: 0,
+      message: "Local runtime stopped.",
+      stdout: "",
+      stderr: "",
+      details: {
+        mode: "local",
+        host,
+        port,
+        pid: pid > 0 ? pid : null,
+        state_file: layout.stateFile,
+      },
+      command: "bridge-local-down",
+      args: [],
+    };
+    appendCtlLog({
+      level: "info",
+      operation: "local-bridge-down",
+      message: "bridge local down completed",
+      result,
+    });
+    return result;
+  }
+
+  async upLocalRuntime(
+    args: SkillRunnerLocalRuntimeBridgeArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveLocalRuntimeLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+    });
+    if (!layout.ok) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "bridge-local-up",
+        args: [],
+      };
+    }
+    if (!(await this.commandExists("uv"))) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: "uv is not installed.",
+        stdout: "",
+        stderr: "",
+        details: {
+          mode: "local",
+          strategy: "plugin-bridge-native",
+        },
+        command: "bridge-local-up",
+        args: [],
+      };
+    }
+    const host = normalizeString(args.host) || "127.0.0.1";
+    const requestedPort = normalizePort(args.port, 29813);
+    const fallbackSpan = normalizePortFallbackSpan(args.portFallbackSpan, 10);
+    const waitSeconds = Math.max(1, toInteger(args.waitSeconds, 30));
+
+    const currentStatus = await this.buildLocalStatus({
+      layout: {
+        stateFile: layout.stateFile,
+      },
+      hostFallback: host,
+      portFallback: requestedPort,
+    });
+    if (currentStatus.ok && normalizeString(currentStatus.details?.status) === "running") {
+      const alreadyRunning: SkillRunnerCtlCommandResult = {
+        ...currentStatus,
+        message: "Local runtime already running.",
+      };
+      appendCtlLog({
+        level: "info",
+        operation: "local-bridge-up",
+        message: "bridge local up skipped because runtime already running",
+        result: alreadyRunning,
+      });
+      return alreadyRunning;
+    }
+
+    const portSelection = await this.selectPortWithFallback(host, requestedPort, fallbackSpan);
+    if (portSelection.selectedPort <= 0) {
+      return {
+        ok: false,
+        exitCode: 1,
+        message: "No available port found in fallback range.",
+        stdout: "",
+        stderr: "",
+        details: {
+          mode: "local",
+          host,
+          requested_port: requestedPort,
+          port_fallback_span: fallbackSpan,
+          tried_ports: portSelection.triedPorts,
+          strategy: "plugin-bridge-native",
+        },
+        command: "bridge-local-up",
+        args: [],
+      };
+    }
+    const selectedPort = portSelection.selectedPort;
+    const fallbackUsed = selectedPort !== requestedPort;
+
+    await ensureDirectory(layout.dataDir);
+    await ensureDirectory(layout.agentCacheDir);
+    await ensureDirectory(layout.agentHome);
+    await ensureDirectory(getParentFsPath(layout.localLogFile));
+    const pidCaptureFile = joinFsPath(layout.agentCacheDir, "local_runtime_startup.pid");
+    await removePath(pidCaptureFile);
+
+    let output: CommandOutput = {
+      exitCode: 1,
+      stdout: "",
+      stderr: "failed to start local runtime process",
+    };
+    if (detectWindows()) {
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "if ([string]::IsNullOrWhiteSpace($env:PATH) -and -not [string]::IsNullOrWhiteSpace($env:Path)) { $env:PATH = $env:Path }",
+        "$uvCommand = Get-Command uv -ErrorAction SilentlyContinue",
+        "if ($uvCommand -and $uvCommand.Source) { $uvDir = Split-Path -Parent $uvCommand.Source; if ($uvDir -and ($env:PATH -notlike \"*${uvDir}*\")) { $env:PATH = \"$uvDir;$env:PATH\" }; $uvExe = $uvCommand.Source } else { $uvExe = 'uv' }",
+        `$env:SKILL_RUNNER_RUNTIME_MODE = ${toPowerShellSingleQuotedLiteral("local")}`,
+        `$env:SKILL_RUNNER_LOCAL_ROOT = ${toPowerShellSingleQuotedLiteral(layout.localRoot)}`,
+        `$env:SKILL_RUNNER_DATA_DIR = ${toPowerShellSingleQuotedLiteral(layout.dataDir)}`,
+        `$env:SKILL_RUNNER_AGENT_CACHE_DIR = ${toPowerShellSingleQuotedLiteral(layout.agentCacheDir)}`,
+        `$env:SKILL_RUNNER_AGENT_HOME = ${toPowerShellSingleQuotedLiteral(layout.agentHome)}`,
+        `$env:SKILL_RUNNER_NPM_PREFIX = ${toPowerShellSingleQuotedLiteral(layout.npmPrefix)}`,
+        "$env:NPM_CONFIG_PREFIX = $env:SKILL_RUNNER_NPM_PREFIX",
+        `$env:UV_CACHE_DIR = ${toPowerShellSingleQuotedLiteral(layout.uvCacheDir)}`,
+        `$env:UV_PROJECT_ENVIRONMENT = ${toPowerShellSingleQuotedLiteral(layout.uvVenvDir)}`,
+        `$pidCaptureFile = ${toPowerShellSingleQuotedLiteral(pidCaptureFile)}`,
+        `$argsList = @('run','uvicorn','server.main:app','--host',${toPowerShellSingleQuotedLiteral(
+          host,
+        )},'--port',${toPowerShellSingleQuotedLiteral(String(selectedPort))})`,
+        `$proc = Start-Process -FilePath $uvExe -ArgumentList $argsList -WorkingDirectory ${toPowerShellSingleQuotedLiteral(
+          layout.installDir,
+        )} -PassThru -WindowStyle Hidden -RedirectStandardOutput ${toPowerShellSingleQuotedLiteral(
+          layout.localLogFile,
+        )} -RedirectStandardError ${toPowerShellSingleQuotedLiteral(layout.localErrLogFile)}`,
+        "Set-Content -LiteralPath $pidCaptureFile -Value ([string]$proc.Id) -Encoding ascii -Force",
+        "Write-Output $proc.Id",
+        "exit 0",
+      ].join("; ");
+      output = await this.runCommandImpl({
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ],
+        timeoutMs: 2 * 60 * 1000,
+      });
+    } else {
+      const commandScript = [
+        "set -e",
+        `cd ${toPosixSingleQuotedLiteral(layout.installDir)}`,
+        `export SKILL_RUNNER_RUNTIME_MODE=${toPosixSingleQuotedLiteral("local")}`,
+        `export SKILL_RUNNER_LOCAL_ROOT=${toPosixSingleQuotedLiteral(layout.localRoot)}`,
+        `export SKILL_RUNNER_DATA_DIR=${toPosixSingleQuotedLiteral(layout.dataDir)}`,
+        `export SKILL_RUNNER_AGENT_CACHE_DIR=${toPosixSingleQuotedLiteral(layout.agentCacheDir)}`,
+        `export SKILL_RUNNER_AGENT_HOME=${toPosixSingleQuotedLiteral(layout.agentHome)}`,
+        `export SKILL_RUNNER_NPM_PREFIX=${toPosixSingleQuotedLiteral(layout.npmPrefix)}`,
+        "export NPM_CONFIG_PREFIX=\"$SKILL_RUNNER_NPM_PREFIX\"",
+        `export UV_CACHE_DIR=${toPosixSingleQuotedLiteral(layout.uvCacheDir)}`,
+        `export UV_PROJECT_ENVIRONMENT=${toPosixSingleQuotedLiteral(layout.uvVenvDir)}`,
+        `nohup uv run uvicorn server.main:app --host ${toPosixSingleQuotedLiteral(
+          host,
+        )} --port ${toPosixSingleQuotedLiteral(String(selectedPort))} >>${toPosixSingleQuotedLiteral(
+          layout.localLogFile,
+        )} 2>>${toPosixSingleQuotedLiteral(layout.localErrLogFile)} < /dev/null &`,
+        `echo $! > ${toPosixSingleQuotedLiteral(pidCaptureFile)}`,
+        "echo $!",
+      ].join(" && ");
+      output = await this.runCommandImpl({
+        command: "sh",
+        args: ["-lc", commandScript],
+        timeoutMs: 2 * 60 * 1000,
+      });
+    }
+    let pid = toInteger(
+      String(output.stdout || "")
+        .split(/\r?\n/)
+        .map((entry) => normalizeString(entry))
+        .filter(Boolean)
+        .pop(),
+      0,
+    );
+    if (pid <= 0 && (await pathExists(pidCaptureFile))) {
+      pid = toInteger(await readUtf8File(pidCaptureFile), 0);
+    }
+    if (output.exitCode !== 0) {
+      await removePath(pidCaptureFile);
+      const failed: SkillRunnerCtlCommandResult = {
+        ok: false,
+        exitCode: output.exitCode || 1,
+        message:
+          normalizeString(output.stderr) ||
+          normalizeString(output.stdout) ||
+          "Failed to start local runtime.",
+        stdout: output.stdout,
+        stderr: output.stderr,
+        details: {
+          mode: "local",
+          host,
+          requested_port: requestedPort,
+          port: selectedPort,
+          port_fallback_span: fallbackSpan,
+          port_fallback_used: fallbackUsed,
+          tried_ports: portSelection.triedPorts,
+          log_path: layout.localLogFile,
+          stderr_log_path: layout.localErrLogFile,
+          strategy: "plugin-bridge-native",
+        },
+        command: detectWindows() ? "powershell.exe" : "sh",
+        args: [],
+      };
+      appendCtlLog({
+        level: "warn",
+        operation: "local-bridge-up",
+        message: "bridge local up failed to spawn process",
+        result: failed,
+      });
+      return failed;
+    }
+
+    const deadline = Date.now() + waitSeconds * 1000;
+    let healthy = false;
+    while (Date.now() < deadline) {
+      const health = await this.probeLocalService(host, selectedPort);
+      if (health.status === 200) {
+        healthy = true;
+        break;
+      }
+      if (pid > 0 && !(await this.isPidAlive(pid))) {
+        break;
+      }
+      await sleepMs(500);
+    }
+    if (!healthy) {
+      if (pid <= 0) {
+        pid = await this.resolveListeningPidByPort(host, selectedPort);
+      }
+      if (pid > 0) {
+        await this.terminatePid(pid);
+      }
+      await removePath(layout.stateFile);
+      const failed: SkillRunnerCtlCommandResult = {
+        ok: false,
+        exitCode: 1,
+        message: "Local runtime failed to become healthy within timeout.",
+        stdout: "",
+        stderr: "",
+        details: {
+          mode: "local",
+          pid,
+          host,
+          requested_port: requestedPort,
+          port: selectedPort,
+          port_fallback_span: fallbackSpan,
+          port_fallback_used: fallbackUsed,
+          tried_ports: portSelection.triedPorts,
+          url: buildServiceUrl(host, selectedPort, "/"),
+          log_path: layout.localLogFile,
+          stderr_log_path: layout.localErrLogFile,
+          strategy: "plugin-bridge-native",
+        },
+        command: "bridge-local-up",
+        args: [],
+      };
+      appendCtlLog({
+        level: "warn",
+        operation: "local-bridge-up",
+        message: "bridge local up timed out waiting for health",
+        result: failed,
+      });
+      await removePath(pidCaptureFile);
+      return failed;
+    }
+    if (pid <= 0) {
+      pid = await this.resolveListeningPidByPort(host, selectedPort);
+    }
+    await this.writeLocalRuntimeState(layout.stateFile, {
+      pid: pid > 0 ? pid : null,
+      host,
+      port: selectedPort,
+      started_at: nowIso(),
+      mode: "local",
+      log_path: layout.localLogFile,
+    });
+
+    const succeeded: SkillRunnerCtlCommandResult = {
+      ok: true,
+      exitCode: 0,
+      message: fallbackUsed
+        ? `Local runtime started on fallback port ${selectedPort} (requested ${requestedPort}).`
+        : "Local runtime started.",
+      stdout: "",
+      stderr: "",
+      details: {
+        mode: "local",
+        pid: pid > 0 ? pid : null,
+        host,
+        requested_port: requestedPort,
+        port: selectedPort,
+        port_fallback_span: fallbackSpan,
+        port_fallback_used: fallbackUsed,
+        tried_ports: portSelection.triedPorts,
+        url: buildServiceUrl(host, selectedPort, "/"),
+        log_path: layout.localLogFile,
+        stderr_log_path: layout.localErrLogFile,
+        state_file: layout.stateFile,
+        strategy: "plugin-bridge-native",
+      },
+      command: "bridge-local-up",
+      args: [],
+    };
+    appendCtlLog({
+      level: "info",
+      operation: "local-bridge-up",
+      message: "bridge local up succeeded",
+      result: succeeded,
+    });
+    await removePath(pidCaptureFile);
+    return succeeded;
+  }
+
+  async doctorLocalRuntime(
+    args: SkillRunnerLocalRuntimeBridgeArgs,
+  ): Promise<SkillRunnerCtlCommandResult> {
+    const layout = this.resolveLocalRuntimeLayout({
+      installDir: args.installDir,
+      localRoot: args.localRoot,
+    });
+    if (!layout.ok) {
+      return {
+        ok: false,
+        exitCode: 2,
+        message: layout.message,
+        stdout: "",
+        stderr: "",
+        details: {},
+        command: "bridge-local-doctor",
+        args: [],
+      };
+    }
+    const checks = {
+      uv: await this.commandExists("uv"),
+      node: await this.commandExists("node"),
+      npm: await this.commandExists("npm"),
+      docker: await this.commandExists("docker"),
+      ttyd: await this.commandExists("ttyd"),
+    };
+    const host = normalizeString(args.host) || "127.0.0.1";
+    const port = normalizePort(args.port, 29813);
+    const result: SkillRunnerCtlCommandResult = {
+      ok: true,
+      exitCode: 0,
+      message: "Doctor completed.",
+      stdout: "",
+      stderr: "",
+      details: {
+        ok: true,
+        exit_code: 0,
+        mode: "local",
+        checks,
+        paths: {
+          install_dir: layout.installDir,
+          local_root: layout.localRoot,
+          data_dir: layout.dataDir,
+          agent_cache_root: layout.agentCacheDir,
+          agent_home: layout.agentHome,
+          npm_prefix: layout.npmPrefix,
+          uv_cache_dir: layout.uvCacheDir,
+          uv_project_environment: layout.uvVenvDir,
+          state_file: layout.stateFile,
+          local_log_file: layout.localLogFile,
+          local_err_log_file: layout.localErrLogFile,
+          bootstrap_report_file: layout.reportFilePath,
+        },
+        env_snapshot: {
+          SKILL_RUNNER_RUNTIME_MODE: "local",
+          SKILL_RUNNER_LOCAL_BIND_HOST: host,
+          SKILL_RUNNER_LOCAL_PORT: String(port),
+          SKILL_RUNNER_LOCAL_PORT_FALLBACK_SPAN: String(
+            normalizePortFallbackSpan(args.portFallbackSpan, 10),
+          ),
+        },
+        strategy: "plugin-bridge-native",
+      },
+      command: "bridge-local-doctor",
+      args: [],
+    };
+    appendCtlLog({
+      level: "info",
+      operation: "local-bridge-doctor",
+      message: "bridge local doctor completed",
+      result,
+    });
+    return result;
   }
 
   async runSystemCommand(args: {

@@ -43,6 +43,7 @@ const PROVIDER_SECTIONS = [
 type BackendPersistenceDeps = {
   setPref: typeof setPref;
   refreshWorkflowMenus: typeof refreshWorkflowMenus;
+  refreshModelCache: typeof refreshSkillRunnerModelCacheForBackend;
 };
 
 type EditableBackendRow = {
@@ -641,9 +642,6 @@ export function collectBackendsFromDialog(doc: Document): {
   const rows = Array.from(
     doc.querySelectorAll("[data-zs-backend-row='1']"),
   ) as HTMLElement[];
-  if (rows.length === 0) {
-    throw new Error(getString("backend-manager-error-at-least-one" as any));
-  }
 
   const seen = new Set<string>();
   const usedIds = new Set<string>();
@@ -760,6 +758,7 @@ export function collectBackendsFromDialog(doc: Document): {
 const defaultBackendPersistenceDeps: BackendPersistenceDeps = {
   setPref,
   refreshWorkflowMenus,
+  refreshModelCache: refreshSkillRunnerModelCacheForBackend,
 };
 
 function readPersistedManagementAuthByBackendId() {
@@ -809,6 +808,41 @@ function readPersistedManagementAuthByBackendId() {
   return map;
 }
 
+function triggerSilentModelCacheRefreshForAddedSkillRunnerBackends(args: {
+  existingSkillRunnerIds: Set<string>;
+  mergedBackends: BackendInstance[];
+  refreshModelCache: typeof refreshSkillRunnerModelCacheForBackend;
+}) {
+  const addedBackends = args.mergedBackends.filter((backend) => {
+    const backendId = String(backend.id || "").trim();
+    return (
+      String(backend.type || "").trim() === "skillrunner" &&
+      !!backendId &&
+      !args.existingSkillRunnerIds.has(backendId)
+    );
+  });
+  for (const backend of addedBackends) {
+    void args
+      .refreshModelCache({ backend })
+      .then((result) => {
+        if (!result?.ok && typeof console !== "undefined") {
+          console.warn(
+            `[backend-manager] silent model cache refresh failed for backend=${backend.id}: ${String(
+              result?.error || "unknown error",
+            )}`,
+          );
+        }
+      })
+      .catch((error) => {
+        if (typeof console !== "undefined") {
+          console.warn(
+            `[backend-manager] silent model cache refresh threw for backend=${backend.id}: ${String(error)}`,
+          );
+        }
+      });
+  }
+}
+
 export function persistBackendsConfig(
   backends: BackendInstance[],
   deps: Partial<BackendPersistenceDeps> = {},
@@ -834,11 +868,21 @@ export function persistBackendsConfig(
   });
   const idMapping = new Map<string, string>();
   const removedIds = new Set<string>();
+  const existingSkillRunnerIds = new Set<string>();
   const raw = String(getPref(BACKENDS_CONFIG_PREF_KEY) || "").trim();
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as { backends?: BackendInstance[] };
       const existing = Array.isArray(parsed?.backends) ? parsed.backends : [];
+      for (const entry of existing) {
+        const existingId = String(entry?.id || "").trim();
+        if (!existingId) {
+          continue;
+        }
+        if (String(entry?.type || "").trim() === "skillrunner") {
+          existingSkillRunnerIds.add(existingId);
+        }
+      }
       const managed = existing.find((entry) =>
         isManagedLocalBackendId(entry.id),
       );
@@ -897,6 +941,11 @@ export function persistBackendsConfig(
     untrackSkillRunnerBackendHealth(removedId);
   }
   resolved.refreshWorkflowMenus();
+  triggerSilentModelCacheRefreshForAddedSkillRunnerBackends({
+    existingSkillRunnerIds,
+    mergedBackends,
+    refreshModelCache: resolved.refreshModelCache,
+  });
 }
 
 function getAlertWindow(window?: Window) {

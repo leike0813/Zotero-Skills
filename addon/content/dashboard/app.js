@@ -589,6 +589,7 @@
     }
     const toolbar = el("div", "toolbar");
     toolbar.appendChild(el("h2", "page-title", backend.title));
+    const actionWrap = el("div", "toolbar-actions");
     const refreshModelCache = el(
       "button",
       "btn",
@@ -599,14 +600,15 @@
         backendId: backend.backendId,
       });
     });
-    toolbar.appendChild(refreshModelCache);
+    actionWrap.appendChild(refreshModelCache);
     const openManagement = el("button", "btn", labels.openManagement);
     openManagement.addEventListener("click", function () {
       sendAction("open-management", {
         backendId: backend.backendId,
       });
     });
-    toolbar.appendChild(openManagement);
+    actionWrap.appendChild(openManagement);
+    toolbar.appendChild(actionWrap);
     main.appendChild(toolbar);
 
     main.appendChild(

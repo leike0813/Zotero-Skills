@@ -380,6 +380,12 @@ tr.clickable {
   margin-bottom: 10px;
 }
 
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .btn {
   border: 1px solid var(--line-strong);
   background: #fff;

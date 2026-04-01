@@ -33,7 +33,12 @@
 - [x] 自动部署调试控制台按钮以及写调试控制台的逻辑也通过硬编码开关决定是否启用（和上一条一样的开关）
 - [x] workflow 自包含 README 以及 dashboard 中的 README 查看
 - [x] 为 backend reconcile 添加一个轮询时间降级策略
+- [ ] **修复多重 applyResult 动作的 BUG**
+- [ ] **重新整理任务提交和排队逻辑**，现在似乎多选提交任务会以串行排队方式执行
+- [ ] **修复 Reference Matching workflow 的 BUG**，现在似乎无法正确工作
+- [ ] **修复 Toast 不自动消失（也有可能是停留时间太长）的 BUG**
 - [ ] 添加 Tag 受控词表订阅和发布功能
+- [ ] 添加专属 Note 的导入导出 workflow （导入/导出Digest、References和Citation Analysis note）
 - [ ] Dashboard 增加 Tag Manager 快捷方式（可选，要做的话也得做成注册式的）
 - [ ] test 治理，broad cache 治理
 - [ ] 更详细的前后端通讯状态机

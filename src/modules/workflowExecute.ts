@@ -13,12 +13,38 @@ import { openWorkflowSettingsWebDialog } from "./workflowSettingsWebDialog";
 import { loadBackendsRegistry } from "../backends/registry";
 import { isSkillRunnerBackendReconcileFlagged } from "./skillRunnerBackendHealthRegistry";
 import {
+  alertWindow,
   emitWorkflowFinishSummary,
   emitWorkflowJobToasts,
   emitWorkflowStartToast,
 } from "./workflowExecution/feedbackSeam";
 import { createLocalizedMessageFormatter } from "./workflowExecution/messageFormatter";
 import { shouldShowWorkflowNotifications } from "./workflowExecution/feedbackPolicy";
+import { registerDeferredWorkflowCompletion } from "./workflowExecution/deferredCompletionTracker";
+import { getLoadedWorkflowSourceById } from "./workflowRuntime";
+import { getString } from "../utils/locale";
+
+function buildWorkflowCannotRunMessage(args: {
+  workflowLabel: string;
+  reason: string;
+}) {
+  try {
+    const localized = String(
+      getString("workflow-execute-cannot-run" as any, {
+        args: {
+          workflowLabel: args.workflowLabel,
+          reason: args.reason,
+        },
+      }),
+    ).trim();
+    if (localized && !localized.includes("workflow-execute-cannot-run")) {
+      return localized;
+    }
+  } catch {
+    // ignore localization failures
+  }
+  return `Workflow ${args.workflowLabel} cannot run: ${args.reason}`;
+}
 
 export async function executeWorkflowFromCurrentSelection(args: {
   win: _ZoteroTypes.MainWindow;
@@ -30,6 +56,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
   const showWorkflowNotifications = shouldShowWorkflowNotifications(
     args.workflow.manifest,
   );
+  const workflowSource = getLoadedWorkflowSourceById(args.workflow.manifest.id);
   let executionOptionsOverride = args.executionOptionsOverride;
   if (args.requireSettingsGate === true && !executionOptionsOverride) {
     const loadedBackends = await loadBackendsRegistry();
@@ -53,13 +80,35 @@ export async function executeWorkflowFromCurrentSelection(args: {
         candidateBackends: submitVisibleBackends,
       });
       if (dialogResult.status !== "confirmed") {
+        const canceled = dialogResult.status === "canceled";
         appendRuntimeLog({
-          level: "info",
+          level: canceled ? "info" : "error",
           scope: "workflow-trigger",
           workflowId: args.workflow.manifest.id,
-          stage: "settings-gate-canceled",
-          message: "workflow trigger canceled by settings gate",
+          providerId: String(args.workflow.manifest.provider || "").trim(),
+          stage: canceled ? "settings-gate-canceled" : "settings-gate-failed",
+          message: canceled
+            ? "workflow trigger canceled by settings gate"
+            : "workflow trigger failed before execution at settings gate",
+          details: {
+            workflowSource,
+            ...(canceled
+              ? {}
+              : {
+                  gateStage: dialogResult.stage,
+                  reason: dialogResult.reason,
+                }),
+          },
         });
+        if (!canceled) {
+          alertWindow(
+            args.win,
+            buildWorkflowCannotRunMessage({
+              workflowLabel: args.workflow.manifest.label,
+              reason: `settings gate failed: ${dialogResult.reason}`,
+            }),
+          );
+        }
         return;
       }
       executionOptionsOverride = dialogResult.executionOptions;
@@ -138,6 +187,22 @@ export async function executeWorkflowFromCurrentSelection(args: {
     messageFormatter,
   });
 
+  if (applySummary.reconcileOwnedPendingJobs.length > 0) {
+    registerDeferredWorkflowCompletion({
+      runId: runState.runId,
+      win: args.win,
+      workflowId: args.workflow.manifest.id,
+      workflowLabel: args.workflow.manifest.label,
+      totalJobs: runState.totalJobs,
+      skipped: totalSkipped,
+      succeeded: applySummary.succeeded,
+      failed: applySummary.failed,
+      failureReasons: applySummary.failureReasons,
+      pendingJobs: applySummary.reconcileOwnedPendingJobs,
+      messageFormatter,
+    });
+  }
+
   if (showWorkflowNotifications) {
     if (applySummary.jobOutcomes.length > 0) {
       emitWorkflowJobToasts({
@@ -153,14 +218,17 @@ export async function executeWorkflowFromCurrentSelection(args: {
     level: applySummary.failed > 0 ? "warn" : "info",
     scope: "workflow-trigger",
     workflowId: args.workflow.manifest.id,
+    providerId: String(args.workflow.manifest.provider || "").trim(),
     stage: "trigger-finished",
     message: "workflow trigger finished",
     details: {
+      workflowSource,
       succeeded: applySummary.succeeded,
       failed: applySummary.failed,
       pending: applySummary.pending,
       skipped: totalSkipped,
       failureCount: applySummary.failureReasons.length,
+      reconcileOwnedPending: applySummary.reconcileOwnedPendingJobs.length,
     },
   });
 

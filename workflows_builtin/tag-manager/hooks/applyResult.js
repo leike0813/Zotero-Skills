@@ -1,14 +1,21 @@
 const GLOBAL_HOST_OPEN_KEY = "__zsWorkflowEditorHostOpen";
 const GLOBAL_HOST_REGISTER_KEY = "__zsWorkflowEditorHostRegisterRenderer";
-const GLOBAL_TAG_VOCAB_BRIDGE_KEY = "__zsTagVocabularyBridge";
+const GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY = "__zsWorkflowRuntimeBridge";
 const RENDERER_ID = "tag-manager.default.v1";
+const TAG_MANAGER_WORKFLOW_ID = "tag-manager";
 const DEFAULT_PREFS_PREFIX = "extensions.zotero.zotero-skills";
 const TAG_VOCAB_PREF_SUFFIX = "tagVocabularyJson";
+const TAG_VOCAB_LOCAL_COMMITTED_PREF_SUFFIX = "tagVocabularyLocalCommittedJson";
+const TAG_VOCAB_REMOTE_COMMITTED_PREF_SUFFIX = "tagVocabularyRemoteCommittedJson";
 const TAG_VOCAB_STAGED_PREF_SUFFIX = "tagVocabularyStagedJson";
+const WORKFLOW_SETTINGS_PREF_SUFFIX = "workflowSettingsJson";
 const STAGED_SOURCE_FLOW_DEFAULT = "manual-staged";
+const STAGED_PUBLISH_DEBOUNCE_MS = 1000;
 const TAG_PATTERN = /^[a-z_]+:[a-zA-Z0-9/_.-]+$/;
 const MAX_TAG_LENGTH = 120;
 const ON_DUPLICATE_OPTIONS = ["skip", "overwrite", "error"];
+const DEFAULT_GITHUB_REPO = "Zotero_TagVocab";
+const DEFAULT_GITHUB_FILE_PATH = "tags/tags.json";
 const FACETS = [
   "field",
   "topic",
@@ -19,6 +26,150 @@ const FACETS = [
   "tool",
   "status",
 ];
+const GITHUB_API_VERSION = "2022-11-28";
+
+function normalizeParentBindings(value) {
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    const numeric = Number(entry);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      continue;
+    }
+    const id = Math.trunc(numeric);
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    normalized.push(id);
+  }
+  normalized.sort((left, right) => left - right);
+  return normalized;
+}
+
+function normalizeStagedPublishState(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (
+    text === "pending-batch" ||
+    text === "publishing" ||
+    text === "publish-failed"
+  ) {
+    return text;
+  }
+  return "";
+}
+
+function normalizeStagedEntryWithBindings(entry, options = {}) {
+  const defaultSourceFlow =
+    String(options.defaultSourceFlow || "manual-staged").trim() || "manual-staged";
+  const source = entry && typeof entry === "object" ? entry : {};
+  const tag = String(source.tag || "").trim();
+  const facetFromField = String(source.facet || "").trim().toLowerCase();
+  const facetFromTag = tag.includes(":")
+    ? String(tag.split(":")[0] || "").trim().toLowerCase()
+    : "";
+  const facet = facetFromField || facetFromTag || "topic";
+  const createdAt = String(source.createdAt || "").trim();
+  const updatedAt = String(source.updatedAt || "").trim();
+  return {
+    tag,
+    facet,
+    source: String(source.source || "manual").trim() || "manual",
+    note: String(source.note || ""),
+    deprecated: Boolean(source.deprecated),
+    createdAt,
+    updatedAt: updatedAt || createdAt,
+    sourceFlow:
+      String(source.sourceFlow || defaultSourceFlow).trim() || defaultSourceFlow,
+    parentBindings: normalizeParentBindings(source.parentBindings),
+    publishState: normalizeStagedPublishState(source.publishState),
+  };
+}
+
+function mergeParentBindingsIntoStagedEntries(args) {
+  const entries = Array.isArray(args?.entries) ? args.entries : [];
+  const nextEntry = args?.entry || null;
+  const parentBindings = normalizeParentBindings(args?.parentBindings);
+  const defaultSourceFlow = args?.defaultSourceFlow;
+  const normalizedEntries = entries.map((entry) =>
+    normalizeStagedEntryWithBindings(entry, { defaultSourceFlow }),
+  );
+  const candidate = normalizeStagedEntryWithBindings(nextEntry, { defaultSourceFlow });
+  const lowered = String(candidate.tag || "").trim().toLowerCase();
+  if (!lowered) {
+    return normalizedEntries;
+  }
+  const index = normalizedEntries.findIndex(
+    (entry) => String(entry.tag || "").trim().toLowerCase() === lowered,
+  );
+  if (index < 0) {
+    normalizedEntries.push({
+      ...candidate,
+      parentBindings: normalizeParentBindings([
+        ...candidate.parentBindings,
+        ...parentBindings,
+      ]),
+    });
+    return normalizedEntries;
+  }
+  const existing = normalizedEntries[index];
+  normalizedEntries[index] = {
+    ...existing,
+    ...candidate,
+    parentBindings: normalizeParentBindings([
+      ...existing.parentBindings,
+      ...candidate.parentBindings,
+      ...parentBindings,
+    ]),
+    publishState:
+      normalizeStagedPublishState(candidate.publishState) ||
+      normalizeStagedPublishState(existing.publishState),
+  };
+  return normalizedEntries;
+}
+
+function collectParentBindingsByTag(entries, tags) {
+  const requested = new Set(
+    (Array.isArray(tags) ? tags : [])
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const bindings = new Map();
+  for (const rawEntry of Array.isArray(entries) ? entries : []) {
+    const entry = normalizeStagedEntryWithBindings(rawEntry);
+    const lowered = String(entry.tag || "").trim().toLowerCase();
+    if (!lowered || (requested.size > 0 && !requested.has(lowered))) {
+      continue;
+    }
+    bindings.set(
+      lowered,
+      normalizeParentBindings([
+        ...(bindings.get(lowered) || []),
+        ...entry.parentBindings,
+      ]),
+    );
+  }
+  return bindings;
+}
+
+function setPublishStateForTags(entries, tags, publishState, options = {}) {
+  const requested = new Set(
+    (Array.isArray(tags) ? tags : [])
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    const normalized = normalizeStagedEntryWithBindings(entry, options);
+    const lowered = String(normalized.tag || "").trim().toLowerCase();
+    if (!requested.has(lowered)) {
+      return normalized;
+    }
+    return {
+      ...normalized,
+      publishState: normalizeStagedPublishState(publishState),
+    };
+  });
+}
 
 function parseBooleanLike(value) {
   const lowered = String(value || "")
@@ -231,19 +382,25 @@ function nowIsoTimestamp() {
 }
 
 function normalizeStagedEntry(entry) {
-  const source = entry && typeof entry === "object" ? entry : {};
-  const normalized = normalizeEntry(source);
   const now = nowIsoTimestamp();
-  const createdAt = toIsoTimestamp(source.createdAt) || now;
-  const updatedAt = toIsoTimestamp(source.updatedAt) || createdAt;
-  const sourceFlow =
-    String(source.sourceFlow || STAGED_SOURCE_FLOW_DEFAULT).trim() ||
-    STAGED_SOURCE_FLOW_DEFAULT;
+  const normalized = normalizeStagedEntryWithBindings(entry, {
+    defaultSourceFlow: STAGED_SOURCE_FLOW_DEFAULT,
+  });
+  const createdAt = toIsoTimestamp(normalized.createdAt) || now;
+  const updatedAt = toIsoTimestamp(normalized.updatedAt) || createdAt;
   return {
-    ...normalized,
+    tag: normalized.tag,
+    facet: normalized.facet,
+    source: normalized.source,
+    note: normalized.note,
+    deprecated: normalized.deprecated,
     createdAt,
     updatedAt,
-    sourceFlow,
+    sourceFlow: normalized.sourceFlow || STAGED_SOURCE_FLOW_DEFAULT,
+    parentBindings: Array.isArray(normalized.parentBindings)
+      ? [...normalized.parentBindings]
+      : [],
+    publishState: String(normalized.publishState || "").trim(),
   };
 }
 
@@ -587,35 +744,410 @@ function resolvePrefsKey() {
   return `${resolvePrefsPrefix()}.${TAG_VOCAB_PREF_SUFFIX}`;
 }
 
+function resolveLocalCommittedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_LOCAL_COMMITTED_PREF_SUFFIX}`;
+}
+
+function resolveRemoteCommittedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_REMOTE_COMMITTED_PREF_SUFFIX}`;
+}
+
 function resolveStagedPrefsKey() {
   return `${resolvePrefsPrefix()}.${TAG_VOCAB_STAGED_PREF_SUFFIX}`;
 }
 
-function readRawPersistedState() {
-  const key = resolvePrefsKey();
-  const raw = Zotero.Prefs.get(key, true);
+function resolveWorkflowSettingsPrefsKey() {
+  return `${resolvePrefsPrefix()}.${WORKFLOW_SETTINGS_PREF_SUFFIX}`;
+}
+
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readWorkflowSettingsParams(workflowId) {
+  const normalizedWorkflowId = String(workflowId || "").trim();
+  if (!normalizedWorkflowId) {
+    return {};
+  }
+  const raw = Zotero.Prefs.get(resolveWorkflowSettingsPrefsKey(), true);
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!isRecord(parsed)) {
+      return {};
+    }
+    const workflowEntry = parsed[normalizedWorkflowId];
+    if (!isRecord(workflowEntry)) {
+      return {};
+    }
+    return isRecord(workflowEntry.workflowParams) ? workflowEntry.workflowParams : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveWorkflowRuntimeBridge() {
+  const runtimeBridge =
+    globalThis &&
+    typeof globalThis === "object" &&
+    globalThis[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY] &&
+    typeof globalThis[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY] === "object"
+      ? globalThis[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY]
+      : null;
+  const addonBridge =
+    typeof addon !== "undefined" &&
+    addon &&
+    addon.data &&
+    addon.data.workflowRuntimeBridge &&
+    typeof addon.data.workflowRuntimeBridge === "object"
+      ? addon.data.workflowRuntimeBridge
+      : null;
+  return (
+    runtimeBridge ||
+    addonBridge || {
+      appendRuntimeLog: () => null,
+      showToast: () => undefined,
+    }
+  );
+}
+
+function resolveGitHubSyncConfig(workflowId) {
+  const params = readWorkflowSettingsParams(workflowId);
+  const githubOwner = String(params.github_owner || "").trim();
+  const githubRepo = String(params.github_repo || DEFAULT_GITHUB_REPO).trim();
+  const filePath = String(params.file_path || DEFAULT_GITHUB_FILE_PATH)
+    .trim()
+    .replace(/^\/+/, "");
+  const githubToken = String(params.github_token || "").trim();
+  const configured = Boolean(githubOwner && githubRepo && filePath && githubToken);
+  return {
+    githubOwner,
+    githubRepo,
+    filePath,
+    githubToken,
+    configured,
+    sourceLabel:
+      githubOwner && githubRepo && filePath
+        ? `${githubOwner}/${githubRepo}@main/${filePath}`
+        : "",
+  };
+}
+
+function resolveTagManagerMode(syncConfig) {
+  return (syncConfig || resolveGitHubSyncConfig(TAG_MANAGER_WORKFLOW_ID)).configured
+    ? "subscription"
+    : "local";
+}
+
+function buildGitHubRawUrl(config) {
+  return `https://raw.githubusercontent.com/${encodeURIComponent(
+    config.githubOwner,
+  )}/${encodeURIComponent(config.githubRepo)}/main/${config.filePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
+function buildGitHubContentsApiUrl(config) {
+  return `https://api.github.com/repos/${encodeURIComponent(
+    config.githubOwner,
+  )}/${encodeURIComponent(config.githubRepo)}/contents/${config.filePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
+function buildGitHubHeaders(config, extraHeaders) {
+  const headers = {
+    Accept: "application/json",
+    Authorization: `Bearer ${String(config.githubToken || "").trim()}`,
+    ...extraHeaders,
+  };
+  if (String(config.githubToken || "").trim()) {
+    headers["X-GitHub-Api-Version"] = GITHUB_API_VERSION;
+  }
+  return headers;
+}
+
+function encodeBase64Utf8(text) {
+  const input = String(text || "");
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(input, "utf8").toString("base64");
+  }
+  if (typeof btoa === "function") {
+    return btoa(unescape(encodeURIComponent(input)));
+  }
+  throw new Error("base64 encoding is unavailable in current runtime");
+}
+
+function decodeBase64Utf8(text) {
+  const normalized = String(text || "").replace(/\s+/g, "");
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(normalized, "base64").toString("utf8");
+  }
+  if (typeof atob === "function") {
+    return decodeURIComponent(escape(atob(normalized)));
+  }
+  throw new Error("base64 decoding is unavailable in current runtime");
+}
+
+function sanitizeRemoteTags(tags) {
+  const normalized = sortEntries(normalizeEntriesInput(Array.isArray(tags) ? tags : []));
+  const issues = collectValidationIssues(normalized);
+  if (issues.length > 0) {
+    throw new Error(
+      `remote vocabulary validation failed: ${issues
+        .slice(0, 3)
+        .map((issue) => `${issue.code}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeRemoteAbbrevs(input) {
+  if (!isRecord(input)) {
+    return {};
+  }
+  const next = {};
+  for (const [key, value] of Object.entries(input)) {
+    const normalizedKey = String(key || "").trim();
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedKey || !normalizedValue) {
+      continue;
+    }
+    next[normalizedKey] = normalizedValue;
+  }
+  return next;
+}
+
+function normalizeRemoteVocabularyPayload(payload) {
+  if (!isRecord(payload)) {
+    throw new Error("remote vocabulary payload is not an object");
+  }
+  const tags = sanitizeRemoteTags(payload.tags);
+  const remoteFacets = Array.isArray(payload.facets)
+    ? payload.facets.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const tagFacetSet = new Set(tags.map((entry) => String(entry.facet || "").trim()));
+  const facets = [];
+  for (const facet of FACETS) {
+    if (remoteFacets.includes(facet) || tagFacetSet.has(facet)) {
+      facets.push(facet);
+    }
+  }
+  for (const facet of remoteFacets) {
+    if (!facets.includes(facet)) {
+      facets.push(facet);
+    }
+  }
+  for (const facet of tagFacetSet) {
+    if (!facets.includes(facet)) {
+      facets.push(facet);
+    }
+  }
+  return {
+    version: String(payload.version || "1.0.0").trim() || "1.0.0",
+    updated_at: String(payload.updated_at || "").trim(),
+    facets,
+    tags,
+    abbrevs: normalizeRemoteAbbrevs(payload.abbrevs),
+    tag_count: tags.length,
+  };
+}
+
+async function fetchJsonOrThrow(url, options) {
+  if (typeof fetch !== "function") {
+    throw new Error("fetch is unavailable in current runtime");
+  }
+  const response = await fetch(url, options);
+  if (!response || response.ok !== true) {
+    const status = Number(response?.status || 0);
+    throw new Error(`HTTP ${status || "request-failed"} while requesting ${url}`);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`invalid JSON response from ${url}`);
+  }
+}
+
+function buildRemoteSyncNotice(args) {
+  const base = String(args.sourceLabel || "").trim();
+  if (args.status === "unconfigured") {
+    return "GitHub sync not configured; Tag Manager is running in local-only mode.";
+  }
+  if (args.status === "subscribed") {
+    return `Subscribed remote vocabulary from ${base}.`;
+  }
+  if (args.status === "subscribe-failed") {
+    return `GitHub subscribe failed for ${base}; last successful remote snapshot fallback is in use. ${String(
+      args.reason || "",
+    ).trim()}`;
+  }
+  if (args.status === "configured") {
+    return `GitHub sync configured for ${base}.`;
+  }
+  if (args.status === "publish-pending") {
+    return `Queued staged vocabulary publish to ${base}.`;
+  }
+  if (args.status === "publishing") {
+    return `Publishing vocabulary to ${base}...`;
+  }
+  if (args.status === "publish-succeeded") {
+    return `Published vocabulary to ${base}.`;
+  }
+  if (args.status === "publish-failed") {
+    return `GitHub publish failed for ${base}; staged entries remain pending. ${String(
+      args.reason || "",
+    ).trim()}`;
+  }
+  if (args.status === "save-publish-failed") {
+    return `GitHub publish failed for ${base}; controlled draft is preserved for retry. ${String(
+      args.reason || "",
+    ).trim()}`;
+  }
+  if (args.status === "controlled-dirty") {
+    return String(args.reason || "Save or discard controlled edits before opening staged tags.");
+  }
+  return String(args.reason || "").trim();
+}
+
+function appendTagManagerSyncLog(input) {
+  const bridge = resolveWorkflowRuntimeBridge();
+  if (typeof bridge.appendRuntimeLog !== "function") {
+    return null;
+  }
+  return bridge.appendRuntimeLog(input);
+}
+
+function showTagManagerSyncToast(args) {
+  const bridge = resolveWorkflowRuntimeBridge();
+  if (typeof bridge.showToast !== "function") {
+    return;
+  }
+  bridge.showToast(args);
+}
+
+function showSubscriptionPublishToast(args) {
+  const action = String(args?.action || "publish").trim() || "publish";
+  const success = args?.success === true;
+  const count = Number(args?.count || 0);
+  const reason = String(args?.reason || "").trim();
+  if (success) {
+    const suffix = count > 0 ? ` (${count} tag${count === 1 ? "" : "s"})` : "";
+    showTagManagerSyncToast({
+      text: `Tag Manager ${action} succeeded${suffix}`,
+      type: "success",
+    });
+    return;
+  }
+  showTagManagerSyncToast({
+    text: `Tag Manager ${action} failed${reason ? `: ${reason}` : ""}`,
+    type: "error",
+  });
+}
+
+async function appendTagToParentItem(parentItemId, tag) {
+  const numericParentId = Number(parentItemId);
+  const normalizedTag = String(tag || "").trim();
+  if (!Number.isFinite(numericParentId) || numericParentId <= 0 || !normalizedTag) {
+    return false;
+  }
+  const item = Zotero.Items.get(Math.trunc(numericParentId));
+  if (!item || typeof item.addTag !== "function" || typeof item.getTags !== "function") {
+    return false;
+  }
+  const currentTags = Array.isArray(item.getTags()) ? item.getTags() : [];
+  if (
+    currentTags.some(
+      (entry) => String(entry?.tag || "").trim().toLowerCase() === normalizedTag.toLowerCase(),
+    )
+  ) {
+    return false;
+  }
+  item.addTag(normalizedTag);
+  await item.saveTx();
+  return true;
+}
+
+async function appendTagsToBoundParentItems(args) {
+  const workflowId = String(args?.workflowId || TAG_MANAGER_WORKFLOW_ID).trim();
+  const bindingsByTag = args?.bindingsByTag instanceof Map ? args.bindingsByTag : new Map();
+  let appliedCount = 0;
+  for (const [loweredTag, parentBindings] of bindingsByTag.entries()) {
+    const normalizedTag = String(loweredTag || "").trim();
+    if (!normalizedTag) {
+      continue;
+    }
+    for (const parentItemId of Array.isArray(parentBindings) ? parentBindings : []) {
+      try {
+        const changed = await appendTagToParentItem(parentItemId, normalizedTag);
+        if (changed) {
+          appliedCount += 1;
+        }
+      } catch (error) {
+        appendTagManagerSyncLog({
+          level: "warn",
+          scope: "hook",
+          workflowId,
+          stage: "staged-parent-bindings-apply-failed",
+          message: "tag-manager failed to append committed tag to bound parent item",
+          details: {
+            parent_item_id: Number(parentItemId || 0) || undefined,
+            tag: normalizedTag,
+          },
+          error,
+        });
+      }
+    }
+  }
+  appendTagManagerSyncLog({
+    level: "info",
+    scope: "hook",
+    workflowId,
+    stage: "staged-parent-bindings-applied-to-items",
+    message: "tag-manager applied committed tags to bound parent items",
+    details: {
+      bound_tag_count: bindingsByTag.size,
+      applied_item_tag_count: appliedCount,
+    },
+  });
+  return appliedCount;
+}
+
+function readRawPref(key) {
+  const raw = Zotero.Prefs.get(String(key || "").trim(), true);
   return typeof raw === "string" ? raw.trim() : "";
 }
 
-function readRawPersistedStagedState() {
-  const key = resolveStagedPrefsKey();
-  const raw = Zotero.Prefs.get(key, true);
-  return typeof raw === "string" ? raw.trim() : "";
-}
-
-function persistEntries(entries) {
+function buildCommittedPayload(entries) {
   const normalized = sortEntries(normalizeEntriesInput(entries));
   assertNoValidationIssues(normalized);
-  const payload = {
+  return {
     version: 1,
     entries: normalized,
   };
-  Zotero.Prefs.set(resolvePrefsKey(), JSON.stringify(payload), true);
-  return payload;
 }
 
-function loadPersistedState() {
-  const raw = readRawPersistedState();
+function buildProjectionPayload(entries) {
+  return {
+    version: 1,
+    entries: sortEntries(normalizeEntriesInput(entries)),
+  };
+}
+
+function buildStagedPayload(entries) {
+  return {
+    version: 1,
+    entries: sortStagedEntries(normalizeStagedEntriesInput(entries)),
+  };
+}
+
+function loadValidatedEntriesStateFromRaw(raw) {
   if (!raw) {
     return {
       corrupted: false,
@@ -661,18 +1193,7 @@ function loadPersistedState() {
   };
 }
 
-function persistStagedEntries(entries) {
-  const normalized = sortStagedEntries(normalizeStagedEntriesInput(entries));
-  const payload = {
-    version: 1,
-    entries: normalized,
-  };
-  Zotero.Prefs.set(resolveStagedPrefsKey(), JSON.stringify(payload), true);
-  return payload;
-}
-
-function loadPersistedStagedState() {
-  const raw = readRawPersistedStagedState();
+function loadStagedEntriesStateFromRaw(raw) {
   if (!raw) {
     return {
       corrupted: false,
@@ -709,12 +1230,494 @@ function loadPersistedStagedState() {
       ],
     };
   }
-  const normalized = sortStagedEntries(normalizeStagedEntriesInput(candidateEntries));
   return {
     corrupted: false,
-    entries: normalized,
+    entries: sortStagedEntries(normalizeStagedEntriesInput(candidateEntries)),
     issues: [],
   };
+}
+
+function seedCommittedPrefFromLegacyIfMissing(targetKey) {
+  const normalizedTargetKey = String(targetKey || "").trim();
+  if (!normalizedTargetKey || readRawPref(normalizedTargetKey)) {
+    return;
+  }
+  const legacyLoaded = loadValidatedEntriesStateFromRaw(readRawPref(resolvePrefsKey()));
+  if (legacyLoaded.corrupted || legacyLoaded.entries.length === 0) {
+    return;
+  }
+  Zotero.Prefs.set(
+    normalizedTargetKey,
+    JSON.stringify({
+      version: 1,
+      entries: legacyLoaded.entries,
+    }),
+    true,
+  );
+}
+
+function syncActiveCommittedProjection(entries) {
+  const payload = buildProjectionPayload(entries);
+  Zotero.Prefs.set(resolvePrefsKey(), JSON.stringify(payload), true);
+  return payload;
+}
+
+function persistLocalCommittedEntries(entries) {
+  const payload = buildCommittedPayload(entries);
+  Zotero.Prefs.set(resolveLocalCommittedPrefsKey(), JSON.stringify(payload), true);
+  return payload;
+}
+
+function persistRemoteCommittedEntries(entries) {
+  const payload = buildCommittedPayload(entries);
+  Zotero.Prefs.set(resolveRemoteCommittedPrefsKey(), JSON.stringify(payload), true);
+  return payload;
+}
+
+function loadLocalCommittedState() {
+  seedCommittedPrefFromLegacyIfMissing(resolveLocalCommittedPrefsKey());
+  return loadValidatedEntriesStateFromRaw(readRawPref(resolveLocalCommittedPrefsKey()));
+}
+
+function loadRemoteCommittedState() {
+  seedCommittedPrefFromLegacyIfMissing(resolveRemoteCommittedPrefsKey());
+  return loadValidatedEntriesStateFromRaw(readRawPref(resolveRemoteCommittedPrefsKey()));
+}
+
+function loadPersistedState(args) {
+  const syncConfig = args?.syncConfig || resolveGitHubSyncConfig(TAG_MANAGER_WORKFLOW_ID);
+  const mode = resolveTagManagerMode(syncConfig);
+  const loaded =
+    mode === "subscription" ? loadRemoteCommittedState() : loadLocalCommittedState();
+  return {
+    ...loaded,
+    mode,
+  };
+}
+
+function persistEntries(entries, args) {
+  const syncConfig = args?.syncConfig || resolveGitHubSyncConfig(TAG_MANAGER_WORKFLOW_ID);
+  const mode = args?.mode || resolveTagManagerMode(syncConfig);
+  const payload =
+    mode === "subscription"
+      ? persistRemoteCommittedEntries(entries)
+      : persistLocalCommittedEntries(entries);
+  syncActiveCommittedProjection(payload.entries);
+  return payload;
+}
+
+function readRawPersistedStagedState() {
+  return readRawPref(resolveStagedPrefsKey());
+}
+
+function persistStagedEntries(entries) {
+  const payload = buildStagedPayload(entries);
+  Zotero.Prefs.set(resolveStagedPrefsKey(), JSON.stringify(payload), true);
+  return payload;
+}
+
+function loadPersistedStagedState() {
+  return loadStagedEntriesStateFromRaw(readRawPersistedStagedState());
+}
+
+async function subscribeRemoteVocabulary(args) {
+  const config = args?.config || {};
+  const workflowId = String(args?.workflowId || "").trim();
+  const sourceUrl = buildGitHubRawUrl(config);
+  appendTagManagerSyncLog({
+    level: "info",
+    scope: "hook",
+    workflowId,
+    stage: "subscribe-start",
+    message: "tag-manager remote vocabulary subscribe started",
+    details: {
+      owner: config.githubOwner,
+      repo: config.githubRepo,
+      file_path: config.filePath,
+    },
+  });
+  try {
+    const payload = await fetchJsonOrThrow(sourceUrl, {
+      method: "GET",
+      headers: buildGitHubHeaders(config),
+    });
+    const normalized = normalizeRemoteVocabularyPayload(payload);
+    appendTagManagerSyncLog({
+      level: "info",
+      scope: "hook",
+      workflowId,
+      stage: "subscribe-succeeded",
+      message: "tag-manager remote vocabulary subscribe succeeded",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+        tag_count: normalized.tag_count,
+      },
+    });
+    return normalized;
+  } catch (error) {
+    appendTagManagerSyncLog({
+      level: "warn",
+      scope: "hook",
+      workflowId,
+      stage: "subscribe-failed",
+      message: "tag-manager remote vocabulary subscribe failed",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+      },
+      error,
+    });
+    throw error;
+  }
+}
+
+async function fetchPublishBaseline(args) {
+  const config = args?.config || {};
+  const contentsUrl = buildGitHubContentsApiUrl(config);
+  const payload = await fetchJsonOrThrow(contentsUrl, {
+    method: "GET",
+    headers: buildGitHubHeaders(config, {
+      Accept: "application/vnd.github+json",
+    }),
+  });
+  const sha = String(payload?.sha || "").trim();
+  const encodedContent = String(payload?.content || "").trim();
+  if (!sha || !encodedContent) {
+    throw new Error("GitHub contents payload missing sha/content");
+  }
+  let remoteJson = null;
+  try {
+    remoteJson = JSON.parse(decodeBase64Utf8(encodedContent));
+  } catch {
+    throw new Error("GitHub contents payload is not valid vocabulary JSON");
+  }
+  return {
+    sha,
+    contentsUrl,
+    remotePayload: normalizeRemoteVocabularyPayload(remoteJson),
+  };
+}
+
+function buildPublishedVocabularyPayload(args) {
+  const remotePayload = normalizeRemoteVocabularyPayload(args?.remotePayload || {});
+  const localTags = sanitizeRemoteTags(args?.localTags);
+  const tagFacetSet = new Set(localTags.map((entry) => String(entry.facet || "").trim()));
+  const facets = [];
+  for (const facet of FACETS) {
+    if (remotePayload.facets.includes(facet) || tagFacetSet.has(facet)) {
+      facets.push(facet);
+    }
+  }
+  for (const facet of remotePayload.facets) {
+    if (!facets.includes(facet)) {
+      facets.push(facet);
+    }
+  }
+  for (const facet of tagFacetSet) {
+    if (!facets.includes(facet)) {
+      facets.push(facet);
+    }
+  }
+  return {
+    version: String(remotePayload.version || "1.0.0").trim() || "1.0.0",
+    updated_at: new Date().toISOString(),
+    facets,
+    tags: localTags,
+    abbrevs: normalizeRemoteAbbrevs(remotePayload.abbrevs),
+    tag_count: localTags.length,
+  };
+}
+
+async function putPublishedVocabulary(args) {
+  const config = args?.config || {};
+  const contentsUrl = String(args?.contentsUrl || "").trim();
+  const sha = String(args?.sha || "").trim();
+  const payload = args?.payload;
+  if (!contentsUrl || !sha || !payload) {
+    throw new Error("publish request is missing contentsUrl, sha, or payload");
+  }
+  if (typeof fetch !== "function") {
+    throw new Error("fetch is unavailable in current runtime");
+  }
+  return fetch(contentsUrl, {
+    method: "PUT",
+    headers: buildGitHubHeaders(config, {
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({
+      message: `Update ${config.filePath} via Zotero Skills Tag Manager`,
+      content: encodeBase64Utf8(JSON.stringify(payload, null, 2)),
+      sha,
+    }),
+  });
+}
+
+async function publishRemoteVocabulary(args) {
+  const config = args?.config || {};
+  const workflowId = String(args?.workflowId || "").trim();
+  const localTags = sanitizeRemoteTags(args?.entries);
+  appendTagManagerSyncLog({
+    level: "info",
+    scope: "hook",
+    workflowId,
+    stage: "publish-start",
+    message: "tag-manager remote vocabulary publish started",
+    details: {
+      owner: config.githubOwner,
+      repo: config.githubRepo,
+      file_path: config.filePath,
+      tag_count: localTags.length,
+    },
+  });
+  try {
+    let baseline = await fetchPublishBaseline({ config });
+    let payload = buildPublishedVocabularyPayload({
+      remotePayload: baseline.remotePayload,
+      localTags,
+    });
+    let response = await putPublishedVocabulary({
+      config,
+      contentsUrl: baseline.contentsUrl,
+      sha: baseline.sha,
+      payload,
+    });
+    if (response && response.status === 409) {
+      appendTagManagerSyncLog({
+        level: "warn",
+        scope: "hook",
+        workflowId,
+        stage: "publish-conflict",
+        message: "tag-manager remote vocabulary publish conflict detected",
+        details: {
+          owner: config.githubOwner,
+          repo: config.githubRepo,
+          file_path: config.filePath,
+        },
+      });
+      baseline = await fetchPublishBaseline({ config });
+      payload = buildPublishedVocabularyPayload({
+        remotePayload: baseline.remotePayload,
+        localTags,
+      });
+      response = await putPublishedVocabulary({
+        config,
+        contentsUrl: baseline.contentsUrl,
+        sha: baseline.sha,
+        payload,
+      });
+    }
+
+    if (!response || response.ok !== true) {
+      const status = Number(response?.status || 0);
+      const statusText = String(response?.statusText || "").trim();
+      throw new Error(
+        `GitHub publish failed with HTTP ${status || "request-failed"}${
+          statusText ? ` ${statusText}` : ""
+        }`,
+      );
+    }
+
+    appendTagManagerSyncLog({
+      level: "info",
+      scope: "hook",
+      workflowId,
+      stage: "publish-succeeded",
+      message: "tag-manager remote vocabulary publish succeeded",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+        tag_count: payload.tag_count,
+      },
+    });
+    return payload;
+  } catch (error) {
+    appendTagManagerSyncLog({
+      level: "error",
+      scope: "hook",
+      workflowId,
+      stage: "publish-failed",
+      message: "tag-manager remote vocabulary publish failed",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+      },
+      error,
+    });
+    throw error;
+  }
+}
+
+async function commitControlledEntries(args) {
+  const workflowId = String(args?.workflowId || TAG_MANAGER_WORKFLOW_ID).trim();
+  const syncConfig = args?.config || resolveGitHubSyncConfig(TAG_MANAGER_WORKFLOW_ID);
+  const mode = args?.mode || resolveTagManagerMode(syncConfig);
+  const nextEntries = normalizeEntriesInput(args?.entries);
+  if (mode !== "subscription") {
+    const committed = persistLocalCommittedEntries(nextEntries);
+    syncActiveCommittedProjection(committed.entries);
+    return {
+      mode,
+      entries: committed.entries,
+    };
+  }
+  const published = await publishRemoteVocabulary({
+    workflowId,
+    config: syncConfig,
+    entries: nextEntries,
+  });
+  const committed = persistRemoteCommittedEntries(published.tags);
+  syncActiveCommittedProjection(committed.entries);
+  return {
+    mode,
+    entries: committed.entries,
+  };
+}
+
+function mergeUniqueEntriesByTag(entries) {
+  const next = [];
+  const indexByLower = new Map();
+  for (const entry of sortEntries(normalizeEntriesInput(entries))) {
+    const lowered = String(entry.tag || "").trim().toLowerCase();
+    if (!lowered) {
+      continue;
+    }
+    if (indexByLower.has(lowered)) {
+      next[indexByLower.get(lowered)] = entry;
+      continue;
+    }
+    indexByLower.set(lowered, next.length);
+    next.push(entry);
+  }
+  return next;
+}
+
+function sameNormalizedEntries(left, right) {
+  const leftSnapshot = JSON.stringify(sortEntries(normalizeEntriesInput(left)));
+  const rightSnapshot = JSON.stringify(sortEntries(normalizeEntriesInput(right)));
+  return leftSnapshot === rightSnapshot;
+}
+
+async function commitStagedEntriesBatch(args) {
+  const workflowId = String(args?.workflowId || TAG_MANAGER_WORKFLOW_ID).trim();
+  const config = args?.config || {};
+  const requestedTags = new Set(
+    (Array.isArray(args?.tags) ? args.tags : [])
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (requestedTags.size === 0) {
+    return {
+      entries: loadRemoteCommittedState().entries,
+      promotedTags: [],
+    };
+  }
+
+  const stagedLoaded = loadPersistedStagedState();
+  const selectedEntries = stagedLoaded.entries.filter((entry) =>
+    requestedTags.has(String(entry.tag || "").trim().toLowerCase()),
+  );
+  const selectedBindingsByTag = collectParentBindingsByTag(selectedEntries);
+  const tagTextByLower = new Map(
+    selectedEntries.map((entry) => [
+      String(entry.tag || "").trim().toLowerCase(),
+      String(entry.tag || "").trim(),
+    ]),
+  );
+  if (selectedEntries.length === 0) {
+    return {
+      entries: loadRemoteCommittedState().entries,
+      promotedTags: [],
+    };
+  }
+
+  appendTagManagerSyncLog({
+    level: "info",
+    scope: "hook",
+    workflowId,
+    stage: "staged-batch-publish-start",
+    message: "tag-manager staged batch publish started",
+    details: {
+      owner: config.githubOwner,
+      repo: config.githubRepo,
+      file_path: config.filePath,
+      tag_count: selectedEntries.length,
+    },
+  });
+
+  const committedLoaded = loadRemoteCommittedState();
+  const nextEntries = mergeUniqueEntriesByTag([
+    ...committedLoaded.entries,
+    ...selectedEntries,
+  ]);
+
+  try {
+    const published = await publishRemoteVocabulary({
+      workflowId,
+      config,
+      entries: nextEntries,
+    });
+    const committed = persistRemoteCommittedEntries(published.tags);
+    syncActiveCommittedProjection(committed.entries);
+    await appendTagsToBoundParentItems({
+      workflowId,
+      bindingsByTag: new Map(
+        [...selectedBindingsByTag.entries()].map(([loweredTag, parentBindings]) => [
+          tagTextByLower.get(loweredTag) || loweredTag,
+          parentBindings,
+        ]),
+      ),
+    });
+    removeStagedEntriesByTags(selectedEntries.map((entry) => entry.tag));
+    appendTagManagerSyncLog({
+      level: "info",
+      scope: "hook",
+      workflowId,
+      stage: "staged-batch-publish-succeeded",
+      message: "tag-manager staged batch publish succeeded",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+        tag_count: selectedEntries.length,
+      },
+    });
+    showSubscriptionPublishToast({
+      action: "staged publish",
+      success: true,
+      count: selectedEntries.length,
+    });
+    return {
+      entries: committed.entries,
+      promotedTags: selectedEntries.map((entry) => entry.tag),
+    };
+  } catch (error) {
+    appendTagManagerSyncLog({
+      level: "warn",
+      scope: "hook",
+      workflowId,
+      stage: "staged-batch-publish-failed",
+      message: "tag-manager staged batch publish failed",
+      details: {
+        owner: config.githubOwner,
+        repo: config.githubRepo,
+        file_path: config.filePath,
+        tag_count: selectedEntries.length,
+      },
+      error,
+    });
+    showSubscriptionPublishToast({
+      action: "staged publish",
+      success: false,
+      reason: String(error?.message || error || "unknown publish failure"),
+    });
+    throw error;
+  }
 }
 
 function removeStagedEntriesByTags(tags) {
@@ -735,7 +1738,7 @@ function clearPersistedStagedEntries() {
 }
 
 function promoteStagedEntryToControlledVocabulary(stagedEntry) {
-  const loaded = loadPersistedState();
+  const loaded = loadLocalCommittedState();
   if (loaded.corrupted) {
     return {
       ok: false,
@@ -757,10 +1760,12 @@ function promoteStagedEntryToControlledVocabulary(stagedEntry) {
       reason: String(issue?.message || issue?.code || "validation failed"),
     };
   }
-  persistEntries(nextEntries);
+  const persisted = persistLocalCommittedEntries(nextEntries);
+  syncActiveCommittedProjection(persisted.entries);
   return {
     ok: true,
     reason: "",
+    entries: persisted.entries,
   };
 }
 
@@ -772,6 +1777,141 @@ function exportTagStrings(entries) {
 
 function buildExportText(entries) {
   return exportTagStrings(entries).join("\n");
+}
+
+function createStagedPublishCoordinator(args) {
+  const workflowId = String(args?.workflowId || TAG_MANAGER_WORKFLOW_ID).trim();
+  const syncConfig = args?.syncConfig || {};
+  let timerHandle = null;
+  let disposed = false;
+  const pendingTags = new Set();
+
+  const flush = async (patchRootState) => {
+    if (disposed || pendingTags.size === 0) {
+      return;
+    }
+    const batchTags = [...pendingTags];
+    pendingTags.clear();
+    persistStagedEntries(
+      setPublishStateForTags(loadPersistedStagedState().entries, batchTags, "publishing", {
+        defaultSourceFlow: STAGED_SOURCE_FLOW_DEFAULT,
+      }),
+    );
+    patchRootState((draft) => {
+      const stagedState = ensureStagedPanelState(draft);
+      stagedState.entries = loadPersistedStagedState().entries;
+      stagedState.publishInFlight = true;
+      stagedState.pendingPublishTags = batchTags;
+      stagedState.actionNotice = `publishing ${batchTags.length} staged tag(s)...`;
+      draft.remoteSyncState = "publishing";
+      draft.remoteSyncMessage = buildRemoteSyncNotice({
+        status: "publishing",
+        sourceLabel: syncConfig.sourceLabel,
+      });
+    });
+    try {
+      const committed = await commitStagedEntriesBatch({
+        workflowId,
+        config: syncConfig,
+        tags: batchTags,
+      });
+      patchRootState((draft) => {
+        const stagedState = ensureStagedPanelState(draft);
+        stagedState.entries = loadPersistedStagedState().entries;
+        stagedState.pendingPublishTags = [];
+        stagedState.publishInFlight = false;
+        stagedState.validationIssues = [];
+        stagedState.actionNotice = `published ${committed.promotedTags.length} staged tag(s)`;
+        draft.committedEntries = committed.entries;
+        draft.entries = committed.entries;
+        draft.remoteSyncState = "publish-succeeded";
+        draft.remoteSyncMessage = buildRemoteSyncNotice({
+          status: "publish-succeeded",
+          sourceLabel: syncConfig.sourceLabel,
+        });
+      });
+    } catch (error) {
+      const reason = String(error?.message || error || "unknown publish failure").trim();
+      persistStagedEntries(
+        setPublishStateForTags(loadPersistedStagedState().entries, batchTags, "publish-failed", {
+          defaultSourceFlow: STAGED_SOURCE_FLOW_DEFAULT,
+        }),
+      );
+      patchRootState((draft) => {
+        const stagedState = ensureStagedPanelState(draft);
+        stagedState.entries = loadPersistedStagedState().entries;
+        stagedState.pendingPublishTags = [];
+        stagedState.publishInFlight = false;
+        stagedState.validationIssues = [
+          {
+            code: "PUBLISH_FAILED",
+            message: reason,
+          },
+        ];
+        stagedState.actionNotice = `publish failed: ${reason}`;
+        draft.remoteSyncState = "publish-failed";
+        draft.remoteSyncMessage = buildRemoteSyncNotice({
+          status: "publish-failed",
+          sourceLabel: syncConfig.sourceLabel,
+          reason,
+        });
+      });
+    }
+  };
+
+  return {
+    schedule(tag, patchRootState) {
+      const normalizedTag = String(tag || "").trim();
+      if (!normalizedTag || disposed) {
+        return;
+      }
+      pendingTags.add(normalizedTag);
+      persistStagedEntries(
+        setPublishStateForTags(loadPersistedStagedState().entries, [normalizedTag], "pending-batch", {
+          defaultSourceFlow: STAGED_SOURCE_FLOW_DEFAULT,
+        }),
+      );
+      appendTagManagerSyncLog({
+        level: "info",
+        scope: "hook",
+        workflowId,
+        stage: "staged-batch-scheduled",
+        message: "tag-manager staged batch scheduled",
+        details: {
+          owner: syncConfig.githubOwner,
+          repo: syncConfig.githubRepo,
+          file_path: syncConfig.filePath,
+          pending_count: pendingTags.size,
+        },
+      });
+      patchRootState((draft) => {
+        const stagedState = ensureStagedPanelState(draft);
+        stagedState.pendingPublishTags = [...new Set([...stagedState.pendingPublishTags, normalizedTag])];
+        stagedState.publishInFlight = false;
+        stagedState.validationIssues = [];
+        stagedState.actionNotice = `queued ${stagedState.pendingPublishTags.length} staged tag(s) for publish`;
+        draft.remoteSyncState = "publish-pending";
+        draft.remoteSyncMessage = buildRemoteSyncNotice({
+          status: "publish-pending",
+          sourceLabel: syncConfig.sourceLabel,
+        });
+      });
+      if (timerHandle) {
+        clearTimeout(timerHandle);
+      }
+      timerHandle = setTimeout(() => {
+        timerHandle = null;
+        void flush(patchRootState);
+      }, STAGED_PUBLISH_DEBOUNCE_MS);
+    },
+    dispose() {
+      disposed = true;
+      if (timerHandle) {
+        clearTimeout(timerHandle);
+        timerHandle = null;
+      }
+    },
+  };
 }
 
 function createInitialFacetVisibilityState() {
@@ -822,6 +1962,24 @@ function filterEntriesByQueryAndFacet(entries, query, facetVisibility) {
     .toLowerCase();
   const filtered = [];
   normalizeEntriesInput(entries).forEach((entry, index) => {
+    if (!entryMatchesFacetVisibility(entry, normalizedVisibility)) {
+      return;
+    }
+    const text = `${entry.tag} ${entry.facet} ${entry.note} ${entry.source}`.toLowerCase();
+    if (!normalizedQuery || text.includes(normalizedQuery)) {
+      filtered.push({ entry, index });
+    }
+  });
+  return filtered;
+}
+
+function filterStagedEntriesByQueryAndFacet(entries, query, facetVisibility) {
+  const normalizedVisibility = normalizeFacetVisibilityState(facetVisibility);
+  const normalizedQuery = String(query || "")
+    .trim()
+    .toLowerCase();
+  const filtered = [];
+  normalizeStagedEntriesInput(entries).forEach((entry, index) => {
     if (!entryMatchesFacetVisibility(entry, normalizedVisibility)) {
       return;
     }
@@ -951,6 +2109,8 @@ function createInitialStagedPanelState(args) {
     listScrollTop: 0,
     listScrollMode: "keep",
     corrupted: Boolean(args?.corrupted),
+    pendingPublishTags: [],
+    publishInFlight: false,
   };
 }
 
@@ -976,7 +2136,7 @@ function ensureStagedPanelState(hostState) {
 
 function createTagManagerRenderer() {
   return {
-    render({ doc, root, state, host }) {
+    render({ doc, root, state, host, context }) {
       clearChildren(root);
       const activePanel = String(state.activePanel || "controlled");
       if (activePanel === "staged") {
@@ -1011,6 +2171,11 @@ function createTagManagerRenderer() {
         backBtn.addEventListener("click", () => {
           host.patchState((draft) => {
             draft.activePanel = "controlled";
+            draft.entries = sortEntries(
+              normalizeEntriesInput(
+                Array.isArray(draft.committedEntries) ? draft.committedEntries : [],
+              ),
+            );
           });
         });
         toolbar.appendChild(backBtn);
@@ -1046,12 +2211,16 @@ function createTagManagerRenderer() {
               host.setFooterVisible(visible);
             }
           },
+          patchRootState: (updater) => {
+            host.patchState(updater);
+          },
         };
         stagedRenderer.render({
           doc,
           root: stagedRoot,
           state: stagedState,
           host: stagedHost,
+          context,
         });
         root.appendChild(panel);
         return;
@@ -1059,10 +2228,15 @@ function createTagManagerRenderer() {
       if (typeof host.setFooterVisible === "function") {
         host.setFooterVisible(true);
       }
+      state.mode = String(state.mode || "local") === "subscription" ? "subscription" : "local";
       if (!Array.isArray(state.entries)) {
         state.entries = [];
       }
+      if (!Array.isArray(state.committedEntries)) {
+        state.committedEntries = normalizeEntriesInput(state.entries);
+      }
       const allEntries = normalizeEntriesInput(state.entries);
+      state.committedEntries = normalizeEntriesInput(state.committedEntries);
       state.entries = allEntries;
       state.facetVisibility = normalizeFacetVisibilityState(state.facetVisibility);
       if (typeof state.listScrollTop !== "number") {
@@ -1113,6 +2287,35 @@ function createTagManagerRenderer() {
       panel.style.height = "100%";
       panel.style.boxSizing = "border-box";
       panel.style.position = "relative";
+
+      if (String(state.remoteSyncMessage || "").trim()) {
+        const syncNotice = createHtmlElement(doc, "div");
+        syncNotice.textContent = String(state.remoteSyncMessage || "");
+        syncNotice.style.fontSize = "12px";
+        syncNotice.style.padding = "8px 10px";
+        syncNotice.style.borderRadius = "6px";
+        syncNotice.style.border =
+          String(state.remoteSyncState || "").trim().includes("failed")
+            ? "1px solid #d5a0a0"
+            : "1px solid #d5d5d5";
+        syncNotice.style.background =
+          String(state.remoteSyncState || "").trim().includes("failed")
+            ? "#fff6f6"
+            : "#f7f7f7";
+        syncNotice.style.color =
+          String(state.remoteSyncState || "").trim().includes("failed")
+            ? "#8f2a2a"
+            : "#3b3b3b";
+        if (typeof syncNotice.setAttribute === "function") {
+          syncNotice.setAttribute("data-zs-role", "remote-sync-notice");
+          syncNotice.setAttribute(
+            "data-zs-sync-state",
+            String(state.remoteSyncState || ""),
+          );
+        }
+        panel.appendChild(syncNotice);
+      }
+
       panel.addEventListener("click", (event) => {
         const hasDuplicateMenuOpen = Boolean(state.onDuplicateMenuOpen);
         const hasFacetMenuOpen = Number(state.facetMenuRowIndex) >= 0;
@@ -1198,6 +2401,18 @@ function createTagManagerRenderer() {
       stagedBtn.textContent = "Staged Tags";
       stagedBtn.addEventListener("click", () => {
         patchStateKeepingScroll((draft) => {
+          if (
+            String(draft.mode || "local") === "subscription" &&
+            !sameNormalizedEntries(draft.entries, draft.committedEntries)
+          ) {
+            draft.remoteSyncState = "controlled-dirty";
+            draft.remoteSyncMessage = buildRemoteSyncNotice({
+              status: "controlled-dirty",
+              reason:
+                "Save or discard controlled edits before opening staged tags in subscription mode.",
+            });
+            return;
+          }
           draft.activePanel = "staged";
           ensureStagedPanelState(draft);
         });
@@ -1943,13 +3158,17 @@ function createTagManagerRenderer() {
 
 function createStagedTagInboxRenderer() {
   return {
-    render({ doc, root, state, host }) {
+    render({ doc, root, state, host, context }) {
       clearChildren(root);
       if (!Array.isArray(state.entries)) {
         state.entries = [];
       }
       const allEntries = normalizeStagedEntriesInput(state.entries);
       state.entries = allEntries;
+      state.pendingPublishTags = Array.isArray(state.pendingPublishTags)
+        ? state.pendingPublishTags.map((entry) => String(entry || "").trim()).filter(Boolean)
+        : [];
+      state.publishInFlight = state.publishInFlight === true;
       state.facetVisibility = normalizeFacetVisibilityState(state.facetVisibility);
       if (typeof state.listScrollTop !== "number") {
         state.listScrollTop = 0;
@@ -1970,10 +3189,13 @@ function createStagedTagInboxRenderer() {
         };
       }
 
-      const filtered = filterEntriesByQueryAndFacet(
+      const filtered = filterStagedEntriesByQueryAndFacet(
         allEntries,
         state.query,
         state.facetVisibility,
+      );
+      const pendingPublishLowerSet = new Set(
+        state.pendingPublishTags.map((entry) => String(entry || "").trim().toLowerCase()),
       );
       let scrollContainerNode = null;
       const readScrollTop = () =>
@@ -2123,7 +3345,7 @@ function createStagedTagInboxRenderer() {
       const headerRow = createHtmlElement(doc, "div");
       headerRow.style.display = "grid";
       headerRow.style.gridTemplateColumns =
-        "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 90px 130px 90px";
+        "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 72px 90px 130px 90px";
       headerRow.style.gap = "6px";
       headerRow.style.padding = "6px";
       headerRow.style.position = "sticky";
@@ -2131,11 +3353,15 @@ function createStagedTagInboxRenderer() {
       headerRow.style.zIndex = "2";
       headerRow.style.background = "#f6f6f6";
       headerRow.style.borderBottom = "1px solid #e1e1e1";
+      if (typeof headerRow.setAttribute === "function") {
+        headerRow.setAttribute("data-zs-role", "staged-table-header");
+      }
       const headerLabels = [
         "Facet",
         "Tag",
         "Source",
         "Note",
+        "Parents",
         "Deprecated",
         "Join",
         "Discard",
@@ -2160,7 +3386,7 @@ function createStagedTagInboxRenderer() {
         const rowNode = createHtmlElement(doc, "div");
         rowNode.style.display = "grid";
         rowNode.style.gridTemplateColumns =
-          "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 90px 130px 90px";
+          "88px minmax(220px,2fr) minmax(110px,0.9fr) minmax(220px,2fr) 72px 90px 130px 90px";
         rowNode.style.gap = "6px";
         if (typeof rowNode.setAttribute === "function") {
           rowNode.setAttribute("data-zs-role", "staged-row");
@@ -2354,6 +3580,20 @@ function createStagedTagInboxRenderer() {
         });
         rowNode.appendChild(noteInput);
 
+        const parentCount = createHtmlElement(doc, "div");
+        parentCount.textContent = String(
+          Array.isArray(row.entry.parentBindings) ? row.entry.parentBindings.length : 0,
+        );
+        parentCount.style.display = "flex";
+        parentCount.style.alignItems = "center";
+        parentCount.style.justifyContent = "center";
+        parentCount.style.fontSize = "12px";
+        if (typeof parentCount.setAttribute === "function") {
+          parentCount.setAttribute("data-zs-role", "staged-parent-count");
+          parentCount.setAttribute("data-zs-row-index", String(row.index));
+        }
+        rowNode.appendChild(parentCount);
+
         const deprecatedBtn = createHtmlElement(doc, "button");
         deprecatedBtn.type = "button";
         deprecatedBtn.textContent = row.entry.deprecated ? "Restore" : "Deprecate";
@@ -2372,20 +3612,91 @@ function createStagedTagInboxRenderer() {
 
         const joinBtn = createHtmlElement(doc, "button");
         joinBtn.type = "button";
-        joinBtn.textContent = "加入受控词表";
+        const currentLowerTag = String(row.entry.tag || "").trim().toLowerCase();
+        const isPendingPublish = pendingPublishLowerSet.has(currentLowerTag);
+        joinBtn.textContent = isPendingPublish ? "发布中..." : "加入受控词表";
+        joinBtn.disabled = isPendingPublish || state.publishInFlight === true;
         if (typeof joinBtn.setAttribute === "function") {
           joinBtn.setAttribute("data-zs-role", "staged-accept-btn");
           joinBtn.setAttribute("data-zs-row-index", String(row.index));
         }
-        joinBtn.addEventListener("click", () => {
-          patchStateKeepingScroll((draft) => {
-            const next = normalizeStagedEntriesInput(draft.entries);
-            const current = next[row.index];
-            if (!current) {
+        joinBtn.addEventListener("click", async () => {
+          const rootPatch =
+            typeof host.patchRootState === "function" ? host.patchRootState : host.patchState;
+          const current = normalizeStagedEntriesInput(state.entries)[row.index];
+          if (!current) {
+            return;
+          }
+          if (String(context?.mode || "local") === "subscription") {
+            if (
+              !context ||
+              !context.stagedPublishCoordinator ||
+              typeof context.stagedPublishCoordinator.schedule !== "function"
+            ) {
+              rootPatch((draft) => {
+                const stagedDraft = ensureStagedPanelState(draft);
+                stagedDraft.validationIssues = [
+                  {
+                    code: "PUBLISH_COORDINATOR_MISSING",
+                    message: "staged publish coordinator is unavailable",
+                  },
+                ];
+                stagedDraft.actionNotice =
+                  "publish failed: staged publish coordinator is unavailable";
+              });
               return;
             }
+            rootPatch((draft) => {
+              const stagedDraft = ensureStagedPanelState(draft);
+              stagedDraft.validationIssues = [];
+              stagedDraft.actionNotice = `queued: ${current.tag}`;
+              stagedDraft.pendingPublishTags = [
+                ...new Set([...stagedDraft.pendingPublishTags, current.tag]),
+              ];
+            });
+            context.stagedPublishCoordinator.schedule(current.tag, rootPatch);
+            return;
+          }
+          if (typeof host.patchRootState === "function") {
             const promoted = promoteStagedEntryToControlledVocabulary(current);
             if (!promoted.ok) {
+              rootPatch((draft) => {
+                const stagedDraft = ensureStagedPanelState(draft);
+                stagedDraft.validationIssues = [
+                  {
+                    code: "PROMOTE_FAILED",
+                    message: String(promoted.reason || "validation failed"),
+                  },
+                ];
+                stagedDraft.actionNotice = `join failed: ${String(
+                  promoted.reason || "validation failed",
+                )}`;
+              });
+              return;
+            }
+            await appendTagsToBoundParentItems({
+              workflowId: TAG_MANAGER_WORKFLOW_ID,
+              bindingsByTag: new Map([[String(current.tag || ""), current.parentBindings || []]]),
+            });
+            const next = normalizeStagedEntriesInput(loadPersistedStagedState().entries).filter(
+              (entry) =>
+                String(entry.tag || "").trim().toLowerCase() !==
+                String(current.tag || "").trim().toLowerCase(),
+            );
+            persistStagedEntries(next);
+            rootPatch((draft) => {
+              const stagedDraft = ensureStagedPanelState(draft);
+              stagedDraft.entries = next;
+              stagedDraft.validationIssues = [];
+              stagedDraft.actionNotice = `joined: ${current.tag}`;
+              draft.committedEntries = promoted.entries || loadLocalCommittedState().entries;
+              draft.entries = draft.committedEntries;
+            });
+            return;
+          }
+          const promoted = promoteStagedEntryToControlledVocabulary(current);
+          if (!promoted.ok) {
+            host.patchState((draft) => {
               draft.validationIssues = [
                 {
                   code: "PROMOTE_FAILED",
@@ -2395,10 +3706,20 @@ function createStagedTagInboxRenderer() {
               draft.actionNotice = `join failed: ${String(
                 promoted.reason || "validation failed",
               )}`;
-              draft.entries = next;
-              return;
-            }
-            next.splice(row.index, 1);
+            });
+            return;
+          }
+          await appendTagsToBoundParentItems({
+            workflowId: TAG_MANAGER_WORKFLOW_ID,
+            bindingsByTag: new Map([[String(current.tag || ""), current.parentBindings || []]]),
+          });
+          const next = normalizeStagedEntriesInput(loadPersistedStagedState().entries).filter(
+            (entry) =>
+              String(entry.tag || "").trim().toLowerCase() !==
+              String(current.tag || "").trim().toLowerCase(),
+          );
+          persistStagedEntries(next);
+          host.patchState((draft) => {
             draft.entries = next;
             draft.validationIssues = [];
             draft.actionNotice = `joined: ${current.tag}`;
@@ -2604,54 +3925,81 @@ async function openTagManagerEditor(args) {
   if (typeof host.registerRenderer === "function") {
     host.registerRenderer(RENDERER_ID, createTagManagerRenderer());
   }
-  return host.open({
-    rendererId: RENDERER_ID,
-    title: String(args.title || "Tag Manager"),
-    initialState: {
-      entries: sortEntries(normalizeEntriesInput(args.entries)),
-      query: "",
-      exportText: buildExportText(normalizeEntriesInput(args.entries)),
-      exportNotice: "",
-      validationIssues: [],
-      importOnDuplicate: "skip",
-      importDryRun: false,
-      importReport: null,
-      facetVisibility: createInitialFacetVisibilityState(),
-      onDuplicateMenuOpen: false,
-      facetMenuRowIndex: -1,
-      filterPanelOpen: false,
-      queryFocus: {
-        active: false,
-        start: 0,
-        end: 0,
+  const mode = String(args.mode || "local") === "subscription" ? "subscription" : "local";
+  const stagedPublishCoordinator =
+    mode === "subscription"
+      ? createStagedPublishCoordinator({
+          workflowId: args.workflowId || TAG_MANAGER_WORKFLOW_ID,
+          syncConfig: args.syncConfig || resolveGitHubSyncConfig(TAG_MANAGER_WORKFLOW_ID),
+        })
+      : null;
+  try {
+    return await host.open({
+      rendererId: RENDERER_ID,
+      title: String(args.title || "Tag Manager"),
+      context: {
+        mode,
+        stagedPublishCoordinator,
       },
-      editorFocus: {
-        active: false,
-        rowIndex: -1,
-        role: "",
-        start: 0,
-        end: 0,
+      initialState: {
+        entries: sortEntries(normalizeEntriesInput(args.entries)),
+        committedEntries: sortEntries(
+          normalizeEntriesInput(args.committedEntries || args.entries),
+        ),
+        mode,
+        query: "",
+        exportText: buildExportText(normalizeEntriesInput(args.entries)),
+        exportNotice: "",
+        validationIssues: [],
+        importOnDuplicate: "skip",
+        importDryRun: false,
+        importReport: null,
+        facetVisibility: createInitialFacetVisibilityState(),
+        onDuplicateMenuOpen: false,
+        facetMenuRowIndex: -1,
+        filterPanelOpen: false,
+        queryFocus: {
+          active: false,
+          start: 0,
+          end: 0,
+        },
+        editorFocus: {
+          active: false,
+          rowIndex: -1,
+          role: "",
+          start: 0,
+          end: 0,
+        },
+        listScrollTop: 0,
+        listScrollMode: "keep",
+        corrupted: Boolean(args.corrupted),
+        remoteSyncState: String(args.remoteSyncState || ""),
+        remoteSyncMessage: String(args.remoteSyncMessage || ""),
+        activePanel: "controlled",
+        stagedPanelState: null,
       },
-      listScrollTop: 0,
-      listScrollMode: "keep",
-      corrupted: Boolean(args.corrupted),
-      activePanel: "controlled",
-      stagedPanelState: null,
-    },
-    layout: {
-      width: 1180,
-      height: 780,
-      minWidth: 980,
-      minHeight: 620,
-      maxWidth: 1500,
-      maxHeight: 1080,
-      padding: 6,
-    },
-    labels: {
-      save: "Save",
-      cancel: "Cancel",
-    },
-  });
+      layout: {
+        width: 1180,
+        height: 780,
+        minWidth: 980,
+        minHeight: 620,
+        maxWidth: 1500,
+        maxHeight: 1080,
+        padding: 6,
+      },
+      labels: {
+        save: "Save",
+        cancel: "Cancel",
+      },
+    });
+  } finally {
+    if (
+      stagedPublishCoordinator &&
+      typeof stagedPublishCoordinator.dispose === "function"
+    ) {
+      stagedPublishCoordinator.dispose();
+    }
+  }
 }
 
 function normalizeEditorEntries(editorResult, fallbackEntries) {
@@ -2670,44 +4018,120 @@ function normalizeEditorEntries(editorResult, fallbackEntries) {
 }
 
 export async function applyResult({ manifest }) {
-  const loaded = loadPersistedState();
-  const openResult = await openTagManagerEditor({
-    title: String(manifest?.label || "Tag Manager").trim() || "Tag Manager",
-    entries: loaded.entries,
-    corrupted: loaded.corrupted,
+  const workflowId = String(manifest?.id || TAG_MANAGER_WORKFLOW_ID).trim() || TAG_MANAGER_WORKFLOW_ID;
+  const syncConfig = resolveGitHubSyncConfig(workflowId);
+  const mode = resolveTagManagerMode(syncConfig);
+  const loaded =
+    mode === "subscription" ? loadRemoteCommittedState() : loadLocalCommittedState();
+  let committedEntries = loaded.entries;
+  let editorEntries = committedEntries;
+  let remoteSyncState = mode === "subscription" ? "configured" : "unconfigured";
+  let remoteSyncMessage = buildRemoteSyncNotice({
+    status: remoteSyncState,
+    sourceLabel: syncConfig.sourceLabel,
   });
 
-  const nextEntries = normalizeEditorEntries(openResult, loaded.entries);
-  if (!nextEntries) {
-    const reason = String(openResult?.reason || "canceled").trim();
-    throw new Error(`tag-manager canceled by user: ${reason}`);
+  if (mode === "subscription") {
+    try {
+      const remoteVocabulary = await subscribeRemoteVocabulary({
+        workflowId,
+        config: syncConfig,
+      });
+      const committed = persistRemoteCommittedEntries(remoteVocabulary.tags);
+      syncActiveCommittedProjection(committed.entries);
+      committedEntries = committed.entries;
+      editorEntries = committed.entries;
+      remoteSyncState = "subscribed";
+      remoteSyncMessage = buildRemoteSyncNotice({
+        status: remoteSyncState,
+        sourceLabel: syncConfig.sourceLabel,
+      });
+    } catch (error) {
+      syncActiveCommittedProjection(committedEntries);
+      remoteSyncState = "subscribe-failed";
+      remoteSyncMessage = buildRemoteSyncNotice({
+        status: remoteSyncState,
+        sourceLabel: syncConfig.sourceLabel,
+        reason: String(error?.message || error || ""),
+      });
+    }
+  } else {
+    syncActiveCommittedProjection(committedEntries);
   }
 
-  const saved = persistEntries(nextEntries);
-  return {
-    total: saved.entries.length,
-    exported: exportTagStrings(saved.entries).length,
-  };
-}
+  while (true) {
+    const openResult = await openTagManagerEditor({
+      workflowId,
+      syncConfig,
+      mode,
+      title: String(manifest?.label || "Tag Manager").trim() || "Tag Manager",
+      entries: editorEntries,
+      committedEntries,
+      corrupted: loaded.corrupted,
+      remoteSyncState,
+      remoteSyncMessage,
+    });
 
-function registerTagVocabularyBridge() {
-  const runtime = globalThis;
-  runtime[GLOBAL_TAG_VOCAB_BRIDGE_KEY] = {
-    loadPersistedState,
-    persistEntries,
-    collectValidationIssues,
-    loadPersistedStagedState,
-    persistStagedEntries,
-    removeStagedEntriesByTags,
-    clearPersistedStagedEntries,
-  };
-}
+    const nextEntries = normalizeEditorEntries(openResult, editorEntries);
+    if (!nextEntries) {
+      const reason = String(openResult?.reason || "canceled").trim();
+      throw new Error(`tag-manager canceled by user: ${reason}`);
+    }
 
-registerTagVocabularyBridge();
+    if (mode === "local") {
+      const saved = persistLocalCommittedEntries(nextEntries);
+      syncActiveCommittedProjection(saved.entries);
+      return {
+        total: saved.entries.length,
+        exported: exportTagStrings(saved.entries).length,
+      };
+    }
+
+    try {
+      const published = await publishRemoteVocabulary({
+        workflowId,
+        config: syncConfig,
+        entries: nextEntries,
+      });
+      const committed = persistRemoteCommittedEntries(published.tags);
+      syncActiveCommittedProjection(committed.entries);
+      showSubscriptionPublishToast({
+        action: "remote publish",
+        success: true,
+        count: committed.entries.length,
+      });
+      return {
+        total: committed.entries.length,
+        exported: exportTagStrings(committed.entries).length,
+      };
+    } catch (error) {
+      const reason = String(error?.message || error || "unknown publish failure").trim();
+      showSubscriptionPublishToast({
+        action: "remote publish",
+        success: false,
+        reason,
+      });
+      editorEntries = nextEntries;
+      committedEntries = loadRemoteCommittedState().entries;
+      remoteSyncState = "save-publish-failed";
+      remoteSyncMessage = buildRemoteSyncNotice({
+        status: remoteSyncState,
+        sourceLabel: syncConfig.sourceLabel,
+        reason,
+      });
+    }
+  }
+}
 
 export const __tagManagerTestOnly = {
+  buildGitHubContentsApiUrl,
+  buildGitHubRawUrl,
+  buildPublishedVocabularyPayload,
   buildExportText,
+  buildRemoteSyncNotice,
   clearPersistedStagedEntries,
+  commitStagedEntriesBatch,
+  commitControlledEntries,
   composeTagFromFacetAndSuffix,
   collectValidationIssues,
   countVisibleFacets,
@@ -2719,15 +4143,29 @@ export const __tagManagerTestOnly = {
   filterEntriesByQueryAndFacet,
   getTagSuffix,
   importFromYamlText,
+  loadLocalCommittedState,
   loadPersistedState,
   loadPersistedStagedState,
+  loadRemoteCommittedState,
+  mergeUniqueEntriesByTag,
+  normalizeRemoteVocabularyPayload,
   normalizeFacetVisibilityState,
   normalizeStagedEntriesInput,
   parseYamlTagEntries,
+  publishRemoteVocabulary,
+  persistLocalCommittedEntries,
   persistEntries,
+  persistRemoteCommittedEntries,
   persistStagedEntries,
   promoteStagedEntryToControlledVocabulary,
   removeStagedEntriesByTags,
+  resolveGitHubSyncConfig,
+  resolveLocalCommittedPrefsKey,
   resolvePrefsKey,
+  resolveRemoteCommittedPrefsKey,
   resolveStagedPrefsKey,
+  resolveWorkflowSettingsPrefsKey,
+  resolveTagManagerMode,
+  sameNormalizedEntries,
+  subscribeRemoteVocabulary,
 };

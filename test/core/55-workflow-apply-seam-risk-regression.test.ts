@@ -11,6 +11,7 @@ function createMessageFormatter() {
     waitingToast: () => "",
     jobToastSuccess: () => "",
     jobToastFailed: () => "",
+    jobToastCanceled: () => "",
   };
 }
 
@@ -18,6 +19,7 @@ function createRunState(args: {
   requests: unknown[];
   jobIds: string[];
   jobsById: Record<string, unknown>;
+  workflowManifest?: Record<string, unknown>;
 }) {
   const queue = {
     getJob: (jobId: string) => {
@@ -31,6 +33,7 @@ function createRunState(args: {
       manifest: {
         id: "hr-02-apply-seam",
         label: "HR-02 Apply Seam",
+        ...(args.workflowManifest || {}),
       },
     },
     requests: args.requests,
@@ -192,6 +195,69 @@ describe("workflow apply seam risk regression", function () {
     assert.equal(summary.pending, 1);
     assert.lengthOf(summary.failureReasons, 0);
     assert.include(runtimeStages, "job-pending");
+    assert.lengthOf(summary.reconcileOwnedPendingJobs, 0);
+  });
+
+  it("skips foreground apply for skillrunner auto succeeded job and defers to reconciler ownership", async function () {
+    const runtimeStages: string[] = [];
+    let applyCalls = 0;
+
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [
+            {
+              kind: "skillrunner.job.v1",
+              targetParentID: 3,
+              runtime_options: {
+                execution_mode: "auto",
+              },
+            },
+          ],
+          jobIds: ["job-auto-1"],
+          jobsById: {
+            "job-auto-1": {
+              id: "job-auto-1",
+              state: "succeeded",
+              meta: {
+                requestId: "req-auto-1",
+                targetParentID: 3,
+              },
+              result: {
+                status: "succeeded",
+                requestId: "req-auto-1",
+                fetchType: "result",
+              },
+            },
+          },
+          workflowManifest: {
+            provider: "skillrunner",
+            request: {
+              kind: "skillrunner.job.v1",
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        appendRuntimeLog: (entry) => {
+          runtimeStages.push(entry.stage);
+        },
+        executeApplyResult: async () => {
+          applyCalls += 1;
+          return { ok: true };
+        },
+      },
+    );
+
+    assert.equal(applyCalls, 0);
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.pending, 1);
+    assert.lengthOf(summary.jobOutcomes, 0);
+    assert.lengthOf(summary.reconcileOwnedPendingJobs, 1);
+    assert.equal(summary.reconcileOwnedPendingJobs[0].requestId, "req-auto-1");
+    assert.include(runtimeStages, "foreground-apply-skipped-auto");
   });
 
   it("propagates explicit bundle-entry path error into failureReasons", async function () {

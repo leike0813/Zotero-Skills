@@ -27,6 +27,8 @@ type ProgressWindowCtor = new (
   options?: Record<string, unknown>,
 ) => ProgressWindowInstance;
 
+const WORKFLOW_TOAST_CLOSE_DELAY_MS = 2000;
+
 function resolveProgressWindowCtor() {
   return resolveToolkitMember<ProgressWindowCtor>("ProgressWindow");
 }
@@ -40,7 +42,7 @@ export function showWorkflowToast(payload: WorkflowToastPayload) {
   try {
     const win = new ProgressWindow(addonName, {
       closeOnClick: true,
-      closeTime: 3500,
+      closeTime: WORKFLOW_TOAST_CLOSE_DELAY_MS,
     });
     const shown = win
       .createLine({
@@ -50,7 +52,7 @@ export function showWorkflowToast(payload: WorkflowToastPayload) {
       })
       .show();
     if (typeof shown.startCloseTimer === "function") {
-      shown.startCloseTimer(3500);
+      shown.startCloseTimer(WORKFLOW_TOAST_CLOSE_DELAY_MS);
     }
   } catch {
     // ignore toast failures

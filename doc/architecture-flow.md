@@ -48,7 +48,7 @@ flowchart TD
    - backend profile（workflow settings）
    - request kind（workflow + backend type）
    - workflow params / provider options（persisted + run-once）
-3. 入队执行（FIFO + 固定并发）
+3. 入队执行（FIFO + provider 决定的并发）
 
 ## 4. Provider 执行
 

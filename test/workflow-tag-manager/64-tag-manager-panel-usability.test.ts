@@ -395,6 +395,70 @@ describe("workflow: tag-manager panel usability", function () {
     assert.include(harness.footerVisibilityHistory, true);
   });
 
+  it("refreshes controlled entries from committed snapshot when leaving staged panel", function () {
+    const harness = createRendererHarness(sampleEntries);
+    harness.host.patchState((draft) => {
+      draft.mode = "subscription";
+      draft.entries = [
+        {
+          tag: "topic:stale-draft",
+          facet: "topic",
+          source: "manual",
+          note: "stale",
+          deprecated: false,
+        },
+      ];
+      draft.committedEntries = [
+        {
+          tag: "topic:remote-committed",
+          facet: "topic",
+          source: "remote",
+          note: "committed",
+          deprecated: false,
+        },
+      ];
+      draft.activePanel = "staged";
+      draft.stagedPanelState = {
+        entries: [],
+        query: "",
+        actionNotice: "",
+        validationIssues: [],
+        facetVisibility: __tagManagerTestOnly.createInitialFacetVisibilityState(),
+        facetMenuRowIndex: -1,
+        filterPanelOpen: false,
+        queryFocus: {
+          active: false,
+          start: 0,
+          end: 0,
+        },
+        editorFocus: {
+          active: false,
+          rowIndex: -1,
+          role: "",
+          start: 0,
+          end: 0,
+        },
+        listScrollTop: 0,
+        listScrollMode: "keep",
+        corrupted: false,
+      };
+    });
+
+    const backBtn = findNodeByRole(harness.root, "staged-back-btn");
+    assert.isOk(backBtn);
+    backBtn!.click();
+
+    const tagInput = findFirstNode(
+      harness.root,
+      (node) =>
+        node.getAttribute("data-zs-role") === "tag-suffix-input" &&
+        node.getAttribute("data-zs-row-index") === "0",
+    );
+    assert.isOk(tagInput);
+    assert.equal(tagInput!.value, "remote-committed");
+    assert.equal(harness.state.activePanel, "controlled");
+  });
+
   it("applies facet visibility filtering instantly without action buttons", function () {
     const harness = createRendererHarness(sampleEntries);
     const filterBtn = findButtonByText(harness.root, "Filter");

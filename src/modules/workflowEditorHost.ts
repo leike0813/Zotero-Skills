@@ -388,7 +388,9 @@ async function openDialogSession(
   const hasCustomActions = customActions.length > 0;
 
   const state = cloneSerializable(args.initialState);
-  const context = cloneSerializable(args.context);
+  // Runtime context may carry non-serializable capabilities (callbacks, schedulers).
+  // Keep the live reference for renderer/action execution; only state is cloned.
+  const context = args.context;
   let initialSnapshot: string | null = null;
   try {
     initialSnapshot = toComparableSnapshot(

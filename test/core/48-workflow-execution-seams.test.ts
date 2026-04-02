@@ -2,12 +2,17 @@ import { assert } from "chai";
 import { handlers } from "../../src/handlers";
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
 import {
+  clearRuntimeLogs,
+  listRuntimeLogs,
+} from "../../src/modules/runtimeLogManager";
+import {
   emitWorkflowFinishSummary,
   emitWorkflowJobToasts,
   emitWorkflowStartToast,
 } from "../../src/modules/workflowExecution/feedbackSeam";
 import { createLocalizedMessageFormatter } from "../../src/modules/workflowExecution/messageFormatter";
 import { runWorkflowPreparationSeam } from "../../src/modules/workflowExecution/preparationSeam";
+import { runWorkflowExecutionSeam } from "../../src/modules/workflowExecution/runSeam";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { joinPath, mkTempDir, writeUtf8 } from "./workflow-test-utils";
 
@@ -16,6 +21,7 @@ async function createWorkflowRoot(args: {
   buildRequestBody?: string;
   applyResultBody?: string;
   filterInputsBody?: string;
+  parameters?: Record<string, unknown>;
 }) {
   const root = await mkTempDir(`zotero-skills-seam-${args.id}`);
   const workflowRoot = joinPath(root, args.id);
@@ -26,6 +32,7 @@ async function createWorkflowRoot(args: {
         id: args.id,
         label: `Seam ${args.id}`,
         provider: "pass-through",
+        ...(args.parameters ? { parameters: args.parameters } : {}),
         hooks: {
           ...(args.filterInputsBody ? { filterInputs: "hooks/filterInputs.js" } : {}),
           ...(args.buildRequestBody ? { buildRequest: "hooks/buildRequest.js" } : {}),
@@ -62,6 +69,10 @@ async function createWorkflowRoot(args: {
 }
 
 describe("workflow execution seams", function () {
+  beforeEach(function () {
+    clearRuntimeLogs();
+  });
+
   it("supports deterministic preparation testing via injected seam dependencies", async function () {
     const alerts: string[] = [];
     const logs: string[] = [];
@@ -252,6 +263,92 @@ describe("workflow execution seams", function () {
     );
   });
 
+  it("surfaces configurable workflow settings-gate failures instead of silently no-oping", async function () {
+    const root = await createWorkflowRoot({
+      id: "seam-configurable-gate-failure",
+      parameters: {
+        mode: {
+          type: "string",
+          default: "strict",
+        },
+      },
+    });
+    const loaded = await loadWorkflowManifests(root);
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "seam-configurable-gate-failure",
+    );
+    assert.isOk(workflow);
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Seam Configurable Gate Failure Parent" },
+    });
+    const alerts: string[] = [];
+    const runtime = globalThis as typeof globalThis & {
+      ztoolkit?: Record<string, unknown>;
+      addon?: { data?: { ztoolkit?: Record<string, unknown> } };
+    };
+    const previousToolkit = runtime.ztoolkit;
+    const previousAddonToolkit = runtime.addon?.data?.ztoolkit;
+    runtime.ztoolkit = runtime.ztoolkit || {};
+    runtime.ztoolkit.Dialog = class MockFailingDialog {
+      addCell() {
+        return this;
+      }
+      setDialogData() {
+        return this;
+      }
+      open() {
+        throw new Error("dialog exploded");
+      }
+    };
+    runtime.addon = runtime.addon || {};
+    runtime.addon.data = runtime.addon.data || {};
+    runtime.addon.data.ztoolkit = runtime.ztoolkit;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win: {
+          ZoteroPane: {
+            getSelectedItems: () => [parent],
+          },
+          alert: (message: string) => {
+            alerts.push(message);
+          },
+        } as unknown as _ZoteroTypes.MainWindow,
+        workflow: workflow!,
+        requireSettingsGate: true,
+      });
+    } finally {
+      if (typeof previousToolkit === "undefined") {
+        delete runtime.ztoolkit;
+      } else {
+        runtime.ztoolkit = previousToolkit;
+      }
+      if (!runtime.addon?.data) {
+        return;
+      }
+      if (typeof previousAddonToolkit === "undefined") {
+        delete runtime.addon.data.ztoolkit;
+      } else {
+        runtime.addon.data.ztoolkit = previousAddonToolkit;
+      }
+    }
+
+    assert.lengthOf(alerts, 1);
+    assert.include(alerts[0], "settings gate failed");
+    assert.include(alerts[0], "dialog exploded");
+
+    const logs = listRuntimeLogs({
+      workflowId: "seam-configurable-gate-failure",
+    });
+    const failureLog = logs.find((entry) => entry.stage === "settings-gate-failed");
+    const failureDetails = (failureLog?.details || {}) as Record<string, unknown>;
+    assert.isOk(failureLog);
+    assert.equal(failureDetails.workflowSource, "");
+    assert.equal(failureDetails.gateStage, "dialog-open");
+  });
+
   it("supports feedback seam verification without UI runtime", function () {
     const toasts: string[] = [];
     const alerts: string[] = [];
@@ -313,5 +410,143 @@ describe("workflow execution seams", function () {
     assert.lengthOf(alerts, 1);
     assert.include(alerts[0], "succeeded=1");
     assert.include(alerts[0], "failed=1");
+  });
+
+  it("uses full-parallel queue concurrency for backend-backed providers", function () {
+    let capturedConcurrency = -1;
+    let enqueueCount = 0;
+    const queueStub = {
+      enqueue() {
+        enqueueCount += 1;
+        return `job-${enqueueCount}`;
+      },
+      waitForIdle() {
+        return Promise.resolve();
+      },
+    };
+
+    const runState = runWorkflowExecutionSeam(
+      {
+        prepared: {
+          workflow: {
+            manifest: {
+              id: "seam-skillrunner-parallel",
+              label: "Seam SkillRunner Parallel",
+            },
+          } as any,
+          requests: [{ id: 1 }, { id: 2 }, { id: 3 }],
+          skippedByFilter: 0,
+          executionContext: {
+            providerId: "skillrunner",
+            requestKind: "skillrunner.job.v1",
+            providerOptions: {},
+            backend: {
+              id: "backend-1",
+              type: "skillrunner",
+              baseUrl: "http://127.0.0.1:8030",
+            },
+          },
+        },
+      },
+      {
+        createQueue: (config) => {
+          capturedConcurrency = config.concurrency;
+          return queueStub as any;
+        },
+      },
+    );
+
+    assert.equal(capturedConcurrency, 3);
+    assert.deepEqual(runState.jobIds, ["job-1", "job-2", "job-3"]);
+  });
+
+  it("uses full-parallel queue concurrency for generic-http providers", function () {
+    let capturedConcurrency = -1;
+    const queueStub = {
+      enqueue() {
+        return "job-1";
+      },
+      waitForIdle() {
+        return Promise.resolve();
+      },
+    };
+
+    runWorkflowExecutionSeam(
+      {
+        prepared: {
+          workflow: {
+            manifest: {
+              id: "seam-generic-http-parallel",
+              label: "Seam Generic HTTP Parallel",
+            },
+          } as any,
+          requests: [{ id: 1 }, { id: 2 }],
+          skippedByFilter: 0,
+          executionContext: {
+            providerId: "generic-http",
+            requestKind: "generic-http.request.v1",
+            providerOptions: {},
+            backend: {
+              id: "backend-gh",
+              type: "generic-http",
+              baseUrl: "https://example.test",
+            },
+          },
+        },
+      },
+      {
+        createQueue: (config) => {
+          capturedConcurrency = config.concurrency;
+          return queueStub as any;
+        },
+      },
+    );
+
+    assert.equal(capturedConcurrency, 2);
+  });
+
+  it("keeps serialized queue concurrency for pass-through providers", function () {
+    let capturedConcurrency = -1;
+    const queueStub = {
+      enqueue() {
+        return "job-1";
+      },
+      waitForIdle() {
+        return Promise.resolve();
+      },
+    };
+
+    runWorkflowExecutionSeam(
+      {
+        prepared: {
+          workflow: {
+            manifest: {
+              id: "seam-pass-through-serial",
+              label: "Seam PassThrough Serial",
+            },
+          } as any,
+          requests: [{ id: 1 }, { id: 2 }, { id: 3 }],
+          skippedByFilter: 0,
+          executionContext: {
+            providerId: "pass-through",
+            requestKind: "pass-through.run.v1",
+            providerOptions: {},
+            backend: {
+              id: "backend-pt",
+              type: "pass-through",
+              baseUrl: "local://pass-through",
+            },
+          },
+        },
+      },
+      {
+        createQueue: (config) => {
+          capturedConcurrency = config.concurrency;
+          return queueStub as any;
+        },
+      },
+    );
+
+    assert.equal(capturedConcurrency, 1);
   });
 });

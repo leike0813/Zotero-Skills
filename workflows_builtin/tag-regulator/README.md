@@ -39,6 +39,7 @@
 4. 返回结果
    └── 解析 resultJson
        └── 应用标签变更 (remove_tags, add_tags)
+       └── 用当前本地词表/暂存区重整 suggest_tags
        └── 处理建议标签（弹窗交互）
 ```
 
@@ -47,6 +48,14 @@
 - **remove_tags**: 不在受控词表中的当前标签
 - **add_tags**: 根据元数据推断的推荐标签
 - **suggest_tags**: AI 建议的新标签（需要用户确认）
+
+### 返回时 live reconcile 规则
+
+`tag-regulator` 使用提交时的受控词表快照给后端推理，但在结果回写阶段会再读取一次**最新本地状态**：
+
+- 若某个返回的 `suggest_tag` 已经进入受控词表，则它不再弹窗提醒，而是按本轮 `add_tags` 语义参与条目标签更新
+- 若某个返回的 `suggest_tag` 已经进入暂存区，则它不再弹窗提醒，也不会重复写入暂存区
+- 只有“返回时仍未处理”的 suggestion 才会进入 suggest dialog
 
 ### 弹窗交互
 

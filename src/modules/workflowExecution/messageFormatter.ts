@@ -79,5 +79,11 @@ export function createLocalizedMessageFormatter(): WorkflowMessageFormatter {
         `Workflow ${workflowLabel} job ${index}/${total} failed: ${taskLabel} (${reason})`,
         { workflowLabel, taskLabel, index, total, reason },
       ),
+    jobToastCanceled: ({ workflowLabel, taskLabel, index, total }) =>
+      localizeWorkflowText(
+        "workflow-execute-toast-job-canceled",
+        `Workflow ${workflowLabel} job ${index}/${total} canceled: ${taskLabel}`,
+        { workflowLabel, taskLabel, index, total },
+      ),
   };
 }

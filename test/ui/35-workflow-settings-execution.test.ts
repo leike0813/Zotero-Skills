@@ -77,6 +77,7 @@ describe("workflow settings execution", function () {
     clearSkillRunnerModelCache();
     clearWorkflowSettings("literature-digest");
     clearWorkflowSettings("reference-matching");
+    clearWorkflowSettings("tag-manager");
     if (typeof prevBackendsConfigPref === "undefined") {
       Zotero.Prefs.clear(backendsConfigPrefKey, true);
     } else {
@@ -579,6 +580,59 @@ describe("workflow settings execution", function () {
     assert.equal(requests[0].kind, "pass-through.run.v1");
     assert.isObject(requests[0].selectionContext);
     assert.deepEqual(requests[0].parameter, { hello: "world" });
+  });
+
+  it("builds configurable pass-through descriptor without requiring backend profile", async function () {
+    await ensureWorkflowRegistryLoaded();
+    clearWorkflowSettings("reference-matching");
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "reference-matching",
+    );
+    assert.isOk(workflow);
+
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      autoSelectFallbackProfile: true,
+    });
+
+    assert.equal(descriptor.providerId, "pass-through");
+    assert.equal(descriptor.requiresBackendProfile, false);
+    assert.equal(descriptor.profileMissing, false);
+    assert.equal(descriptor.selectedProfile, "");
+    assert.isAbove(descriptor.workflowSchemaEntries.length, 0);
+    assert.equal(descriptor.hasConfigurableSettings, true);
+  });
+
+  it("persists GitHub workflow params for tag-manager without requiring backend profile", async function () {
+    await ensureWorkflowRegistryLoaded();
+    updateWorkflowSettings("tag-manager", {
+      workflowParams: {
+        github_owner: "demo-owner",
+        github_repo: "Zotero_TagVocab",
+        file_path: "tags/tags.json",
+        github_token: "secret-token",
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "tag-manager",
+    );
+    assert.isOk(workflow);
+
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      autoSelectFallbackProfile: true,
+    });
+
+    assert.equal(descriptor.providerId, "pass-through");
+    assert.equal(descriptor.requiresBackendProfile, false);
+    assert.equal(descriptor.selectedProfile, "");
+    assert.equal(descriptor.workflowParams.github_owner, "demo-owner");
+    assert.equal(descriptor.workflowParams.github_repo, "Zotero_TagVocab");
+    assert.equal(descriptor.workflowParams.file_path, "tags/tags.json");
+    assert.equal(descriptor.workflowParams.github_token, "secret-token");
   });
 
   it("applies persisted bbt port parameter for reference-matching workflow", async function () {

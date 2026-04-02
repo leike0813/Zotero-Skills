@@ -11,6 +11,7 @@ import { syncBuiltinWorkflowsOnStartup } from "./modules/builtinWorkflowSync";
 import { openBackendManagerDialog } from "./modules/backendManager";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
+import { installWorkflowRuntimeBridge } from "./modules/workflowRuntimeBridge";
 import {
   ensureDashboardToolbarButton,
   removeDashboardToolbarButton,
@@ -185,6 +186,7 @@ async function onStartup() {
 
   initLocale();
   installWorkflowEditorHostBridge();
+  installWorkflowRuntimeBridge();
 
   const runtimeRootURI =
     typeof rootURI === "string" && rootURI

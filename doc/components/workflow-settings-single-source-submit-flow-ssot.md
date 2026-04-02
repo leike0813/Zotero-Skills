@@ -52,9 +52,11 @@ workflow 被判定为“可配置”当且仅当以下任一维度可编辑：
 
 ```ts
 {
-  status: "confirmed" | "canceled";
+  status: "confirmed" | "canceled" | "error";
   executionOptions?: WorkflowExecutionOptions;
   persist?: boolean;
+  stage?: string;
+  reason?: string;
 }
 ```
 
@@ -62,6 +64,7 @@ workflow 被判定为“可配置”当且仅当以下任一维度可编辑：
 
 - `persist=true`：先写入持久配置，再执行
 - `persist=false`：只用于本次执行
+- `status="error"`：必须中止提交，并给出显式失败反馈；不得静默吞掉
 
 ### 4.3 Dashboard Workflow Options Contract
 
@@ -87,6 +90,35 @@ workflow 被判定为“可配置”当且仅当以下任一维度可编辑：
 - 不允许框架层重复注入额外取消按钮
 - 弹窗布局采用紧凑尺寸，不与 Dashboard 配置页等比
 
+### 4.6 Pass-Through Configurable Workflow Param Contract
+
+- `pass-through` workflow 允许通过 `workflowParams` 持久化其业务配置
+- 这些参数在 settings gate、Dashboard workflow options、applyResult 执行阶段读取到的值必须一致
+- `Tag Manager` 的 GitHub 订阅/发布配置属于此类参数，不得绕过 `workflowSettingsJson`
+
+### 4.7 Remote Sync Failure Contract
+
+- configurable workflow 若在 `applyResult` 阶段执行远端订阅/发布
+- 则失败不得 silent fail
+- 至少需要满足：
+  - 写 runtime log
+  - 给用户显式反馈
+  - 不破坏本地已保存状态
+
+### 4.8 Tag Manager Dual-SSOT Contract
+
+- `Tag Manager` 在 GitHub 配置不完整时运行于本地模式：
+  - `local committed vocabulary` 是 controlled vocab 真源
+  - staged -> controlled 立即提交本地 committed vocab
+- `Tag Manager` 在 GitHub 配置完整时运行于订阅模式：
+  - `remote committed snapshot` 是 controlled vocab 真源
+  - staged 仅承担 pending/outbox 语义
+  - staged -> controlled 需要经过事务化批次发布成功后才进入 committed
+- 订阅模式下：
+  - 返回 controlled 页必须刷新 remote committed snapshot
+  - 未成功发布的 staged 条目不得出现在 controlled 视图
+  - `Save` 失败时必须保留 draft 并提示可重试
+
 ## 5. Invariants
 
 1. 执行链不读取 run-once map。  
@@ -96,6 +128,7 @@ workflow 被判定为“可配置”当且仅当以下任一维度可编辑：
 5. `openWorkflowSettings` 偏好事件必须路由到 Dashboard `workflow-options`，不再打开旧设置对话框。  
 6. 数值字段非法输入不得落盘，必须给出字段级错误提示。  
 7. 运行时文案语义统一为“默认配置 / default settings”，不得回退到“持久/persistent”。  
+8. 提交前 settings gate 失败时，workflow trigger 不得 silent no-op，必须写 runtime log 并提示用户。  
 
 ## 6. Sequence (Interactive Trigger)
 

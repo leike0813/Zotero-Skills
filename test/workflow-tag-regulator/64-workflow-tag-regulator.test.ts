@@ -7,6 +7,7 @@ import {
   executeApplyResult,
   executeBuildRequests,
 } from "../../src/workflows/runtime";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
 import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-regulator/hooks/applyResult.js";
 import {
   existsPath,
@@ -20,6 +21,8 @@ type PersistedTagEntry = {
   source: string;
   note: string;
   deprecated: boolean;
+  parentBindings?: number[];
+  publishState?: string;
 };
 
 type TagRegulatorRequest = {
@@ -54,11 +57,21 @@ type TagRegulatorRequest = {
 type SuggestTagEntry = {
   tag: string;
   note: string;
+  parentCount?: number;
 };
 
 type SuggestTagsDialogOpenArgs = {
   rendererId?: string;
   title?: string;
+  layout?: {
+    width?: number;
+    height?: number;
+    minWidth?: number;
+    minHeight?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    padding?: number;
+  };
   initialState?: {
     suggestTagEntries?: SuggestTagEntry[];
     rowErrors?: Record<string, string>;
@@ -100,6 +113,10 @@ type RuntimeWithEditorBridge = typeof globalThis & {
       };
     };
   };
+  __zsWorkflowRuntimeBridge?: {
+    appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
+    showToast?: (args: { text?: string; type?: string }) => void;
+  };
 };
 
 class FakeHtmlDocument {
@@ -131,6 +148,8 @@ class FakeHtmlElement {
 
   private listeners = new Map<string, FakeListener[]>();
 
+  private attrs = new Map<string, string>();
+
   constructor(public readonly tagName: string) {}
 
   get firstChild() {
@@ -149,6 +168,14 @@ class FakeHtmlElement {
     return child;
   }
 
+  setAttribute(name: string, value: string) {
+    this.attrs.set(String(name || ""), String(value || ""));
+  }
+
+  getAttribute(name: string) {
+    return this.attrs.get(String(name || "")) || null;
+  }
+
   addEventListener(type: string, listener: FakeListener) {
     const existing = this.listeners.get(type) || [];
     existing.push(listener);
@@ -156,20 +183,88 @@ class FakeHtmlElement {
   }
 }
 
+function walkTree(root: FakeHtmlElement) {
+  const nodes: FakeHtmlElement[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.shift()!;
+    nodes.push(node);
+    for (const child of node.children) {
+      stack.push(child);
+    }
+  }
+  return nodes;
+}
+
+function findNodeByRole(root: FakeHtmlElement, role: string) {
+  return (
+    walkTree(root).find((node) => node.getAttribute("data-zs-role") === role) || null
+  );
+}
+
+function findNodeByRoleAndRow(
+  root: FakeHtmlElement,
+  role: string,
+  rowIndex: number,
+) {
+  return (
+    walkTree(root).find(
+      (node) =>
+        node.getAttribute("data-zs-role") === role &&
+        node.getAttribute("data-zs-row-index") === String(rowIndex),
+    ) || null
+  );
+}
+
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
+const TAG_VOCAB_LOCAL_PREF_KEY = `${config.prefsPrefix}.tagVocabularyLocalCommittedJson`;
 const TAG_VOCAB_STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
+const TAG_VOCAB_REMOTE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyRemoteCommittedJson`;
+const WORKFLOW_SETTINGS_PREF_KEY = `${config.prefsPrefix}.workflowSettingsJson`;
 
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_LOCAL_PREF_KEY, true);
   Zotero.Prefs.clear(TAG_VOCAB_STAGED_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_REMOTE_PREF_KEY, true);
+  Zotero.Prefs.clear(WORKFLOW_SETTINGS_PREF_KEY, true);
 }
 
 function saveTagVocabularyState(entries: PersistedTagEntry[]) {
+  const payload = JSON.stringify({
+    version: 1,
+    entries,
+  });
   Zotero.Prefs.set(
     TAG_VOCAB_PREF_KEY,
+    payload,
+    true,
+  );
+  Zotero.Prefs.set(
+    TAG_VOCAB_LOCAL_PREF_KEY,
+    payload,
+    true,
+  );
+}
+
+function saveRemoteCommittedVocabularyState(entries: PersistedTagEntry[]) {
+  Zotero.Prefs.set(
+    TAG_VOCAB_REMOTE_PREF_KEY,
     JSON.stringify({
       version: 1,
       entries,
+    }),
+    true,
+  );
+}
+
+function saveWorkflowSettingsState(workflowId: string, workflowParams: Record<string, unknown>) {
+  Zotero.Prefs.set(
+    WORKFLOW_SETTINGS_PREF_KEY,
+    JSON.stringify({
+      [workflowId]: {
+        workflowParams,
+      },
     }),
     true,
   );
@@ -247,6 +342,52 @@ function installSuggestTagsDialogMock(
     runtime.__zsWorkflowEditorHostOpen = prevGlobal;
     addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
   };
+}
+
+function installTagVocabularySyncBridgeMock(
+  toasts: Array<{ text?: string; type?: string }>,
+  logs: Array<Record<string, unknown>> = [],
+) {
+  const runtime = globalThis as RuntimeWithEditorBridge;
+  const previous = runtime.__zsWorkflowRuntimeBridge;
+  runtime.__zsWorkflowRuntimeBridge = {
+    appendRuntimeLog: (entry) => {
+      logs.push(entry);
+      return entry;
+    },
+    showToast: (args) => {
+      toasts.push(args);
+      return undefined;
+    },
+  };
+  return () => {
+    runtime.__zsWorkflowRuntimeBridge = previous;
+  };
+}
+
+function installFetchMock(
+  mockFetch: (
+    input: string,
+    init?: Record<string, unknown>,
+  ) => Promise<{
+    ok: boolean;
+    status: number;
+    statusText?: string;
+    json: () => Promise<unknown>;
+  }>,
+) {
+  const runtime = globalThis as typeof globalThis & {
+    fetch?: typeof mockFetch;
+  };
+  const previous = runtime.fetch;
+  runtime.fetch = mockFetch;
+  return () => {
+    runtime.fetch = previous;
+  };
+}
+
+function toBase64(text: string) {
+  return Buffer.from(text, "utf8").toString("base64");
 }
 
 function listTags(item: Zotero.Item) {
@@ -417,6 +558,57 @@ describe("workflow: tag-regulator", function () {
     assert.equal(requests[0].parameter?.tag_note_language, "zh-CN");
   });
 
+  it("reads remote committed vocabulary in subscription mode when building valid_tags", async function () {
+    saveTagVocabularyState([
+      {
+        tag: "topic:local-only",
+        facet: "topic",
+        source: "manual",
+        note: "",
+        deprecated: false,
+      },
+    ]);
+    saveRemoteCommittedVocabularyState([
+      {
+        tag: "topic:remote-only",
+        facet: "topic",
+        source: "remote",
+        note: "",
+        deprecated: false,
+      },
+    ]);
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Remote Committed Parent" },
+    });
+    await handlers.tag.add(parent, ["topic:legacy"]);
+
+    const workflow = await getTagRegulatorWorkflow();
+    const selectionContext = await buildSelectionContext([parent]);
+    const requests = (await executeBuildRequests({
+      workflow,
+      selectionContext,
+      executionOptions: {
+        workflowParams: {
+          valid_tags_format: "yaml",
+        },
+      },
+    })) as TagRegulatorRequest[];
+
+    assert.lengthOf(requests, 1);
+    const yamlPath = String(requests[0].upload_files?.[0].path || "");
+    const yamlText = await readUtf8(yamlPath);
+    assert.include(yamlText, "- topic:remote-only");
+    assert.notInclude(yamlText, "- topic:local-only");
+  });
+
   it("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
     saveTagVocabularyState([
       {
@@ -571,7 +763,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(loadTagVocabularyState().entries, before);
   });
 
-  it("opens suggest-tags dialog and applies join-all for remaining rows", async function () {
+  it("reclassifies stale controlled suggest tags before opening join-all dialog", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -591,7 +783,6 @@ describe("workflow: tag-regulator", function () {
           suggestTagEntries: [
             { tag: "topic:new-alpha", note: "alpha note" },
             { tag: "topic:new-beta", note: "beta note" },
-            { tag: "topic:existing", note: "existing note" },
           ],
           rowErrors: {},
           addedDirect: [],
@@ -649,6 +840,10 @@ describe("workflow: tag-regulator", function () {
           addedDirect?: string[];
           staged?: string[];
         };
+        reclassified_add_tags?: string[];
+        reclassified_staged?: string[];
+        suggest_tags?: SuggestTagEntry[];
+        added?: string[];
       };
       assert.isTrue(Boolean(applied.suggest_intake?.opened));
       assert.deepEqual(
@@ -656,16 +851,25 @@ describe("workflow: tag-regulator", function () {
         ["topic:new-alpha", "topic:new-beta"],
       );
       assert.deepEqual(applied.suggest_intake?.staged || [], []);
-      assert.deepEqual(applied.suggest_intake?.skipped || [], ["topic:existing"]);
+      assert.deepEqual(applied.suggest_intake?.skipped || [], []);
+      assert.deepEqual(applied.reclassified_add_tags || [], ["topic:existing"]);
+      assert.deepEqual(applied.reclassified_staged || [], []);
+      assert.deepEqual(applied.suggest_tags || [], [
+        { tag: "topic:new-alpha", note: "alpha note" },
+        { tag: "topic:new-beta", note: "beta note" },
+      ]);
+      assert.deepEqual((applied.added || []).sort(), [
+        "topic:existing",
+        "topic:tunnel",
+      ]);
     } finally {
       restoreOpen();
     }
 
     assert.lengthOf(openCalls, 1);
     assert.deepEqual(openCalls[0].initialState?.suggestTagEntries || [], [
-      { tag: "topic:new-alpha", note: "alpha note" },
-      { tag: "topic:new-beta", note: "beta note" },
-      { tag: "topic:existing", note: "existing note" },
+      { tag: "topic:new-alpha", note: "alpha note", parentCount: 1 },
+      { tag: "topic:new-beta", note: "beta note", parentCount: 1 },
     ]);
     assert.deepEqual(
       (openCalls[0].actions || []).map((entry) => String(entry.id || "")),
@@ -684,9 +888,415 @@ describe("workflow: tag-regulator", function () {
     const newBetaEntry = afterEntries.find((entry) => entry.tag === "topic:new-beta");
     assert.isOk(newBetaEntry, "expected join-all to persist topic:new-beta");
     assert.equal(newBetaEntry?.source, "agent-suggest");
+    assert.deepEqual(listTags(parent), [
+      "topic:existing",
+      "topic:new-alpha",
+      "topic:new-beta",
+      "topic:tunnel",
+    ]);
   });
 
-  it("keeps operation idempotent during join-all intake", async function () {
+  it("keeps staged suggest tags visible and merges current parent binding before dialog", async function () {
+    Zotero.Prefs.set(
+      TAG_VOCAB_STAGED_PREF_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            tag: "topic:already-staged",
+            facet: "topic",
+            source: "agent-suggest",
+            note: "staged note",
+            deprecated: false,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            sourceFlow: "tag-regulator-suggest",
+            parentBindings: [999],
+          },
+        ],
+      }),
+      true,
+    );
+    const openCalls: SuggestTagsDialogOpenArgs[] = [];
+    const restoreOpen = installSuggestTagsDialogMock(async (args) => {
+      openCalls.push(args);
+      return {
+        saved: false,
+        actionId: "join-all",
+        result: {
+          suggestTagEntries: [{ tag: "topic:fresh", note: "fresh note" }],
+          rowErrors: {},
+          addedDirect: [],
+          staged: [],
+          rejected: [],
+          invalid: [],
+          skippedDirect: [],
+          stagedSkipped: [],
+          countdownSeconds: 9,
+          timedOut: false,
+          closePolicyApplied: false,
+        },
+      };
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Suggest Staged Parent" },
+    });
+    const workflow = await getTagRegulatorWorkflow();
+
+    try {
+      const applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        runResult: {
+          resultJson: {
+            result: {
+              status: "success",
+              data: {
+                remove_tags: [],
+                add_tags: [],
+                suggest_tags: [
+                  { tag: "topic:already-staged", note: "staged note" },
+                  { tag: "topic:fresh", note: "fresh note" },
+                ],
+                warnings: [],
+                error: null,
+              },
+              artifacts: [],
+              validation_warnings: [],
+              error: null,
+            },
+          },
+        },
+      })) as {
+        suggest_intake?: {
+          opened?: boolean;
+          added?: string[];
+          skipped?: string[];
+        };
+        reclassified_add_tags?: string[];
+        reclassified_staged?: string[];
+        suggest_tags?: SuggestTagEntry[];
+      };
+      assert.isTrue(Boolean(applied.suggest_intake?.opened));
+      assert.deepEqual(applied.suggest_intake?.added || [], ["topic:fresh"]);
+      assert.deepEqual(applied.suggest_intake?.skipped || [], []);
+      assert.deepEqual(applied.reclassified_add_tags || [], []);
+      assert.deepEqual(applied.reclassified_staged || [], ["topic:already-staged"]);
+      assert.deepEqual(applied.suggest_tags || [], [
+        { tag: "topic:already-staged", note: "staged note" },
+        { tag: "topic:fresh", note: "fresh note" },
+      ]);
+    } finally {
+      restoreOpen();
+    }
+
+    assert.lengthOf(openCalls, 1);
+    assert.deepEqual(openCalls[0].initialState?.suggestTagEntries || [], [
+      { tag: "topic:already-staged", note: "staged note", parentCount: 2 },
+      { tag: "topic:fresh", note: "fresh note", parentCount: 1 },
+    ]);
+    const stagedEntries = loadStagedTagVocabularyState().entries;
+    const alreadyStaged = stagedEntries.find((entry) => entry.tag === "topic:already-staged");
+    assert.isOk(alreadyStaged);
+    assert.deepEqual(alreadyStaged?.parentBindings || [], [parent.id, 999]);
+  });
+
+  it("stages suggest tags with parent bindings without mutating parent tags", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Stage Parent Binding" },
+    });
+    const workflow = await getTagRegulatorWorkflow();
+    const restoreOpen = installSuggestTagsDialogMock(async () => ({
+      saved: false,
+      actionId: "stage-all",
+      result: {
+        suggestTagEntries: [{ tag: "topic:stage-now", note: "stage note" }],
+        rowErrors: {},
+        addedDirect: [],
+        staged: [],
+        rejected: [],
+        invalid: [],
+        skippedDirect: [],
+        stagedSkipped: [],
+        countdownSeconds: 5,
+        timedOut: false,
+        closePolicyApplied: false,
+      },
+    }));
+
+    try {
+      const applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        runResult: {
+          resultJson: {
+            result: {
+              status: "success",
+              data: {
+                remove_tags: [],
+                add_tags: [],
+                suggest_tags: [{ tag: "topic:stage-now", note: "stage note" }],
+                warnings: [],
+                error: null,
+              },
+            },
+          },
+        },
+      })) as {
+        added?: string[];
+        suggest_intake?: {
+          staged?: string[];
+          appliedToCurrentParent?: string[];
+        };
+      };
+      assert.deepEqual(applied.suggest_intake?.staged || [], ["topic:stage-now"]);
+      assert.deepEqual(applied.suggest_intake?.appliedToCurrentParent || [], []);
+      assert.deepEqual(listTags(parent), []);
+      const staged = loadStagedTagVocabularyState().entries.find(
+        (entry) => entry.tag === "topic:stage-now",
+      );
+      assert.isOk(staged);
+      assert.deepEqual(staged?.parentBindings || [], [parent.id]);
+    } finally {
+      restoreOpen();
+    }
+  });
+
+  it("falls back to staged with toast when subscription-mode join publish fails without mutating parent tags", async function () {
+    saveRemoteCommittedVocabularyState([]);
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Subscription Join Failure" },
+    });
+    const workflow = await getTagRegulatorWorkflow();
+    const toasts: Array<{ text?: string; type?: string }> = [];
+    const logs: Array<Record<string, unknown>> = [];
+    const restoreBridge = installTagVocabularySyncBridgeMock(toasts, logs);
+    const restoreOpen = installSuggestTagsDialogMock(async () => ({
+      saved: false,
+      actionId: "join-all",
+      result: {
+        suggestTagEntries: [{ tag: "topic:join-fail", note: "join fail" }],
+        rowErrors: {},
+        addedDirect: [],
+        staged: [],
+        rejected: [],
+        invalid: [],
+        skippedDirect: [],
+        stagedSkipped: [],
+        countdownSeconds: 5,
+        timedOut: false,
+        closePolicyApplied: false,
+      },
+    }));
+    const restoreFetch = installFetchMock(async (_input, init) => {
+      const method = String(init?.method || "GET").toUpperCase();
+      if (method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sha: "sha-1",
+            content: toBase64(
+              JSON.stringify({
+                version: "1.0.0",
+                updated_at: "2026-04-02T00:00:00.000Z",
+                facets: ["topic"],
+                tags: [],
+                abbrevs: {},
+                tag_count: 0,
+              }),
+            ),
+          }),
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        json: async () => ({}),
+      };
+    });
+
+    try {
+      const applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        runResult: {
+          resultJson: {
+            result: {
+              status: "success",
+              data: {
+                remove_tags: [],
+                add_tags: [],
+                suggest_tags: [{ tag: "topic:join-fail", note: "join fail" }],
+                warnings: [],
+                error: null,
+              },
+            },
+          },
+        },
+      })) as {
+        suggest_intake?: {
+          staged?: string[];
+          added?: string[];
+          appliedToCurrentParent?: string[];
+        };
+      };
+      assert.deepEqual(applied.suggest_intake?.added || [], []);
+      assert.deepEqual(applied.suggest_intake?.staged || [], ["topic:join-fail"]);
+      assert.deepEqual(applied.suggest_intake?.appliedToCurrentParent || [], []);
+      const staged = loadStagedTagVocabularyState().entries.find(
+        (entry) => entry.tag === "topic:join-fail",
+      );
+      assert.isOk(staged);
+      assert.deepEqual(staged?.parentBindings || [], [parent.id]);
+      assert.deepEqual(listTags(parent), []);
+      assert.isTrue(
+        toasts.some(
+          (entry) =>
+            String(entry.type || "") === "error" &&
+            /publish failed/i.test(String(entry.text || "")),
+        ),
+      );
+      assert.isTrue(
+        logs.some(
+          (entry) =>
+            String(entry.stage || "") === "tag-regulator-join-fallback-to-staged",
+        ),
+      );
+    } finally {
+      restoreFetch();
+      restoreOpen();
+      restoreBridge();
+    }
+  });
+
+  it("opens dialog only for suggest tags that remain unresolved after live reconcile", async function () {
+    saveTagVocabularyState([
+      {
+        tag: "topic:already-controlled",
+        facet: "topic",
+        source: "manual",
+        note: "",
+        deprecated: false,
+      },
+    ]);
+    Zotero.Prefs.set(
+      TAG_VOCAB_STAGED_PREF_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            tag: "topic:already-staged",
+            facet: "topic",
+            source: "agent-suggest",
+            note: "staged note",
+            deprecated: false,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            sourceFlow: "tag-regulator-suggest",
+          },
+        ],
+      }),
+      true,
+    );
+    const openCalls: SuggestTagsDialogOpenArgs[] = [];
+    const restoreOpen = installSuggestTagsDialogMock(async (args) => {
+      openCalls.push(args);
+      return {
+        saved: false,
+        actionId: "reject-all",
+        result: {
+          suggestTagEntries: [{ tag: "topic:still-pending", note: "pending note" }],
+          rowErrors: {},
+          addedDirect: [],
+          staged: [],
+          rejected: [],
+          invalid: [],
+          skippedDirect: [],
+          stagedSkipped: [],
+          countdownSeconds: 9,
+          timedOut: false,
+          closePolicyApplied: false,
+        },
+      };
+    });
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Mixed Live Reconcile Parent" },
+    });
+    const workflow = await getTagRegulatorWorkflow();
+
+    try {
+      const applied = (await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: {
+          readText: async () => "",
+        },
+        runResult: {
+          resultJson: {
+            result: {
+              status: "success",
+              data: {
+                remove_tags: [],
+                add_tags: [],
+                suggest_tags: [
+                  { tag: "topic:already-controlled", note: "controlled note" },
+                  { tag: "topic:already-staged", note: "staged note" },
+                  { tag: "topic:still-pending", note: "pending note" },
+                ],
+                warnings: [],
+                error: null,
+              },
+              artifacts: [],
+              validation_warnings: [],
+              error: null,
+            },
+          },
+        },
+      })) as {
+        suggest_tags?: SuggestTagEntry[];
+        reclassified_add_tags?: string[];
+        reclassified_staged?: string[];
+      };
+      assert.deepEqual(applied.reclassified_add_tags || [], ["topic:already-controlled"]);
+      assert.deepEqual(applied.reclassified_staged || [], ["topic:already-staged"]);
+      assert.deepEqual(applied.suggest_tags || [], [
+        { tag: "topic:already-staged", note: "staged note" },
+        { tag: "topic:still-pending", note: "pending note" },
+      ]);
+    } finally {
+      restoreOpen();
+    }
+
+    assert.lengthOf(openCalls, 1);
+    assert.deepEqual(openCalls[0].initialState?.suggestTagEntries || [], [
+      { tag: "topic:already-staged", note: "staged note", parentCount: 1 },
+      { tag: "topic:still-pending", note: "pending note", parentCount: 1 },
+    ]);
+    assert.deepEqual(listTags(parent), ["topic:already-controlled"]);
+  });
+
+  it("keeps operation idempotent during join-all intake after live reconcile", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -701,7 +1311,6 @@ describe("workflow: tag-regulator", function () {
       actionId: "join-all",
       result: {
         suggestTagEntries: [
-          { tag: "topic:existing", note: "existing note" },
           { tag: "topic:new-idempotent", note: "idempotent note" },
         ],
         rowErrors: {},
@@ -755,9 +1364,15 @@ describe("workflow: tag-regulator", function () {
           added?: string[];
           skipped?: string[];
         };
+        reclassified_add_tags?: string[];
+        suggest_tags?: SuggestTagEntry[];
       };
       assert.deepEqual(applied.suggest_intake?.added || [], ["topic:new-idempotent"]);
-      assert.deepEqual(applied.suggest_intake?.skipped || [], ["topic:existing"]);
+      assert.deepEqual(applied.suggest_intake?.skipped || [], []);
+      assert.deepEqual(applied.reclassified_add_tags || [], ["topic:existing"]);
+      assert.deepEqual(applied.suggest_tags || [], [
+        { tag: "topic:new-idempotent", note: "idempotent note" },
+      ]);
     } finally {
       restoreOpen();
     }
@@ -773,9 +1388,14 @@ describe("workflow: tag-regulator", function () {
       1,
       "new suggest tag should be inserted exactly once",
     );
+    assert.deepEqual(listTags(parent), [
+      "topic:existing",
+      "topic:new-idempotent",
+      "topic:tunnel",
+    ]);
   });
 
-  it("applies close-policy staged intake when dialog closes without explicit action", async function () {
+  it("applies close-policy staged intake when dialog closes without explicit action and keeps parent tags unchanged", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:stable",
@@ -851,6 +1471,7 @@ describe("workflow: tag-regulator", function () {
       assert.deepEqual(applied.suggest_intake?.staged || [], [
         "topic:new-after-cancel",
       ]);
+      assert.deepEqual(applied.suggest_intake?.appliedToCurrentParent || [], []);
       assert.deepEqual(applied.suggest_intake?.rejected || [], []);
     } finally {
       restoreOpen();
@@ -862,6 +1483,7 @@ describe("workflow: tag-regulator", function () {
       beforeStaged.length,
       "expected staged entries to grow after close-policy staging",
     );
+    assert.deepEqual(listTags(parent), ["topic:tunnel"]);
   });
 
   it("rejects invalid suggest tags with diagnostics while accepting valid tags in join-all path", async function () {
@@ -1242,6 +1864,88 @@ describe("workflow: tag-regulator", function () {
     const yamlB = await readUtf8(String(requestsB[0].upload_files?.[0].path || ""));
     assert.include(yamlB, "topic:version-b");
     assert.notInclude(yamlB, "topic:version-a");
+  });
+
+  it("renders suggest dialog header and parent count column", function () {
+    const runtimeState: {
+      timerStarted?: boolean;
+      timerHandle?: ReturnType<typeof setInterval> | null;
+      state?: Record<string, unknown> | null;
+    } = {};
+    const renderer = __tagRegulatorApplyResultTestOnly.createSuggestTagsRenderer({
+      runtime: runtimeState,
+    });
+    const doc = new FakeHtmlDocument() as unknown as Document;
+    const root = new FakeHtmlElement("div") as unknown as HTMLElement;
+    const state: Record<string, unknown> = {
+      suggestTagEntries: [
+        { tag: "topic:alpha", note: "alpha note", parentCount: 3 },
+      ],
+      rowErrors: {},
+      addedDirect: [],
+      staged: [],
+      rejected: [],
+      invalid: [],
+      skippedDirect: [],
+      stagedSkipped: [],
+      countdownSeconds: 10,
+      timedOut: false,
+      closePolicyApplied: false,
+    };
+    const host = {
+      rerender: () => {
+        renderer.render({ doc, root, state, host });
+      },
+      patchState: (updater: (draft: Record<string, unknown>) => void) => {
+        updater(state);
+        renderer.render({ doc, root, state, host });
+      },
+      closeWithAction: (_actionId?: string) => {},
+    };
+
+    renderer.render({ doc, root, state, host });
+    const rootNode = root as unknown as FakeHtmlElement;
+    const header = findNodeByRole(rootNode, "suggest-table-header");
+    const parentCount = findNodeByRoleAndRow(rootNode, "suggest-parent-count", 0);
+    assert.isOk(header);
+    assert.isOk(parentCount);
+    assert.equal(parentCount?.textContent, "3");
+    assert.equal(
+      header?.style.gridTemplateColumns,
+      "minmax(120px,1.1fr) minmax(0,2.3fr) 56px 72px 72px",
+    );
+    assert.equal(rootNode.children[0]?.style.minWidth, "0");
+    assert.equal(rootNode.children[0]?.children[2]?.style.minWidth, "0");
+    if (runtimeState.timerHandle) {
+      clearInterval(runtimeState.timerHandle);
+    }
+  });
+
+  it("opens suggest dialog with a wider responsive layout", async function () {
+    let capturedArgs: SuggestTagsDialogOpenArgs | null = null;
+    const restoreBridge = installSuggestTagsDialogMock((args) => {
+      capturedArgs = args;
+      return {
+        saved: false,
+        actionId: args.closeActionId,
+        result: args.initialState,
+      };
+    });
+    try {
+      const result = await __tagRegulatorApplyResultTestOnly.openSuggestTagsDialog({
+        suggestTagEntries: [{ tag: "topic:alpha", note: "alpha note" }],
+      });
+      assert.isFalse(Boolean(result.canceled));
+      assert.isOk(capturedArgs);
+      assert.deepInclude(capturedArgs?.layout || {}, {
+        width: 860,
+        minWidth: 680,
+        maxWidth: 1200,
+        height: 560,
+      });
+    } finally {
+      restoreBridge();
+    }
   });
 
   it("marks timeout state when renderer countdown reaches zero", async function () {

@@ -159,3 +159,42 @@ invariants:
     spec_refs:
       - openspec/specs/task-dashboard-skillrunner-observe/spec.md
     must: 本地托管后端仅在部署成功后入库并纳入探测，未入库前禁止探测。
+
+  - id: INV-PROV-APPLY-OWNER-AUTO
+    domain: skillrunner-provider
+    type: apply-ownership
+    current_value:
+      autoApplyOwner: reconciler
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.applyOwnership.autoApplyOwner
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
+    must: SkillRunner auto 的终态 apply 只能由 reconciler 持有。
+
+  - id: INV-PROV-APPLY-OWNER-INTERACTIVE
+    domain: skillrunner-provider
+    type: apply-ownership
+    current_value:
+      interactiveApplyOwner: reconciler
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.applyOwnership.interactiveApplyOwner
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
+    must: SkillRunner interactive 的终态 apply 只能由 reconciler 持有。
+
+  - id: INV-PROV-FOREGROUND-APPLY-SKIP-AUTO
+    domain: skillrunner-provider
+    type: apply-policy
+    current_value:
+      foregroundAutoApply: skip-and-defer-to-reconciler
+    code_refs:
+      - SKILLRUNNER_SSOT_FACTS.applyOwnership.foregroundAutoApply
+    doc_refs:
+      - doc/components/skillrunner-provider-state-machine-ssot.md
+    spec_refs:
+      - openspec/specs/task-dashboard-skillrunner-observe/spec.md
+    must: 前台 apply seam 必须跳过 SkillRunner auto 的真实 apply，并把最终收敛交给 reconciler。

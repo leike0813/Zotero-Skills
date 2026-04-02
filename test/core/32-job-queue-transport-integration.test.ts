@@ -48,7 +48,7 @@ const describeJobQueueTransportSuite = isFullTestMode() ? describe : describe.sk
 describeJobQueueTransportSuite("job-queue: transport integration", function () {
   this.timeout(20000);
 
-  it("runs one job per valid input request using FIFO + fixed concurrency", async function () {
+  it("runs one job per valid input request with backend dispatch concurrency controlled by the queue config", async function () {
     if (!(await isMockSkillRunnerReachable(MOCK_SKILLRUNNER_BASE_URL))) {
       this.skip();
     }
@@ -102,7 +102,7 @@ describeJobQueueTransportSuite("job-queue: transport integration", function () {
         baseUrl: MOCK_SKILLRUNNER_BASE_URL,
       });
       const queue = new JobQueueManager({
-        concurrency: 1,
+        concurrency: adjustedRequests.length,
         executeJob: async (job) =>
           provider.execute({
             requestKind: workflow!.manifest.request!.kind,

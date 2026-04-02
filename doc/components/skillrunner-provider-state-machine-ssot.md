@@ -133,6 +133,27 @@ Each invariant below is normative and machine-referenced by ID.
   - probing managed local backend when it is absent from registry.
 - Observability: local runtime deploy/start stages + backend health probe target set.
 
+### INV-PROV-APPLY-OWNER-AUTO
+
+- Trigger: SkillRunner `auto` request reaches terminal `succeeded`.
+- Allowed: reconciler is the only `applyResult` executor.
+- Forbidden: foreground execution path calling `applyResult` for recoverable `auto`.
+- Observability: `foreground-apply-skipped-auto` and reconciler terminal-apply logs.
+
+### INV-PROV-APPLY-OWNER-INTERACTIVE
+
+- Trigger: SkillRunner `interactive` request reaches terminal `succeeded`.
+- Allowed: reconciler is the only `applyResult` executor.
+- Forbidden: any non-reconciler path applying terminal result.
+- Observability: deferred terminal apply logs and context cleanup path.
+
+### INV-PROV-FOREGROUND-APPLY-SKIP-AUTO
+
+- Trigger: foreground apply seam handles a SkillRunner `auto` job after queue idle.
+- Allowed: mark request as reconciler-owned pending and defer final summary.
+- Forbidden: executing real foreground apply or immediate final summary for that request.
+- Observability: apply seam summary payload, runtime log stage `foreground-apply-skipped-auto`, deferred summary tracker state.
+
 ## 5. Ledger and Persistence Contract
 
 Ledger persistence is plugin-scope SQLite:
@@ -195,6 +216,11 @@ Missing recoverable context on terminal success:
 - skip apply
 - emit explicit warning with `missing-context`
 
+Recoverable context with valid terminal success:
+
+- reconciler is the only apply owner for both `auto` and `interactive`
+- foreground `auto` success is downgraded to reconciler-owned pending instead of real apply
+
 ## 8. Sequence (Simplified)
 
 ```mermaid
@@ -220,5 +246,6 @@ sequenceDiagram
     Probe->>Jobs: jobs double-confirm
     Jobs-->>Probe: succeeded|failed|canceled
     Probe->>Ledger: terminal guarded write (jobs-terminal)
+    Note over Probe,Ledger: if executionMode=auto foreground apply stays skipped
     Ledger-->>UI: terminal convergence
 ```

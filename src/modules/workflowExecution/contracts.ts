@@ -37,6 +37,7 @@ export type WorkflowJobOutcome = {
   index: number;
   taskLabel: string;
   succeeded: boolean;
+  terminalState?: "succeeded" | "failed" | "canceled";
   reason?: string;
   jobId: string;
   requestId?: string;
@@ -48,6 +49,11 @@ export type WorkflowApplySummary = {
   pending: number;
   failureReasons: string[];
   jobOutcomes: WorkflowJobOutcome[];
+  reconcileOwnedPendingJobs: Array<
+    WorkflowJobOutcome & {
+      requestId: string;
+    }
+  >;
 };
 
 export type WorkflowToastPayload = {

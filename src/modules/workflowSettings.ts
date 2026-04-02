@@ -425,11 +425,13 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
   const saved = getWorkflowSettings(args.workflow.manifest.id);
   const merged = mergeExecutionOptions(saved, args.draft);
   const profileFromMerged = String(merged.backendId || "").trim();
+  const canAutoSelectProfile = requiresBackendProfile && profiles.length > 0;
   const selectedProfile = profiles.some(
     (profile) => profile.id === profileFromMerged,
   )
     ? profileFromMerged
-    : profiles.length === 1 || args.autoSelectFallbackProfile === true
+    : canAutoSelectProfile &&
+        (profiles.length === 1 || args.autoSelectFallbackProfile === true)
       ? profiles[0].id
       : "";
   const selectedBackend = selectedProfile

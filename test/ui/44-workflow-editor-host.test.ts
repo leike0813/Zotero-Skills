@@ -520,4 +520,46 @@ describe("workflow editor host", function () {
     assert.equal(result.actionId, "stage-all");
     assert.deepEqual(result.result, { ok: true });
   });
+
+  it("preserves non-serializable runtime context for renderer and action callbacks", async function () {
+    let renderObserved = "";
+    let actionObserved = "";
+    registerWorkflowEditorRenderer("runtime-context-renderer", {
+      render: ({ state, context }) => {
+        const runtimeContext = context as { schedule?: () => string } | undefined;
+        renderObserved = typeof runtimeContext?.schedule;
+        (state as { value?: string }).value = runtimeContext?.schedule?.() || "";
+      },
+      serialize: ({ state }) => state,
+    });
+
+    MockDialog.nextButtons.push("run");
+    const result = await openWorkflowEditorSession({
+      rendererId: "runtime-context-renderer",
+      title: "Runtime Context",
+      initialState: { value: "" },
+      context: {
+        schedule: () => "coordinator-ok",
+      },
+      actions: [
+        {
+          id: "run",
+          label: "Run",
+          noClose: true,
+          onClick: ({ state, context, closeWithAction }) => {
+            const runtimeContext = context as { schedule?: () => string } | undefined;
+            actionObserved = typeof runtimeContext?.schedule;
+            (state as { value?: string }).value = runtimeContext?.schedule?.() || "";
+            closeWithAction("run");
+          },
+        },
+      ],
+    });
+
+    assert.equal(renderObserved, "function");
+    assert.equal(actionObserved, "function");
+    assert.isFalse(result.saved);
+    assert.equal(result.actionId, "run");
+    assert.deepEqual(result.result, { value: "coordinator-ok" });
+  });
 });

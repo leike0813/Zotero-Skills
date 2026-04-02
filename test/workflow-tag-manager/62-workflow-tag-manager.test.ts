@@ -30,12 +30,26 @@ type RuntimeWithEditorBridge = typeof globalThis & {
   __zsWorkflowEditorHostOpen?: (
     args: HostOpenArgs,
   ) => Promise<HostOpenResult> | HostOpenResult;
+  __zsWorkflowRuntimeBridge?: {
+    appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
+    showToast?: (args: { text?: string; type?: string }) => void;
+  };
+  fetch?: (input: string, init?: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    status: number;
+    statusText?: string;
+    json: () => Promise<unknown>;
+  }>;
   addon?: {
     data?: {
       workflowEditorHost?: {
         open?: (
           args: HostOpenArgs,
         ) => Promise<HostOpenResult> | HostOpenResult;
+      };
+      workflowRuntimeBridge?: {
+        appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
+        showToast?: (args: { text?: string; type?: string }) => void;
       };
     };
   };
@@ -50,14 +64,46 @@ type PersistedTagEntry = {
 };
 
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
+const TAG_VOCAB_LOCAL_PREF_KEY = `${config.prefsPrefix}.tagVocabularyLocalCommittedJson`;
+const TAG_VOCAB_REMOTE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyRemoteCommittedJson`;
+const WORKFLOW_SETTINGS_PREF_KEY = `${config.prefsPrefix}.workflowSettingsJson`;
 
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_LOCAL_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_REMOTE_PREF_KEY, true);
+}
+
+function clearWorkflowSettingsState() {
+  Zotero.Prefs.clear(WORKFLOW_SETTINGS_PREF_KEY, true);
+}
+
+function saveWorkflowSettingsState(workflowId: string, workflowParams: Record<string, unknown>) {
+  Zotero.Prefs.set(
+    WORKFLOW_SETTINGS_PREF_KEY,
+    JSON.stringify({
+      [workflowId]: {
+        workflowParams,
+      },
+    }),
+    true,
+  );
 }
 
 function saveTagVocabularyState(entries: PersistedTagEntry[]) {
   Zotero.Prefs.set(
     TAG_VOCAB_PREF_KEY,
+    JSON.stringify({
+      version: 1,
+      entries,
+    }),
+    true,
+  );
+}
+
+function saveRemoteCommittedVocabularyState(entries: PersistedTagEntry[]) {
+  Zotero.Prefs.set(
+    TAG_VOCAB_REMOTE_PREF_KEY,
     JSON.stringify({
       version: 1,
       entries,
@@ -137,13 +183,61 @@ function installEditorOpenMock(
   };
 }
 
+function installTagVocabularySyncBridgeMock(args: {
+  logs?: Array<Record<string, unknown>>;
+  toasts?: string[];
+}) {
+  const runtime = globalThis as RuntimeWithEditorBridge;
+  const prevGlobal = runtime.__zsWorkflowRuntimeBridge;
+  const addonObj = (runtime.addon || {}) as NonNullable<
+    RuntimeWithEditorBridge["addon"]
+  >;
+  if (!addonObj.data) {
+    addonObj.data = {};
+  }
+  const prevAddonBridge = addonObj.data.workflowRuntimeBridge;
+  const bridge = {
+    appendRuntimeLog: (entry: Record<string, unknown>) => {
+      args.logs?.push(entry);
+      return entry;
+    },
+    showToast: (payload: { text?: string }) => {
+      args.toasts?.push(String(payload?.text || ""));
+    },
+  };
+  runtime.__zsWorkflowRuntimeBridge = bridge;
+  addonObj.data.workflowRuntimeBridge = bridge;
+  runtime.addon = addonObj;
+  return () => {
+    runtime.__zsWorkflowRuntimeBridge = prevGlobal;
+    addonObj.data!.workflowRuntimeBridge = prevAddonBridge;
+  };
+}
+
+function installFetchMock(
+  mockFetch: NonNullable<RuntimeWithEditorBridge["fetch"]>,
+) {
+  const runtime = globalThis as RuntimeWithEditorBridge;
+  const prevFetch = runtime.fetch;
+  runtime.fetch = mockFetch;
+  return () => {
+    runtime.fetch = prevFetch;
+  };
+}
+
+function toBase64(text: string) {
+  return Buffer.from(text, "utf8").toString("base64");
+}
+
 describe("workflow: tag-manager", function () {
   beforeEach(function () {
     clearTagVocabularyState();
+    clearWorkflowSettingsState();
   });
 
   afterEach(function () {
     clearTagVocabularyState();
+    clearWorkflowSettingsState();
   });
 
   it("persists edited vocabulary when editor saves", async function () {
@@ -287,5 +381,378 @@ describe("workflow: tag-manager", function () {
 
     assert.lengthOf(alerts, 0);
     assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:stable"]);
+  });
+
+  it("subscribes remote vocabulary before opening editor when GitHub sync is configured", async function () {
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+    const workflow = await getTagManagerWorkflow();
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Manager Remote Subscribe Parent" },
+    });
+    const calls: HostOpenArgs[] = [];
+    const restoreOpen = installEditorOpenMock(async (args) => {
+      calls.push(args);
+      return {
+        saved: false,
+        reason: "user-canceled",
+      };
+    });
+    const restoreFetch = installFetchMock(async (input) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        version: "1.0.0",
+        updated_at: "2026-04-02T00:00:00.000Z",
+        facets: ["topic"],
+        tags: [
+          {
+            tag: "topic:remote",
+            facet: "topic",
+            source: "remote",
+            note: "remote-tag",
+            deprecated: false,
+          },
+        ],
+        abbrevs: {},
+        tag_count: 1,
+      }),
+    }));
+    const win = {
+      ZoteroPane: {
+        getSelectedItems: () => [parent],
+      },
+      alert: () => undefined,
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreFetch();
+      restoreOpen();
+    }
+
+    assert.lengthOf(calls, 1);
+    assert.deepEqual(
+      calls[0].initialState?.entries?.map((entry) => entry.tag),
+      ["topic:remote"],
+    );
+    assert.equal((calls[0].initialState as Record<string, unknown>)?.remoteSyncState, "subscribed");
+  });
+
+  it("publishes remote vocabulary after local save when GitHub sync is configured", async function () {
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+    const workflow = await getTagManagerWorkflow();
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Manager Remote Publish Parent" },
+    });
+    const requests: Array<{ url: string; method: string; body: string }> = [];
+    const restoreOpen = installEditorOpenMock(async () => ({
+      saved: true,
+      result: {
+        entries: [
+          {
+            tag: "topic:publish-me",
+            facet: "topic",
+            source: "manual",
+            note: "publish",
+            deprecated: false,
+          },
+        ],
+      },
+    }));
+    const restoreFetch = installFetchMock(async (input, init) => {
+      const url = String(input || "");
+      const method = String(init?.method || "GET").toUpperCase();
+      const body = String(init?.body || "");
+      requests.push({ url, method, body });
+      if (url.includes("raw.githubusercontent.com")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            version: "1.0.0",
+            updated_at: "2026-04-02T00:00:00.000Z",
+            facets: ["topic"],
+            tags: [],
+            abbrevs: { llm: "LLM" },
+            tag_count: 0,
+          }),
+        };
+      }
+      if (method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sha: "sha-1",
+            content: toBase64(
+              JSON.stringify({
+                version: "1.0.0",
+                updated_at: "2026-04-02T00:00:00.000Z",
+                facets: ["topic"],
+                tags: [],
+                abbrevs: { llm: "LLM" },
+                tag_count: 0,
+              }),
+            ),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      };
+    });
+    const win = {
+      ZoteroPane: {
+        getSelectedItems: () => [parent],
+      },
+      alert: () => undefined,
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreFetch();
+      restoreOpen();
+    }
+
+    assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:publish-me"]);
+    const putRequest = requests.find((entry) => entry.method === "PUT");
+    assert.isOk(putRequest);
+    const payload = JSON.parse(putRequest!.body);
+    const published = JSON.parse(Buffer.from(String(payload.content || ""), "base64").toString("utf8"));
+    assert.equal(payload.sha, "sha-1");
+    assert.deepEqual(
+      published.tags.map((entry: PersistedTagEntry) => entry.tag),
+      ["topic:publish-me"],
+    );
+    assert.deepEqual(published.abbrevs, { llm: "LLM" });
+  });
+
+  it("keeps remote committed snapshot unchanged and preserves failed draft when remote publish fails", async function () {
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+    saveRemoteCommittedVocabularyState([
+      {
+        tag: "topic:remote-stable",
+        facet: "topic",
+        source: "remote",
+        note: "stable",
+        deprecated: false,
+      },
+    ]);
+    const workflow = await getTagManagerWorkflow();
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Manager Remote Publish Failure Parent" },
+    });
+    const logs: Array<Record<string, unknown>> = [];
+    const toasts: string[] = [];
+    const restoreBridge = installTagVocabularySyncBridgeMock({
+      logs,
+      toasts,
+    });
+    const calls: HostOpenArgs[] = [];
+    let openCount = 0;
+    const restoreOpen = installEditorOpenMock(async (args) => {
+      calls.push(args);
+      openCount += 1;
+      if (openCount === 1) {
+        return {
+          saved: true,
+          result: {
+            entries: [
+              {
+                tag: "topic:still-local",
+                facet: "topic",
+                source: "manual",
+                note: "local only",
+                deprecated: false,
+              },
+            ],
+          },
+        };
+      }
+      return {
+        saved: false,
+        reason: "user-canceled-after-failure",
+      };
+    });
+    const restoreFetch = installFetchMock(async (input, init) => {
+      const url = String(input || "");
+      const method = String(init?.method || "GET").toUpperCase();
+      if (url.includes("raw.githubusercontent.com")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            version: "1.0.0",
+            updated_at: "2026-04-02T00:00:00.000Z",
+            facets: ["topic"],
+            tags: [
+              {
+                tag: "topic:remote-stable",
+                facet: "topic",
+                source: "remote",
+                note: "stable",
+                deprecated: false,
+              },
+            ],
+            abbrevs: {},
+            tag_count: 1,
+          }),
+        };
+      }
+      if (method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sha: "sha-1",
+            content: toBase64(
+              JSON.stringify({
+                version: "1.0.0",
+                updated_at: "2026-04-02T00:00:00.000Z",
+                facets: ["topic"],
+                tags: [
+                  {
+                    tag: "topic:remote-stable",
+                    facet: "topic",
+                    source: "remote",
+                    note: "stable",
+                    deprecated: false,
+                  },
+                ],
+                abbrevs: {},
+                tag_count: 1,
+              }),
+            ),
+          }),
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        json: async () => ({}),
+      };
+    });
+    const win = {
+      ZoteroPane: {
+        getSelectedItems: () => [parent],
+      },
+      alert: () => undefined,
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreFetch();
+      restoreOpen();
+      restoreBridge();
+    }
+
+    assert.lengthOf(calls, 2);
+    assert.equal(
+      String((calls[1].initialState as Record<string, unknown>)?.remoteSyncState || ""),
+      "save-publish-failed",
+    );
+    assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:remote-stable"]);
+    assert.isTrue(
+      toasts.some((entry) => entry.includes("remote publish failed")),
+    );
+    assert.isTrue(
+      logs.some((entry) => String(entry.stage || "") === "publish-failed"),
+    );
+  });
+
+  it("falls back to last successful remote snapshot when subscribe fails", async function () {
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+    saveRemoteCommittedVocabularyState([
+      {
+        tag: "topic:cached-remote",
+        facet: "topic",
+        source: "remote",
+        note: "cached",
+        deprecated: false,
+      },
+    ]);
+    const workflow = await getTagManagerWorkflow();
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Manager Remote Cache Parent" },
+    });
+    const calls: HostOpenArgs[] = [];
+    const restoreOpen = installEditorOpenMock(async (args) => {
+      calls.push(args);
+      return {
+        saved: false,
+        reason: "user-canceled",
+      };
+    });
+    const restoreFetch = installFetchMock(async () => ({
+      ok: false,
+      status: 503,
+      statusText: "Unavailable",
+      json: async () => ({}),
+    }));
+    const win = {
+      ZoteroPane: {
+        getSelectedItems: () => [parent],
+      },
+      alert: () => undefined,
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreFetch();
+      restoreOpen();
+    }
+
+    assert.lengthOf(calls, 1);
+    assert.deepEqual(
+      calls[0].initialState?.entries?.map((entry) => entry.tag),
+      ["topic:cached-remote"],
+    );
+    assert.equal(
+      String((calls[0].initialState as Record<string, unknown>)?.remoteSyncState || ""),
+      "subscribe-failed",
+    );
   });
 });

@@ -2,6 +2,9 @@ const dynamicImport = new Function("specifier", "return import(specifier)");
 
 const DEFAULT_PREFS_PREFIX = "extensions.zotero.zotero-skills";
 const TAG_VOCAB_PREF_SUFFIX = "tagVocabularyJson";
+const TAG_VOCAB_LOCAL_COMMITTED_PREF_SUFFIX = "tagVocabularyLocalCommittedJson";
+const TAG_VOCAB_REMOTE_COMMITTED_PREF_SUFFIX = "tagVocabularyRemoteCommittedJson";
+const WORKFLOW_SETTINGS_PREF_SUFFIX = "workflowSettingsJson";
 const ALLOWED_VALID_TAGS_FORMATS = new Set(["yaml", "json", "auto"]);
 const DEFAULT_TAG_NOTE_LANGUAGE = "zh-CN";
 
@@ -113,6 +116,54 @@ function resolveTagVocabularyPrefsKey() {
   return `${resolvePrefsPrefix()}.${TAG_VOCAB_PREF_SUFFIX}`;
 }
 
+function resolveLocalCommittedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_LOCAL_COMMITTED_PREF_SUFFIX}`;
+}
+
+function resolveRemoteCommittedPrefsKey() {
+  return `${resolvePrefsPrefix()}.${TAG_VOCAB_REMOTE_COMMITTED_PREF_SUFFIX}`;
+}
+
+function resolveWorkflowSettingsPrefsKey() {
+  return `${resolvePrefsPrefix()}.${WORKFLOW_SETTINGS_PREF_SUFFIX}`;
+}
+
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readWorkflowSettingsParams(workflowId) {
+  const raw = Zotero.Prefs.get(resolveWorkflowSettingsPrefsKey(), true);
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!isRecord(parsed)) {
+      return {};
+    }
+    const workflowEntry = parsed[String(workflowId || "").trim()];
+    if (!isRecord(workflowEntry)) {
+      return {};
+    }
+    return isRecord(workflowEntry.workflowParams) ? workflowEntry.workflowParams : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveActiveCommittedPrefsKey() {
+  const params = readWorkflowSettingsParams("tag-manager");
+  const githubOwner = String(params.github_owner || "").trim();
+  const githubRepo = String(params.github_repo || "").trim();
+  const filePath = String(params.file_path || "").trim();
+  const githubToken = String(params.github_token || "").trim();
+  return githubOwner && githubRepo && filePath && githubToken
+    ? resolveRemoteCommittedPrefsKey()
+    : resolveLocalCommittedPrefsKey();
+}
+
 function parsePersistedVocabularyPayload(rawText) {
   let parsed = null;
   try {
@@ -166,8 +217,11 @@ function normalizeVocabularyTags(entries) {
 }
 
 function loadControlledVocabularyTagsOrThrow() {
-  const prefsKey = resolveTagVocabularyPrefsKey();
-  const raw = Zotero.Prefs.get(prefsKey, true);
+  const prefsKey = resolveActiveCommittedPrefsKey();
+  let raw = Zotero.Prefs.get(prefsKey, true);
+  if (typeof raw !== "string" || !raw.trim()) {
+    raw = Zotero.Prefs.get(resolveTagVocabularyPrefsKey(), true);
+  }
   if (typeof raw !== "string" || !raw.trim()) {
     throw new Error(`tag-regulator vocabulary missing: key='${prefsKey}'`);
   }

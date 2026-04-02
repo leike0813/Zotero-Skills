@@ -17,7 +17,8 @@ describe("workflow settings single-source routing", function () {
   it("enforces settings gate on interactive workflow trigger", async function () {
     const ts = await readProjectFile("src/modules/workflowMenu.ts");
     assert.include(ts, "requireSettingsGate: true");
-    assert.include(ts, "executeWorkflowFromCurrentSelection");
+    assert.include(ts, "triggerWorkflowFromMenu");
+    assert.include(ts, "menu-trigger-failed");
   });
 
   it("supports submit-time override and persist switch in execution entry", async function () {
@@ -26,6 +27,8 @@ describe("workflow settings single-source routing", function () {
     assert.include(ts, "openWorkflowSettingsWebDialog");
     assert.include(ts, "if (dialogResult.persist)");
     assert.include(ts, "updateWorkflowSettings(");
+    assert.include(ts, 'dialogResult.status === "canceled"');
+    assert.include(ts, 'stage: canceled ? "settings-gate-canceled" : "settings-gate-failed"');
   });
 
   it("uses compact web dialog layout without framework-level extra cancel button", async function () {

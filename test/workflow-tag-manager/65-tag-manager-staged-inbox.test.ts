@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
+import { handlers } from "../../src/handlers";
 import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
 
 type ControlledEntry = {
@@ -14,6 +15,8 @@ type StagedEntry = ControlledEntry & {
   createdAt?: string;
   updatedAt?: string;
   sourceFlow?: string;
+  parentBindings?: number[];
+  publishState?: string;
 };
 
 class FakeHtmlDocument {
@@ -164,10 +167,14 @@ function findNodeByRoleAndRow(
 }
 
 const TAG_VOCAB_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
+const TAG_VOCAB_LOCAL_PREF_KEY = `${config.prefsPrefix}.tagVocabularyLocalCommittedJson`;
+const TAG_VOCAB_REMOTE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyRemoteCommittedJson`;
 const TAG_VOCAB_STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
 
 function clearVocabularyPrefs() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_LOCAL_PREF_KEY, true);
+  Zotero.Prefs.clear(TAG_VOCAB_REMOTE_PREF_KEY, true);
   Zotero.Prefs.clear(TAG_VOCAB_STAGED_PREF_KEY, true);
 }
 
@@ -237,6 +244,18 @@ function createStagedRendererHarness(entries: StagedEntry[]) {
   };
 }
 
+function listTags(item: Zotero.Item) {
+  return item
+    .getTags()
+    .map((entry) => String(entry.tag || "").trim())
+    .filter(Boolean)
+    .sort((left, right) =>
+      left.localeCompare(right, "en", {
+        sensitivity: "base",
+      }),
+    );
+}
+
 describe("workflow: tag-manager staged inbox", function () {
   beforeEach(function () {
     clearVocabularyPrefs();
@@ -278,7 +297,7 @@ describe("workflow: tag-manager staged inbox", function () {
     assert.match(String(staged[0].updatedAt || ""), /^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("promotes a valid staged entry into controlled vocabulary and removes it from staged", function () {
+  it("promotes a valid staged entry into controlled vocabulary and removes it from staged", async function () {
     __tagManagerTestOnly.persistEntries([
       {
         tag: "topic:existing",
@@ -302,6 +321,7 @@ describe("workflow: tag-manager staged inbox", function () {
     const joinBtn = findNodeByRoleAndRow(harness.root, "staged-accept-btn", 0);
     assert.isOk(joinBtn);
     joinBtn!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const controlledTags = loadControlledEntries()
       .map((entry) => entry.tag)
@@ -309,6 +329,56 @@ describe("workflow: tag-manager staged inbox", function () {
     const stagedTags = loadStagedEntries().map((entry) => entry.tag);
     assert.deepEqual(controlledTags, ["field:CE/UG", "topic:existing"]);
     assert.deepEqual(stagedTags, []);
+  });
+
+  it("adds locally promoted staged tags to bound parent items", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Manager Local Parent Binding" },
+    });
+    __tagManagerTestOnly.persistStagedEntries([
+      {
+        tag: "topic:bound-local",
+        facet: "topic",
+        source: "agent-suggest",
+        note: "bound",
+        deprecated: false,
+        parentBindings: [parent.id],
+      },
+    ]);
+
+    const harness = createStagedRendererHarness(loadStagedEntries());
+    const joinBtn = findNodeByRoleAndRow(harness.root, "staged-accept-btn", 0);
+    assert.isOk(joinBtn);
+    joinBtn!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(loadStagedEntries().map((entry) => entry.tag), []);
+    assert.deepEqual(listTags(parent), ["topic:bound-local"]);
+  });
+
+  it("shows parent binding count in staged inbox rows", function () {
+    __tagManagerTestOnly.persistStagedEntries([
+      {
+        tag: "topic:bound-count",
+        facet: "topic",
+        source: "agent-suggest",
+        note: "bound-count",
+        deprecated: false,
+        parentBindings: [11, 22, 33],
+      },
+    ]);
+
+    const harness = createStagedRendererHarness(loadStagedEntries());
+    const header = findNodeByRole(harness.root, "staged-table-header");
+    const parentCount = findNodeByRoleAndRow(
+      harness.root,
+      "staged-parent-count",
+      0,
+    );
+    assert.isOk(header);
+    assert.isOk(parentCount);
+    assert.equal(parentCount?.textContent, "3");
   });
 
   it("keeps staged entry when promotion fails validation", function () {

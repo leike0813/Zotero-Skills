@@ -264,4 +264,103 @@ describe("integration: tag-regulator with mock skill-runner", function () {
     const afterTags = listTags(parent);
     assert.deepEqual(afterTags, ["status:2-to-read", "topic:tunnel"]);
   });
+
+  it("suppresses stale suggest-tag reminder after an earlier run already promoted it into controlled vocabulary", async function () {
+    if (!(await isMockSkillRunnerReachable(MOCK_SKILLRUNNER_BASE_URL))) {
+      this.skip();
+    }
+
+    saveTagVocabularyState([
+      {
+        tag: "topic:tunnel",
+        facet: "topic",
+        source: "manual",
+        note: "",
+        deprecated: false,
+      },
+    ]);
+
+    const firstParent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Mock Parent First" },
+    });
+    const secondParent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Mock Parent Second" },
+    });
+    await handlers.tag.add(firstParent, ["topic:legacy", "status:2-to-read"]);
+    await handlers.tag.add(secondParent, ["topic:legacy", "status:2-to-read"]);
+
+    const workflow = await getTagRegulatorWorkflow();
+    const openCalls: SuggestTagsDialogOpenArgs[] = [];
+    const winFor = (parent: Zotero.Item) =>
+      ({
+        ZoteroPane: {
+          getSelectedItems: () => [parent],
+        },
+        alert: () => {},
+      }) as unknown as _ZoteroTypes.MainWindow;
+    const restoreOpen = installSuggestTagsDialogMock(async (args) => {
+      openCalls.push(args);
+      return {
+        saved: false,
+        actionId: "join-all",
+        result: {
+          suggestTagEntries:
+            args.initialState?.suggestTagEntries || [{ tag: "topic:suggested-by-mock", note: "" }],
+          rowErrors: {},
+          addedDirect: [],
+          staged: [],
+          rejected: [],
+          invalid: [],
+          skippedDirect: [],
+          stagedSkipped: [],
+          countdownSeconds: 9,
+          timedOut: false,
+          closePolicyApplied: false,
+        },
+      };
+    });
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win: winFor(firstParent),
+        workflow,
+      });
+
+      await executeWorkflowFromCurrentSelection({
+        win: winFor(secondParent),
+        workflow,
+      });
+    } finally {
+      restoreOpen();
+    }
+
+    assert.lengthOf(
+      openCalls,
+      1,
+      "second run should not reopen suggest dialog for stale controlled tag",
+    );
+
+    const afterVocabulary = JSON.parse(
+      String(Zotero.Prefs.get(TAG_VOCAB_PREF_KEY, true) || "{}"),
+    );
+    assert.isTrue(
+      Array.isArray(afterVocabulary.entries) &&
+        afterVocabulary.entries.some(
+          (entry: PersistedTagEntry) => entry.tag === "topic:suggested-by-mock",
+        ),
+      "first run should persist mock suggest tag into controlled vocabulary",
+    );
+
+    assert.deepEqual(listTags(firstParent), [
+      "status:2-to-read",
+      "topic:suggested-by-mock",
+      "topic:tunnel",
+    ]);
+    assert.deepEqual(listTags(secondParent), [
+      "status:2-to-read",
+      "topic:suggested-by-mock",
+      "topic:tunnel",
+    ]);
+  });
 });

@@ -34,6 +34,12 @@ export type WorkflowMessageFormatter = {
     total: number;
     reason: string;
   }) => string;
+  jobToastCanceled: (args: {
+    workflowLabel: string;
+    taskLabel: string;
+    index: number;
+    total: number;
+  }) => string;
 };
 
 const defaultFormatter: WorkflowMessageFormatter = {
@@ -52,6 +58,8 @@ const defaultFormatter: WorkflowMessageFormatter = {
     `Workflow ${workflowLabel} job ${index}/${total} succeeded: ${taskLabel}`,
   jobToastFailed: ({ workflowLabel, taskLabel, index, total, reason }) =>
     `Workflow ${workflowLabel} job ${index}/${total} failed: ${taskLabel} (${reason})`,
+  jobToastCanceled: ({ workflowLabel, taskLabel, index, total }) =>
+    `Workflow ${workflowLabel} job ${index}/${total} canceled: ${taskLabel}`,
 };
 
 function resolveFormatter(
@@ -137,9 +145,13 @@ export function buildWorkflowJobToastMessage(args: {
   index: number;
   total: number;
   succeeded: boolean;
+  terminalState?: "succeeded" | "failed" | "canceled";
   reason?: string;
 }, formatter?: Partial<WorkflowMessageFormatter>) {
   const resolved = resolveFormatter(formatter);
+  if (args.terminalState === "canceled") {
+    return resolved.jobToastCanceled(args);
+  }
   if (args.succeeded) {
     return resolved.jobToastSuccess(args);
   }

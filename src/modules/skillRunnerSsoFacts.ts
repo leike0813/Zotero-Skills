@@ -39,6 +39,11 @@ export const SKILLRUNNER_SSOT_FACTS = {
     profileCreatePolicy: "deploy-only",
     probePolicy: "probe-only-if-registry-present",
   },
+  applyOwnership: {
+    autoApplyOwner: "reconciler",
+    interactiveApplyOwner: "reconciler",
+    foregroundAutoApply: "skip-and-defer-to-reconciler",
+  },
   uiGating: {
     flaggedBackendBlocksRunDialog: true,
     flaggedBackendHiddenInHome: true,

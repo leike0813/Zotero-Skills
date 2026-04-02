@@ -1,4 +1,6 @@
 import { assert } from "chai";
+import { readFileSync } from "fs";
+import { join } from "path";
 import packageJson from "../../package.json";
 
 type ScriptsMap = Record<string, string>;
@@ -8,6 +10,28 @@ function getScripts() {
 }
 
 describe("suite governance constraints", function () {
+  it("Risk: workflow builtin hooks must not depend on sibling workflow code or tag-vocab core bridge", function () {
+    const checkedFiles = [
+      join(process.cwd(), "workflows_builtin", "tag-manager", "hooks", "applyResult.js"),
+      join(process.cwd(), "workflows_builtin", "tag-regulator", "hooks", "applyResult.js"),
+      join(process.cwd(), "workflows_builtin", "tag-regulator", "hooks", "buildRequest.js"),
+    ];
+
+    for (const filePath of checkedFiles) {
+      const source = readFileSync(filePath, "utf8");
+      assert.notMatch(
+        source,
+        /from\s+["']\.\.\/\.\.\/(?:shared|[^"']+)["']/,
+        `builtin workflow must stay self-contained: ${filePath}`,
+      );
+      assert.notMatch(
+        source,
+        /tagVocabularySyncBridge|__zsTagVocabularySyncBridge/,
+        `builtin workflow must not depend on tag-vocab core bridge: ${filePath}`,
+      );
+    }
+  });
+
   it("Risk: MR-02 keeps zotero scoped scripts bound to explicit domain selectors", function () {
     const scripts = getScripts();
 

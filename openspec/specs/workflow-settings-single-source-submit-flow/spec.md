@@ -36,6 +36,13 @@ Interactive triggers MUST open workflow-specific settings page before submit whe
 - **AND** confirm action SHALL be disabled
 - **AND** workflow SHALL NOT be submitted
 
+#### Scenario: Settings gate initialization fails
+- **WHEN** user triggers a configurable workflow from interactive entry
+- **AND** settings dialog initialization fails before confirmation
+- **THEN** system SHALL emit explicit failure feedback
+- **AND** runtime diagnostics SHALL record the gate failure
+- **AND** workflow SHALL NOT silently no-op
+
 ### Requirement: A single submit snapshot SHALL be shared by all jobs in the same batch
 For one trigger action, execution settings snapshot MUST be resolved once and shared by all jobs generated from that submission.
 
@@ -86,4 +93,3 @@ The submit dialog MUST remove framework-level duplicate cancel button and keep o
 - **WHEN** submit dialog is rendered
 - **THEN** only in-page confirm/cancel actions SHALL be visible
 - **AND** framework chrome SHALL NOT add an extra cancel button
-

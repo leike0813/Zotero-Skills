@@ -48,11 +48,29 @@ The workflow MUST apply `remove_tags` and `add_tags` only when output is valid a
 ### Requirement: Suggested tags SHALL remain advisory outputs
 Tags in `suggest_tags` MUST NOT be written directly to parent items, and SHALL support user-confirmed intake into controlled vocabulary or staged inbox.
 
+#### Scenario: Result-time live reconcile suppresses stale suggestions
+- **WHEN** backend returns `suggest_tags`
+- **AND** one of those tags has already entered local controlled vocabulary before result application
+- **THEN** that tag SHALL NOT appear in the suggest-intake dialog
+- **AND** that tag SHALL be treated as result-time `add_tags` input for downstream parent-item mutation
+
+#### Scenario: Result-time live reconcile suppresses stale staged reminders
+- **WHEN** backend returns `suggest_tags`
+- **AND** one of those tags has already entered local staged inbox before result application
+- **THEN** that tag SHALL remain visible in the suggest-intake dialog
+- **AND** the workflow SHALL NOT create another staged entry for that tag
+- **AND** the workflow SHALL merge the current parent item into that staged record's `parentBindings` before opening the dialog
+
 #### Scenario: Suggest intake dialog supports immediate row actions
 - **WHEN** output contains non-empty `suggest_tags`
 - **THEN** workflow SHALL open a suggest-intake dialog with row-level `加入` and `拒绝` actions
 - **AND** row-level `加入` SHALL write directly to controlled vocabulary on success and remove the row
 - **AND** row-level `拒绝` SHALL discard the row immediately
+
+#### Scenario: Suggest intake dialog shows parent binding counts
+- **WHEN** the suggest-intake dialog is open
+- **THEN** the dialog SHALL render a header row
+- **AND** each row SHALL display the current bound-parent count for that suggest tag
 
 #### Scenario: Global actions include join/stage/reject
 - **WHEN** suggest-intake dialog is open
@@ -60,6 +78,16 @@ Tags in `suggest_tags` MUST NOT be written directly to parent items, and SHALL s
 - **AND** `全部加入` SHALL keep invalid rows visible with diagnostics
 - **AND** `全部暂存` SHALL write remaining rows to staged inbox
 - **AND** `全部拒绝` SHALL discard all remaining rows
+
+#### Scenario: Staged intake does not mutate parent tags directly
+- **WHEN** a suggest tag enters staged inbox through row-level stage, global `全部暂存`, timeout close-policy, or join fallback
+- **THEN** the workflow SHALL record deferred parent bindings for future committed backfill
+- **AND** the workflow SHALL NOT append that tag to the parent item's tags at staged time
+
+#### Scenario: Parent tags are backfilled only after committed success
+- **WHEN** a user-approved suggest tag successfully enters committed controlled vocabulary
+- **THEN** the workflow SHALL append that tag to the current parent item
+- **AND** any staged `parentBindings` for that tag SHALL remain deferred until the committed update succeeds
 
 #### Scenario: Timeout and manual close default to staged intake
 - **WHEN** suggest-intake dialog reaches 10-second timeout
@@ -86,4 +114,3 @@ Tags in `suggest_tags` MUST NOT be written directly to parent items, and SHALL s
 - **WHEN** manifests are loaded
 - **THEN** the language options declared by `tag-regulator` and `literature-digest` SHALL be equivalent
 - **AND** both defaults SHALL be `zh-CN`
-

@@ -12,6 +12,7 @@ import {
   resolveTargetParentIDFromRequest,
   resolveTaskNameFromRequest,
 } from "./requestMeta";
+import { resolveWorkflowDispatchConcurrency } from "./runConcurrency";
 
 type RunSeamDeps = {
   createQueue: (
@@ -48,8 +49,12 @@ export function runWorkflowExecutionSeam(
   const runId = `run-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 10)}`;
+  const dispatchConcurrency = resolveWorkflowDispatchConcurrency({
+    providerId: args.prepared.executionContext.providerId,
+    requestCount: args.prepared.requests.length,
+  });
   const queue = resolved.createQueue({
-    concurrency: 1,
+    concurrency: dispatchConcurrency,
     executeJob: (job, runtime) =>
       resolved.executeWithProvider({
         requestKind: args.prepared.executionContext.requestKind,

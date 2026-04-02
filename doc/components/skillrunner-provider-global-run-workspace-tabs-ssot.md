@@ -104,6 +104,7 @@ After plugin restart:
 - workspace consumes terminal convergence from unified snapshot
 - terminal side effects are reconciler-owned, not workspace-owned
 - when terminal succeeds but context is missing, state converges and apply is skipped with explicit warning
+- when SkillRunner `auto` is foreground-complete but reconciler-owned pending, workspace waits for reconciler terminal convergence and does not own final summary timing
 
 ## 7. Sequence (Simplified)
 

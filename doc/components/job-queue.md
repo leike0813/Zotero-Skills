@@ -2,12 +2,12 @@
 
 ## 目标
 
-将 Workflow 构建出的请求转换为可并发调度的任务序列，实现固定并发、FIFO 调度与独立任务生命周期管理。
+将 Workflow 构建出的请求转换为可并发调度的任务序列，实现 FIFO 调度、本地任务生命周期管理与按 provider 决定的 dispatch 并发策略。
 
 ## 职责
 
 - 维护任务队列与任务状态
-- 按固定并发配置进行调度（M1）
+- 按执行缝合层决策的并发配置进行调度
 - 提供任务的提交、执行与状态查询
 - 对每个任务维护独立控制流（状态机）
 - 将任务交给 Provider 执行
@@ -35,7 +35,9 @@
 
 - 并发粒度：按输入单元（`per_input`）
 - 调度策略：FIFO
-- 并发上限：固定值（队列初始化参数）
+- 并发上限：由执行缝合层按 provider 决定
+  - `skillrunner` / `generic-http`：`requests.length`
+  - `pass-through`：`1`
 
 ## 数据结构（建议）
 
@@ -74,7 +76,7 @@ Job {
 ## 测试点（TDD）
 
 - FIFO 顺序入队/出队
-- 固定并发上限：超额任务等待
+- provider 驱动的并发策略正确生效
 - 任务状态流转正确（含 `running -> waiting_* -> running -> terminal`）
 - deferred 任务释放队列占位后，后续任务可继续调度
-- 与 Provider 联调：多个 request 被逐个执行并全部成功
+- 与 Provider 联调：后端型 workflow 的多个 request 可并发 dispatch，`pass-through` 保持串行

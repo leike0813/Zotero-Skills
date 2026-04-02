@@ -75,6 +75,11 @@ type WorkflowSettingsDialogResult =
     }
   | {
       status: "canceled";
+    }
+  | {
+      status: "error";
+      stage: string;
+      reason: string;
     };
 
 function localize(
@@ -163,6 +168,22 @@ function isStructuralDraftChange(args: { changedSection: string; changedKey: str
     return true;
   }
   return false;
+}
+
+function buildDialogErrorResult(args: {
+  stage: string;
+  error: unknown;
+  fallback: string;
+}): WorkflowSettingsDialogResult {
+  const text =
+    args.error instanceof Error
+      ? String(args.error.message || args.error.name || "").trim()
+      : String(args.error || "").trim();
+  return {
+    status: "error",
+    stage: args.stage,
+    reason: text || args.fallback,
+  };
 }
 
 export async function openWorkflowSettingsWebDialog(args: {
@@ -302,105 +323,131 @@ export async function openWorkflowSettingsWebDialog(args: {
   };
 
   const handleAction = async (envelope: WorkflowSettingsDialogActionEnvelope) => {
-    const action = String(envelope.action || "").trim();
-    if (!action) {
-      return;
-    }
-    if (action === "ready") {
-      pushSnapshot("workflow-settings-dialog:init");
-      return;
-    }
-    if (action === "update-draft") {
-      const payload = envelope.payload || {};
-      draft = normalizeExecutionOptions(payload.executionOptions);
-      const changedSection = normalizeDraftChangedSection(payload.changedSection);
-      const changedKey = normalizeDraftChangedKey(payload.changedKey);
-      if (
-        isStructuralDraftChange({
-          changedSection,
-          changedKey,
-        })
-      ) {
-        await refreshDescriptor();
-        pushSnapshot("workflow-settings-dialog:snapshot");
+    try {
+      const action = String(envelope.action || "").trim();
+      if (!action) {
+        return;
       }
-      return;
-    }
-    if (action === "toggle-persist") {
-      persistChecked = envelope.payload?.checked !== false;
-      pushSnapshot("workflow-settings-dialog:snapshot");
-      return;
-    }
-    if (action === "confirm") {
-      if (descriptor.profileMissing) {
+      if (action === "ready") {
+        pushSnapshot("workflow-settings-dialog:init");
+        return;
+      }
+      if (action === "update-draft") {
+        const payload = envelope.payload || {};
+        draft = normalizeExecutionOptions(payload.executionOptions);
+        const changedSection = normalizeDraftChangedSection(payload.changedSection);
+        const changedKey = normalizeDraftChangedKey(payload.changedKey);
+        if (
+          isStructuralDraftChange({
+            changedSection,
+            changedKey,
+          })
+        ) {
+          await refreshDescriptor();
+          pushSnapshot("workflow-settings-dialog:snapshot");
+        }
+        return;
+      }
+      if (action === "toggle-persist") {
+        persistChecked = envelope.payload?.checked !== false;
         pushSnapshot("workflow-settings-dialog:snapshot");
         return;
       }
-      const payloadExecutionOptions = normalizeExecutionOptions(
-        isObject(envelope.payload)
-          ? (envelope.payload.executionOptions as unknown)
-          : undefined,
-      );
-      const finalExecutionOptions =
-        isObject(envelope.payload) &&
-        Object.prototype.hasOwnProperty.call(envelope.payload, "executionOptions")
-          ? payloadExecutionOptions
-          : normalizeExecutionOptions(draft);
-      result = {
-        status: "confirmed",
-        executionOptions: finalExecutionOptions,
-        persist: persistChecked,
-      };
-      closeDialog();
-      return;
-    }
-    if (action === "cancel") {
-      result = { status: "canceled" };
+      if (action === "confirm") {
+        if (descriptor.profileMissing) {
+          pushSnapshot("workflow-settings-dialog:snapshot");
+          return;
+        }
+        const payloadExecutionOptions = normalizeExecutionOptions(
+          isObject(envelope.payload)
+            ? (envelope.payload.executionOptions as unknown)
+            : undefined,
+        );
+        const finalExecutionOptions =
+          isObject(envelope.payload) &&
+          Object.prototype.hasOwnProperty.call(envelope.payload, "executionOptions")
+            ? payloadExecutionOptions
+            : normalizeExecutionOptions(draft);
+        result = {
+          status: "confirmed",
+          executionOptions: finalExecutionOptions,
+          persist: persistChecked,
+        };
+        closeDialog();
+        return;
+      }
+      if (action === "cancel") {
+        result = { status: "canceled" };
+        closeDialog();
+      }
+    } catch (error) {
+      result = buildDialogErrorResult({
+        stage: "message-action",
+        error,
+        fallback: "workflow settings dialog action failed",
+      });
       closeDialog();
     }
   };
 
   const dialogData: Record<string, unknown> = {
     loadCallback: () => {
-      const doc = dialog?.window?.document;
-      const dialogWindow = dialog?.window;
-      if (!doc || !dialogWindow) {
-        return;
-      }
       try {
-        dialogWindow.resizeTo(760, 620);
-      } catch {
-        // ignore
-      }
-      const root = doc.getElementById("zs-workflow-settings-dialog-root") as
-        | HTMLElement
-        | null;
-      if (!root) {
-        return;
-      }
-      root.innerHTML = "";
-      const frame = createDialogFrame(doc, resolveDialogPageUrl());
-      root.appendChild(frame);
-      frameWindow = resolveFrameWindow(frame);
-      frame.addEventListener("load", () => {
+        const doc = dialog?.window?.document;
+        const dialogWindow = dialog?.window;
+        if (!doc || !dialogWindow) {
+          throw new Error("workflow settings dialog window is unavailable");
+        }
+        try {
+          dialogWindow.resizeTo(760, 620);
+        } catch {
+          // ignore
+        }
+        const root = doc.getElementById("zs-workflow-settings-dialog-root") as
+          | HTMLElement
+          | null;
+        if (!root) {
+          throw new Error("workflow settings dialog root is unavailable");
+        }
+        root.innerHTML = "";
+        const frame = createDialogFrame(doc, resolveDialogPageUrl());
+        root.appendChild(frame);
         frameWindow = resolveFrameWindow(frame);
-        if (!frameWindow) {
-          return;
+        frame.addEventListener("load", () => {
+          frameWindow = resolveFrameWindow(frame);
+          if (!frameWindow) {
+            result = buildDialogErrorResult({
+              stage: "iframe-load",
+              error: new Error("workflow settings iframe window is unavailable"),
+              fallback: "workflow settings dialog frame failed to initialize",
+            });
+            closeDialog();
+            return;
+          }
+          pushSnapshot("workflow-settings-dialog:init");
+        });
+        const onMessage = (event: MessageEvent) => {
+          const data = event.data as { type?: unknown };
+          if (!data || data.type !== "workflow-settings-dialog:action") {
+            return;
+          }
+          void handleAction(data as WorkflowSettingsDialogActionEnvelope);
+        };
+        dialogWindow.addEventListener("message", onMessage);
+        removeMessageListener = () => {
+          dialogWindow.removeEventListener("message", onMessage);
+        };
+        pushSnapshot("workflow-settings-dialog:snapshot");
+      } catch (error) {
+        result = buildDialogErrorResult({
+          stage: "load-callback",
+          error,
+          fallback: "workflow settings dialog failed to initialize",
+        });
+        if (!dialog?.window?.closed) {
+          closeDialog();
         }
-        pushSnapshot("workflow-settings-dialog:init");
-      });
-      const onMessage = (event: MessageEvent) => {
-        const data = event.data as { type?: unknown };
-        if (!data || data.type !== "workflow-settings-dialog:action") {
-          return;
-        }
-        void handleAction(data as WorkflowSettingsDialogActionEnvelope);
-      };
-      dialogWindow.addEventListener("message", onMessage);
-      removeMessageListener = () => {
-        dialogWindow.removeEventListener("message", onMessage);
-      };
-      pushSnapshot("workflow-settings-dialog:snapshot");
+      }
     },
     unloadCallback: () => {
       if (removeMessageListener) {
@@ -411,8 +458,8 @@ export async function openWorkflowSettingsWebDialog(args: {
     },
   };
 
-  dialog = new ztoolkit.Dialog(1, 1)
-    .addCell(0, 0, {
+  try {
+    const dialogBuilder = new ztoolkit.Dialog(1, 1).addCell(0, 0, {
       tag: "div",
       namespace: "html",
       id: "zs-workflow-settings-dialog-root",
@@ -427,9 +474,18 @@ export async function openWorkflowSettingsWebDialog(args: {
         flexDirection: "column",
         overflow: "hidden",
       },
-    })
-    .setDialogData(dialogData)
-    .open(localize("workflow-settings-submit-title", "Workflow Settings"));
+    });
+    dialogBuilder.setDialogData(dialogData);
+    dialog = dialogBuilder.open(
+      localize("workflow-settings-submit-title", "Workflow Settings"),
+    );
+  } catch (error) {
+    return buildDialogErrorResult({
+      stage: "dialog-open",
+      error,
+      fallback: "workflow settings dialog could not be opened",
+    });
+  }
 
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
     ?.promise;

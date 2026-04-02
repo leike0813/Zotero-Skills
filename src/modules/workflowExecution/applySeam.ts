@@ -15,6 +15,7 @@ import {
   resolveTaskNameFromRequest,
 } from "./requestMeta";
 import { isActive } from "../skillRunnerProviderStateMachine";
+import { resolveSkillRunnerExecutionModeFromRequest } from "../skillRunnerExecutionMode";
 
 type RunResultLike = {
   status?: string;
@@ -22,6 +23,18 @@ type RunResultLike = {
   bundleBytes?: Uint8Array;
   requestId?: string;
 };
+
+function isSkillRunnerAutoRequest(args: {
+  workflow: { manifest?: { provider?: string; request?: { kind?: string } } };
+  request: unknown;
+}) {
+  const provider = String(args.workflow.manifest?.provider || "").trim();
+  const requestKind = String(args.workflow.manifest?.request?.kind || "").trim();
+  if (provider !== "skillrunner" && requestKind !== "skillrunner.job.v1") {
+    return false;
+  }
+  return resolveSkillRunnerExecutionModeFromRequest(args.request) === "auto";
+}
 
 function isPendingWorkflowJobState(state: string) {
   return isActive(state);
@@ -62,6 +75,7 @@ export async function runWorkflowApplySeam(args: {
   let pending = 0;
   const failureReasons: string[] = [];
   const jobOutcomes: WorkflowApplySummary["jobOutcomes"] = [];
+  const reconcileOwnedPendingJobs: WorkflowApplySummary["reconcileOwnedPendingJobs"] = [];
 
   for (let i = 0; i < args.runState.jobIds.length; i++) {
     const taskLabel = resolveTaskNameFromRequest(args.runState.requests[i], i);
@@ -190,6 +204,34 @@ export async function runWorkflowApplySeam(args: {
       details: { index: i, taskLabel },
     });
 
+    if (
+      isSkillRunnerAutoRequest({
+        workflow: args.runState.workflow,
+        request: args.runState.requests[i],
+      })
+    ) {
+      pending += 1;
+      reconcileOwnedPendingJobs.push({
+        index: i,
+        taskLabel,
+        succeeded: true,
+        terminalState: "succeeded",
+        jobId: job.id,
+        requestId: result.requestId,
+      });
+      resolved.appendRuntimeLog({
+        level: "info",
+        scope: "job",
+        workflowId: args.runState.workflow.manifest.id,
+        jobId: job.id,
+        requestId: result.requestId,
+        stage: "foreground-apply-skipped-auto",
+        message: "foreground apply skipped for reconcile-owned skillrunner auto terminal result",
+        details: { index: i, taskLabel, runId: args.runState.runId },
+      });
+      continue;
+    }
+
     let bundlePath = "";
     try {
       resolved.appendRuntimeLog({
@@ -222,6 +264,7 @@ export async function runWorkflowApplySeam(args: {
         index: i,
         taskLabel,
         succeeded: true,
+        terminalState: "succeeded",
         jobId: job.id,
         requestId: result.requestId,
       });
@@ -245,6 +288,7 @@ export async function runWorkflowApplySeam(args: {
         index: i,
         taskLabel,
         succeeded: false,
+        terminalState: "failed",
         reason,
         jobId: job.id,
         requestId: result.requestId,
@@ -273,5 +317,6 @@ export async function runWorkflowApplySeam(args: {
     pending,
     failureReasons,
     jobOutcomes,
+    reconcileOwnedPendingJobs,
   };
 }

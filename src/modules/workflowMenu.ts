@@ -3,9 +3,11 @@ import { getString } from "../utils/locale";
 import { buildSelectionContext } from "./selectionContext";
 import { executeBuildRequests } from "../workflows/runtime";
 import { executeWorkflowFromCurrentSelection } from "./workflowExecute";
-import { getLoadedWorkflowEntries } from "./workflowRuntime";
+import { getLoadedWorkflowEntries, getLoadedWorkflowSourceById } from "./workflowRuntime";
 import { resolveProvider } from "../providers/registry";
 import { resolveWorkflowExecutionContext } from "./workflowSettings";
+import { appendRuntimeLog } from "./runtimeLogManager";
+import { alertWindow } from "./workflowExecution/feedbackSeam";
 
 const ROOT_MENU_ID = `${config.addonRef}-workflows-menu`;
 const ROOT_POPUP_ID = `${config.addonRef}-workflows-popup`;
@@ -85,6 +87,57 @@ function resolveDisabledReason(error: unknown) {
   return compactError(error);
 }
 
+function buildTriggerFailureMessage(workflowLabel: string, error: unknown) {
+  const reason = compactError(error);
+  try {
+    const localized = String(
+      getString("workflow-execute-cannot-run" as any, {
+        args: {
+          workflowLabel,
+          reason,
+        },
+      }),
+    ).trim();
+    if (localized && !localized.includes("workflow-execute-cannot-run")) {
+      return localized;
+    }
+  } catch {
+    // ignore localization failures
+  }
+  return `Workflow ${workflowLabel} cannot run: ${reason}`;
+}
+
+async function triggerWorkflowFromMenu(args: {
+  win: _ZoteroTypes.MainWindow;
+  workflow: ReturnType<typeof getLoadedWorkflowEntries>[number];
+}) {
+  try {
+    await executeWorkflowFromCurrentSelection({
+      win: args.win,
+      workflow: args.workflow,
+      requireSettingsGate: true,
+    });
+  } catch (error) {
+    appendRuntimeLog({
+      level: "error",
+      scope: "workflow-trigger",
+      workflowId: args.workflow.manifest.id,
+      providerId: String(args.workflow.manifest.provider || "").trim(),
+      stage: "menu-trigger-failed",
+      message: "workflow menu trigger failed before execution completed",
+      details: {
+        workflowSource: getLoadedWorkflowSourceById(args.workflow.manifest.id),
+        reason: compactError(error),
+      },
+      error,
+    });
+    alertWindow(
+      args.win,
+      buildTriggerFailureMessage(args.workflow.manifest.label, error),
+    );
+  }
+}
+
 export async function rebuildWorkflowActionPopup(
   win: _ZoteroTypes.MainWindow,
   popup: XULElement,
@@ -150,10 +203,9 @@ export async function rebuildWorkflowActionPopup(
       menuItem.setAttribute("disabled", "true");
     } else {
       menuItem.addEventListener("command", () => {
-        void executeWorkflowFromCurrentSelection({
+        void triggerWorkflowFromMenu({
           win,
           workflow,
-          requireSettingsGate: true,
         });
       });
     }

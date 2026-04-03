@@ -13,6 +13,11 @@ import {
   resetSkillRunnerBackendHealthRegistryForTests,
 } from "../../src/modules/skillRunnerBackendHealthRegistry";
 import {
+  registerDeferredWorkflowCompletion,
+  resetDeferredWorkflowCompletionTrackerForTests,
+  setDeferredWorkflowCompletionTrackerDepsForTests,
+} from "../../src/modules/workflowExecution/deferredCompletionTracker";
+import {
   resetWorkflowTasks,
   listWorkflowTasks,
   recordWorkflowTaskUpdate,
@@ -52,12 +57,14 @@ function isListRunsProbeUrl(url: string) {
 function makeDeferredJob(args?: {
   id?: string;
   requestId?: string;
+  runId?: string;
   state?: JobRecord["state"];
   fetchType?: "bundle" | "result";
   targetParentID?: number;
 }): JobRecord {
   const jobId = args?.id || "job-1";
   const requestId = args?.requestId || "req-1";
+  const runId = args?.runId || "run-1";
   const state = args?.state || "waiting_user";
   const fetchType = args?.fetchType || "bundle";
   const targetParentID = args?.targetParentID ?? 123;
@@ -66,7 +73,7 @@ function makeDeferredJob(args?: {
     workflowId: "literature-explainer",
     request: { targetParentID },
     meta: {
-      runId: "run-1",
+      runId,
       taskName: "paper.md",
       workflowLabel: "Literature Explainer",
       requestId,
@@ -176,6 +183,12 @@ describe("skillrunner task reconciler", function () {
     resetWorkflowTasks();
     clearRuntimeLogs();
     resetSkillRunnerBackendHealthRegistryForTests();
+    resetDeferredWorkflowCompletionTrackerForTests();
+    setDeferredWorkflowCompletionTrackerDepsForTests({
+      emitWorkflowJobToasts: () => undefined,
+      emitWorkflowFinishSummary: () => undefined,
+      appendRuntimeLog: () => undefined,
+    });
   });
 
   afterEach(function () {
@@ -187,6 +200,8 @@ describe("skillrunner task reconciler", function () {
     resetWorkflowTasks();
     clearRuntimeLogs();
     resetSkillRunnerBackendHealthRegistryForTests();
+    resetDeferredWorkflowCompletionTrackerForTests();
+    setDeferredWorkflowCompletionTrackerDepsForTests();
     setSkillRunnerBackendReconcileFailureToastEmitterForTests();
     setSkillRunnerTaskLifecycleToastEmitterForTests();
   });
@@ -240,6 +255,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: parent.id,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,
@@ -400,6 +418,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: 123,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,
@@ -467,6 +488,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: parent.id,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,
@@ -537,6 +561,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: parent.id,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,
@@ -561,6 +588,466 @@ describe("skillrunner task reconciler", function () {
     assert.equal(toasts[0].type, "success");
     assert.include(toasts[0].text, "Literature Explainer");
     assert.include(toasts[0].text, "paper.md");
+  });
+
+  it("replays deferred summary after reconciler settles terminal success before tracker registration", async function () {
+    const trackerStages: string[] = [];
+    const deferredJobToasts: any[] = [];
+    const summaries: Array<{ succeeded: number; failed: number; skipped: number }> = [];
+    setDeferredWorkflowCompletionTrackerDepsForTests({
+      emitWorkflowJobToasts: (payload) => {
+        deferredJobToasts.push(payload);
+      },
+      emitWorkflowFinishSummary: (payload) => {
+        summaries.push({
+          succeeded: payload.succeeded,
+          failed: payload.failed,
+          skipped: payload.skipped,
+        });
+      },
+      appendRuntimeLog: (entry) => {
+        trackerStages.push(String(entry.stage || ""));
+      },
+    });
+
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-race-summary")) {
+        return createJsonResponse({
+          request_id: "req-race-summary",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-race-summary/result")) {
+        return createJsonResponse({
+          note_path: "",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const toasts: Array<{ state: string; text: string; type: string }> = [];
+    setSkillRunnerTaskLifecycleToastEmitterForTests((payload) => {
+      toasts.push(payload);
+    });
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Deferred Summary Replay Parent" },
+    });
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: parent.id,
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-race-summary",
+        requestId: "req-race-summary",
+        state: "running",
+        fetchType: "result",
+        targetParentID: parent.id,
+      }),
+    });
+
+    await reconciler.reconcilePending();
+
+    assert.include(trackerStages, "deferred-outcome-buffered-before-register");
+    assert.notInclude(trackerStages, "deferred-run-summary-emitted");
+    assert.lengthOf(deferredJobToasts, 0);
+    assert.lengthOf(summaries, 0);
+    assert.lengthOf(
+      toasts,
+      0,
+      "buffered settle should suppress fallback lifecycle toast before registration",
+    );
+
+    const registered = registerDeferredWorkflowCompletion({
+      runId: "run-1",
+      win: {} as _ZoteroTypes.MainWindow,
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      totalJobs: 1,
+      skipped: 0,
+      succeeded: 0,
+      failed: 0,
+      failureReasons: [],
+      pendingJobs: [
+        {
+          index: 0,
+          taskLabel: "paper.md",
+          succeeded: true,
+          terminalState: "succeeded",
+          jobId: "job-race-summary",
+          requestId: "req-race-summary",
+        },
+      ],
+      messageFormatter: {
+        summary: () => "",
+        failureReasonsTitle: "Failure reasons:",
+        overflow: () => "",
+        unknownError: "unknown error",
+        startToast: () => "",
+        waitingToast: () => "",
+        jobToastSuccess: () => "",
+        jobToastFailed: () => "",
+        jobToastCanceled: () => "",
+      } as any,
+    });
+
+    assert.isTrue(registered);
+    assert.include(trackerStages, "deferred-outcome-replayed-after-register");
+    assert.include(trackerStages, "deferred-run-summary-emitted");
+    assert.lengthOf(deferredJobToasts, 1);
+    assert.lengthOf(deferredJobToasts[0].outcomes, 1);
+    assert.equal(deferredJobToasts[0].outcomes[0].requestId, "req-race-summary");
+    assert.deepEqual(summaries, [
+      {
+        succeeded: 1,
+        failed: 0,
+        skipped: 0,
+      },
+    ]);
+    assert.lengthOf(toasts, 0);
+  });
+
+  it("prompts post-register reconcile only for the requested auto run and preserves its target parent", async function () {
+    const trackerStages: string[] = [];
+    const summaries: Array<{ succeeded: number; failed: number; skipped: number }> = [];
+    setDeferredWorkflowCompletionTrackerDepsForTests({
+      emitWorkflowJobToasts: () => undefined,
+      emitWorkflowFinishSummary: (payload) => {
+        summaries.push({
+          succeeded: payload.succeeded,
+          failed: payload.failed,
+          skipped: payload.skipped,
+        });
+      },
+      appendRuntimeLog: (entry) => {
+        trackerStages.push(String(entry.stage || ""));
+      },
+    });
+
+    const firstParent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Prompt Reconcile Parent First" },
+    });
+    const secondParent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Prompt Reconcile Parent Second" },
+    });
+
+    let firstRequestPolls = 0;
+    let secondRequestPolls = 0;
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-prompt-first")) {
+        firstRequestPolls += 1;
+        return createJsonResponse({
+          request_id: "req-prompt-first",
+          status: "running",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-prompt-second")) {
+        secondRequestPolls += 1;
+        return createJsonResponse({
+          request_id: "req-prompt-second",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-prompt-second/result")) {
+        return createJsonResponse({
+          note_path: "",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: firstParent.id,
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-prompt-first",
+        requestId: "req-prompt-first",
+        runId: "run-prompt-first",
+        state: "running",
+        fetchType: "result",
+        targetParentID: firstParent.id,
+      }),
+    });
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: secondParent.id,
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-prompt-second",
+        requestId: "req-prompt-second",
+        runId: "run-prompt-second",
+        state: "running",
+        fetchType: "result",
+        targetParentID: secondParent.id,
+      }),
+    });
+
+    const registered = registerDeferredWorkflowCompletion({
+      runId: "run-prompt-second",
+      win: {} as _ZoteroTypes.MainWindow,
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      totalJobs: 1,
+      skipped: 0,
+      succeeded: 0,
+      failed: 0,
+      failureReasons: [],
+      pendingJobs: [
+        {
+          index: 0,
+          taskLabel: "paper.md",
+          succeeded: true,
+          terminalState: "succeeded",
+          jobId: "job-prompt-second",
+          requestId: "req-prompt-second",
+        },
+      ],
+      messageFormatter: {
+        summary: () => "",
+        failureReasonsTitle: "Failure reasons:",
+        overflow: () => "",
+        unknownError: "unknown error",
+        startToast: () => "",
+        waitingToast: () => "",
+        jobToastSuccess: () => "",
+        jobToastFailed: () => "",
+        jobToastCanceled: () => "",
+      } as any,
+    });
+
+    assert.isTrue(registered);
+    await reconciler.promptReconcileRequests({
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
+      requestIds: ["req-prompt-second"],
+      source: "post-register",
+    });
+
+    assert.equal(firstRequestPolls, 0);
+    assert.isAtLeast(secondRequestPolls, 1);
+    assert.include(trackerStages, "deferred-run-summary-emitted");
+    assert.deepEqual(summaries, [
+      {
+        succeeded: 1,
+        failed: 0,
+        skipped: 0,
+      },
+    ]);
+
+    const secondApplyLog = listRuntimeLogs({
+      requestId: "req-prompt-second",
+      operation: "reconcile-owned-terminal-apply",
+      order: "asc",
+    })[0] as { details?: Record<string, unknown> } | undefined;
+    assert.isOk(secondApplyLog);
+    assert.equal(Number(secondApplyLog?.details?.targetParentID || 0), secondParent.id);
+    assert.equal(String(secondApplyLog?.details?.source || ""), "post-register");
+
+    const firstApplyLogs = listRuntimeLogs({
+      requestId: "req-prompt-first",
+      operation: "reconcile-owned-terminal-apply",
+      order: "asc",
+    });
+    assert.lengthOf(firstApplyLogs, 0);
+  });
+
+  it("falls back to interval retry after post-register apply failure without duplicating deferred summary", async function () {
+    const trackerStages: string[] = [];
+    const summaries: Array<{ succeeded: number; failed: number; skipped: number }> = [];
+    setDeferredWorkflowCompletionTrackerDepsForTests({
+      emitWorkflowJobToasts: () => undefined,
+      emitWorkflowFinishSummary: (payload) => {
+        summaries.push({
+          succeeded: payload.succeeded,
+          failed: payload.failed,
+          skipped: payload.skipped,
+        });
+      },
+      appendRuntimeLog: (entry) => {
+        trackerStages.push(String(entry.stage || ""));
+      },
+    });
+
+    let resultFetchCount = 0;
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-post-register-retry")) {
+        return createJsonResponse({
+          request_id: "req-post-register-retry",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-post-register-retry/result")) {
+        resultFetchCount += 1;
+        if (resultFetchCount === 1) {
+          return createJsonResponse({ detail: "transient apply failure" }, 500);
+        }
+        return createJsonResponse({
+          note_path: "",
+        });
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Prompt Retry Parent" },
+    });
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: parent.id,
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-post-register-retry",
+        requestId: "req-post-register-retry",
+        runId: "run-post-register-retry",
+        state: "running",
+        fetchType: "result",
+        targetParentID: parent.id,
+      }),
+    });
+
+    const registered = registerDeferredWorkflowCompletion({
+      runId: "run-post-register-retry",
+      win: {} as _ZoteroTypes.MainWindow,
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      totalJobs: 1,
+      skipped: 0,
+      succeeded: 0,
+      failed: 0,
+      failureReasons: [],
+      pendingJobs: [
+        {
+          index: 0,
+          taskLabel: "paper.md",
+          succeeded: true,
+          terminalState: "succeeded",
+          jobId: "job-post-register-retry",
+          requestId: "req-post-register-retry",
+        },
+      ],
+      messageFormatter: {
+        summary: () => "",
+        failureReasonsTitle: "Failure reasons:",
+        overflow: () => "",
+        unknownError: "unknown error",
+        startToast: () => "",
+        waitingToast: () => "",
+        jobToastSuccess: () => "",
+        jobToastFailed: () => "",
+        jobToastCanceled: () => "",
+      } as any,
+    });
+
+    assert.isTrue(registered);
+    await reconciler.promptReconcileRequests({
+      backendId: TEST_SKILLRUNNER_BACKEND_ID,
+      requestIds: ["req-post-register-retry"],
+      source: "post-register",
+    });
+
+    assert.equal(resultFetchCount, 1);
+    assert.notInclude(trackerStages, "deferred-run-summary-emitted");
+    forceApplyRetryDueNow(reconciler);
+    await reconciler.reconcilePending();
+
+    assert.equal(resultFetchCount, 2);
+    assert.deepEqual(summaries, [
+      {
+        succeeded: 1,
+        failed: 0,
+        skipped: 0,
+      },
+    ]);
+    assert.lengthOf(
+      trackerStages.filter((stage) => stage === "deferred-run-summary-emitted"),
+      1,
+    );
+
+    const failedLog = listRuntimeLogs({
+      requestId: "req-post-register-retry",
+      operation: "deferred-apply-failed",
+      order: "asc",
+    })[0] as { details?: Record<string, unknown> } | undefined;
+    assert.isOk(failedLog);
+    assert.equal(String(failedLog?.details?.source || ""), "post-register");
+
+    const applyLog = listRuntimeLogs({
+      requestId: "req-post-register-retry",
+      operation: "reconcile-owned-terminal-apply",
+      order: "desc",
+    })[0] as { details?: Record<string, unknown> } | undefined;
+    assert.isOk(applyLog);
+    assert.equal(String(applyLog?.details?.source || ""), "interval");
   });
 
   it("emits failed toast when interactive task reaches terminal failed", async function () {
@@ -593,6 +1080,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: 123,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,
@@ -647,6 +1137,9 @@ describe("skillrunner task reconciler", function () {
       request: {
         kind: "skillrunner.job.v1",
         targetParentID: 123,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
       },
       backend: {
         id: TEST_SKILLRUNNER_BACKEND_ID,

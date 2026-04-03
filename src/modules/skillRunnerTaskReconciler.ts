@@ -120,6 +120,14 @@ type ReconcileContext = {
   updatedAt: string;
 };
 
+type ReconcileDispatchSource = "interval" | "post-register";
+
+type PendingPromptReconcile = {
+  backendId?: string;
+  requestId: string;
+  source: ReconcileDispatchSource;
+};
+
 const POLL_INTERVAL_MS = 1600;
 const BACKEND_RECONCILE_FAILURE_LOG_THROTTLE_MS = 60000;
 const APPLY_MAX_ATTEMPTS = 5;
@@ -682,6 +690,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function waitForMs(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
+}
+
 function contextToJobRecord(context: ReconcileContext): JobRecord {
   const resultPayload: Record<string, unknown> = {
     requestId: context.requestId,
@@ -948,6 +960,8 @@ export class SkillRunnerTaskReconciler {
   private readonly reportedViolationKeysByContext = new Map<string, Set<string>>();
 
   private readonly backendReconcileFailureLogUntilByBackend = new Map<string, number>();
+
+  private readonly pendingPromptReconciles = new Map<string, PendingPromptReconcile>();
 
   private timer: ReturnType<typeof setInterval> | undefined;
 
@@ -1607,6 +1621,7 @@ export class SkillRunnerTaskReconciler {
   private async applyTerminalSuccessContext(
     context: ReconcileContext,
     client: SkillRunnerClient,
+    source: ReconcileDispatchSource,
   ) {
     const workflow = await resolveWorkflow(context.workflowId);
     if (!workflow) {
@@ -1662,6 +1677,8 @@ export class SkillRunnerTaskReconciler {
         message: "reconciler executed terminal applyResult for recoverable request",
         details: {
           executionMode: context.executionMode,
+          source,
+          targetParentID,
         },
       });
       appendRuntimeLog({
@@ -1679,6 +1696,10 @@ export class SkillRunnerTaskReconciler {
         phase: "terminal",
         stage: "deferred-apply-succeeded",
         message: "deferred applyResult succeeded",
+        details: {
+          source,
+          targetParentID,
+        },
       });
     } finally {
       if (bundlePath) {
@@ -1687,7 +1708,10 @@ export class SkillRunnerTaskReconciler {
     }
   }
 
-  private async reconcileOneContext(context: ReconcileContext) {
+  private async reconcileOneContext(
+    context: ReconcileContext,
+    source: ReconcileDispatchSource,
+  ) {
     const client = new SkillRunnerClient({
       baseUrl: context.backendBaseUrl,
     });
@@ -1768,6 +1792,7 @@ export class SkillRunnerTaskReconciler {
         kind: "terminal",
         status: nextState,
       });
+      const shouldDeferWorkflowCompletion = context.executionMode === "auto";
       if (nextState === "succeeded") {
         if (context.nextApplyRetryAt) {
           const retryTs = Date.parse(context.nextApplyRetryAt);
@@ -1777,7 +1802,7 @@ export class SkillRunnerTaskReconciler {
           }
         }
         try {
-          await this.applyTerminalSuccessContext(context, client);
+          await this.applyTerminalSuccessContext(context, client, source);
           context.applyAttempt = 0;
           context.nextApplyRetryAt = undefined;
           context.lastApplyError = undefined;
@@ -1785,13 +1810,17 @@ export class SkillRunnerTaskReconciler {
             kind: "apply-succeeded",
             status: nextState,
           });
-          const deferredCompletion = settleDeferredWorkflowCompletion({
-            runId: context.runId,
-            requestId: context.requestId,
-            succeeded: true,
-            terminalState: "succeeded",
-          });
-          if (!deferredCompletion.handled) {
+          if (shouldDeferWorkflowCompletion) {
+            const deferredCompletion = settleDeferredWorkflowCompletion({
+              runId: context.runId,
+              requestId: context.requestId,
+              succeeded: true,
+              terminalState: "succeeded",
+            });
+            if (!deferredCompletion.handled) {
+              this.showTerminalToast(context, "succeeded");
+            }
+          } else {
             this.showTerminalToast(context, "succeeded");
           }
         } catch (error) {
@@ -1825,6 +1854,8 @@ export class SkillRunnerTaskReconciler {
               attempt: context.applyAttempt,
               maxAttempt: context.applyMaxAttempt,
               nextRetryAt: context.nextApplyRetryAt,
+              source,
+              targetParentID: context.targetParentID,
             },
           });
           if (context.applyAttempt >= context.applyMaxAttempt) {
@@ -1851,6 +1882,8 @@ export class SkillRunnerTaskReconciler {
               details: {
                 attempt: context.applyAttempt,
                 maxAttempt: context.applyMaxAttempt,
+                source,
+                targetParentID: context.targetParentID,
               },
             });
             this.contexts.delete(context.id);
@@ -1859,18 +1892,20 @@ export class SkillRunnerTaskReconciler {
               backendId: context.backendId,
               requestId: context.requestId,
             });
-            settleDeferredWorkflowCompletion({
-              runId: context.runId,
-              requestId: context.requestId,
-              succeeded: false,
-              terminalState: "failed",
-              reason:
-                context.lastApplyError ||
-                localizeWorkflowText(
-                  "workflow-execute-unknown-error",
-                  "unknown error",
-                ),
-            });
+            if (shouldDeferWorkflowCompletion) {
+              settleDeferredWorkflowCompletion({
+                runId: context.runId,
+                requestId: context.requestId,
+                succeeded: false,
+                terminalState: "failed",
+                reason:
+                  context.lastApplyError ||
+                  localizeWorkflowText(
+                    "workflow-execute-unknown-error",
+                    "unknown error",
+                  ),
+              });
+            }
             writePersistedContexts(Array.from(this.contexts.values()));
             return;
           }
@@ -1878,21 +1913,25 @@ export class SkillRunnerTaskReconciler {
           return;
         }
       } else if (nextState === "failed" || nextState === "canceled") {
-        const deferredCompletion = settleDeferredWorkflowCompletion({
-          runId: context.runId,
-          requestId: context.requestId,
-          succeeded: false,
-          terminalState: nextState,
-          reason:
-            nextState === "failed"
-              ? context.error ||
-                localizeWorkflowText(
-                  "workflow-execute-unknown-error",
-                  "unknown error",
-                )
-              : "canceled",
-        });
-        if (!deferredCompletion.handled) {
+        if (shouldDeferWorkflowCompletion) {
+          const deferredCompletion = settleDeferredWorkflowCompletion({
+            runId: context.runId,
+            requestId: context.requestId,
+            succeeded: false,
+            terminalState: nextState,
+            reason:
+              nextState === "failed"
+                ? context.error ||
+                  localizeWorkflowText(
+                    "workflow-execute-unknown-error",
+                    "unknown error",
+                  )
+                : "canceled",
+          });
+          if (!deferredCompletion.handled) {
+            this.showTerminalToast(context, nextState);
+          }
+        } else {
           this.showTerminalToast(context, nextState);
         }
       }
@@ -1937,9 +1976,206 @@ export class SkillRunnerTaskReconciler {
             (health?.nextProbeAt || 0) > 0
               ? new Date(health?.nextProbeAt || 0).toISOString()
               : undefined,
+          source,
+          targetParentID: context.targetParentID,
         },
       });
     }
+  }
+
+  private async reconcileTrackedContexts(
+    entries: ReconcileContext[],
+    source: ReconcileDispatchSource,
+  ) {
+    for (const context of entries) {
+      if (source === "post-register") {
+        await this.refreshContextBackendHealthForPrompt(context);
+      }
+      if (isSkillRunnerBackendReconcileFlagged(context.backendId)) {
+        if (source === "post-register") {
+          appendRuntimeLog({
+            level: "info",
+            scope: "job",
+            workflowId: context.workflowId,
+            backendId: context.backendId,
+            backendType: context.backendType,
+            providerId: context.providerId,
+            runId: context.runId,
+            jobId: context.jobId,
+            requestId: context.requestId,
+            component: "skillrunner-reconciler",
+            operation: "post-register-reconcile-skipped",
+            phase: "reconcile",
+            stage: "post-register-reconcile-skipped",
+            message: "post-register reconcile skipped because backend is reconcile-gated",
+            details: {
+              reason: "backend-flagged",
+            },
+          });
+        }
+        stopSessionSync({
+          backendId: context.backendId,
+          requestId: context.requestId,
+        });
+        continue;
+      }
+      if (!getSkillRunnerBackendHealthState(context.backendId)) {
+        if (source === "post-register") {
+          appendRuntimeLog({
+            level: "info",
+            scope: "job",
+            workflowId: context.workflowId,
+            backendId: context.backendId,
+            backendType: context.backendType,
+            providerId: context.providerId,
+            runId: context.runId,
+            jobId: context.jobId,
+            requestId: context.requestId,
+            component: "skillrunner-reconciler",
+            operation: "post-register-reconcile-skipped",
+            phase: "reconcile",
+            stage: "post-register-reconcile-skipped",
+            message: "post-register reconcile skipped because backend health is unavailable",
+            details: {
+              reason: "missing-health-state",
+            },
+          });
+        }
+        stopSessionSync({
+          backendId: context.backendId,
+          requestId: context.requestId,
+        });
+        continue;
+      }
+      this.ensureRunningSessionSync(context);
+      await this.reconcileOneContext(context, source);
+    }
+  }
+
+  private async refreshContextBackendHealthForPrompt(context: ReconcileContext) {
+    if (
+      getSkillRunnerBackendHealthState(context.backendId) &&
+      !isSkillRunnerBackendReconcileFlagged(context.backendId)
+    ) {
+      return;
+    }
+    try {
+      const client = buildSkillRunnerManagementClient({
+        backend: {
+          id: context.backendId,
+          type: context.backendType,
+          baseUrl: context.backendBaseUrl,
+          auth: { kind: "none" },
+        } as BackendInstance,
+        localize: (_key: string, fallback: string) => fallback,
+      });
+      await client.probeReachability();
+      markSkillRunnerBackendHealthSuccess(context.backendId);
+      this.backendReconcileFailureLogUntilByBackend.delete(context.backendId);
+    } catch (error) {
+      markSkillRunnerBackendHealthFailure({
+        backendId: context.backendId,
+        error,
+      });
+    }
+  }
+
+  private enqueuePromptReconcileRequests(args: {
+    backendId?: string;
+    requestIds: string[];
+    source: ReconcileDispatchSource;
+  }) {
+    for (const requestId of args.requestIds) {
+      const key = `${args.backendId || "*"}:${requestId}`;
+      this.pendingPromptReconciles.set(key, {
+        backendId: args.backendId,
+        requestId,
+        source: args.source,
+      });
+    }
+  }
+
+  private async flushPromptReconcileQueue() {
+    if (this.isReconciling || this.pendingPromptReconciles.size === 0) {
+      return;
+    }
+    const pending = Array.from(this.pendingPromptReconciles.values());
+    this.pendingPromptReconciles.clear();
+    this.isReconciling = true;
+    try {
+      await this.refreshTrackedBackendHealth();
+      const contexts = pending
+        .map((entry) => {
+          if (entry.backendId) {
+            return this.contexts.get(`${entry.backendId}:${entry.requestId}`);
+          }
+          return Array.from(this.contexts.values()).find(
+            (context) => normalizeString(context.requestId) === entry.requestId,
+          );
+        })
+        .filter((entry): entry is ReconcileContext => !!entry);
+      if (contexts.length === 0) {
+        appendRuntimeLog({
+          level: "warn",
+          scope: "workflow-trigger",
+          component: "skillrunner-reconciler",
+          operation: "post-register-reconcile-context-missing",
+          phase: "reconcile",
+          stage: "post-register-reconcile-context-missing",
+          message: "post-register reconcile could not find any recoverable contexts",
+          details: {
+            requestIds: pending.map((entry) => entry.requestId),
+            backendIds: pending.map((entry) => entry.backendId || ""),
+          },
+        });
+      }
+      await this.reconcileTrackedContexts(contexts, "post-register");
+    } finally {
+      this.isReconciling = false;
+      if (this.pendingPromptReconciles.size > 0) {
+        void this.flushPromptReconcileQueue();
+      }
+    }
+  }
+
+  async promptReconcileRequests(args: {
+    backendId?: string;
+    requestIds: string[];
+    source?: ReconcileDispatchSource;
+  }) {
+    const backendId = normalizeString(args.backendId) || undefined;
+    const requestIds = Array.isArray(args.requestIds)
+      ? args.requestIds.map((entry) => normalizeString(entry)).filter(Boolean)
+      : [];
+    if (requestIds.length === 0) {
+      return;
+    }
+    const source = args.source || "post-register";
+    appendRuntimeLog({
+      level: "info",
+      scope: "workflow-trigger",
+      backendId,
+      backendType: "skillrunner",
+      providerId: "skillrunner",
+      component: "skillrunner-reconciler",
+      operation: "post-register-reconcile-requested",
+      phase: "reconcile",
+      stage: "post-register-reconcile-requested",
+      message: "post-register reconcile requested",
+      details: {
+        requestIds,
+        backendId,
+      },
+    });
+    this.enqueuePromptReconcileRequests({
+      backendId,
+      requestIds,
+      source,
+    });
+    while (this.isReconciling) {
+      await waitForMs(10);
+    }
+    await this.flushPromptReconcileQueue();
   }
 
   async reconcilePending() {
@@ -1950,27 +2186,13 @@ export class SkillRunnerTaskReconciler {
     try {
       await this.refreshTrackedBackendHealth();
       const entries = Array.from(this.contexts.values());
-      for (const context of entries) {
-      if (isSkillRunnerBackendReconcileFlagged(context.backendId)) {
-        stopSessionSync({
-          backendId: context.backendId,
-          requestId: context.requestId,
-        });
-        continue;
-      }
-      if (!getSkillRunnerBackendHealthState(context.backendId)) {
-        stopSessionSync({
-          backendId: context.backendId,
-          requestId: context.requestId,
-        });
-        continue;
-      }
-      this.ensureRunningSessionSync(context);
-      await this.reconcileOneContext(context);
-      }
+      await this.reconcileTrackedContexts(entries, "interval");
       await this.reconcileMissingContextRunningTasks();
     } finally {
       this.isReconciling = false;
+      if (this.pendingPromptReconciles.size > 0) {
+        void this.flushPromptReconcileQueue();
+      }
     }
   }
 }
@@ -1996,6 +2218,14 @@ export function ensureSkillRunnerRecoverableContext(args: {
   job: JobRecord;
 }) {
   defaultReconciler.registerFromJob(args);
+}
+
+export async function promptSkillRunnerTaskReconcileRequests(args: {
+  backendId?: string;
+  requestIds: string[];
+  source?: ReconcileDispatchSource;
+}) {
+  await defaultReconciler.promptReconcileRequests(args);
 }
 
 export function registerSkillRunnerDeferredTask(args: {

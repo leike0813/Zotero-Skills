@@ -3,10 +3,29 @@ import { getBaseName } from "../utils/path";
 import { createHookHelpers } from "./helpers";
 import { compileDeclarativeRequest } from "./declarativeRequestCompiler";
 import {
+  resolveRuntimeAddon,
+  resolveRuntimeHostCapabilities,
+  resolveRuntimeZotero,
+} from "../utils/runtimeBridge";
+import {
   PASS_THROUGH_BACKEND_TYPE,
   PASS_THROUGH_REQUEST_KIND,
 } from "../config/defaults";
+import { isDebugModeEnabled } from "../modules/debugMode";
+import {
+  emitWorkflowPackageDiagnostic,
+  summarizeWorkflowRuntimeCapabilities,
+} from "../modules/workflowPackageDiagnostics";
+import {
+  createWorkflowHostApi,
+  summarizeWorkflowHostApiCapabilities,
+  WORKFLOW_HOST_API_VERSION,
+} from "./hostApi";
 import { assertRequestPayloadContract } from "../providers/requestContracts";
+import {
+  attachWorkflowHookFailureMeta,
+  summarizeWorkflowExecutionError,
+} from "./errorMeta";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -73,6 +92,9 @@ type NoValidInputUnitsError = Error & {
   totalUnits: number;
   skippedUnits: number;
 };
+
+const GLOBAL_WORKFLOW_EXECUTION_RUNTIME_KEY =
+  "__zsCurrentWorkflowExecutionRuntime";
 
 function createNoValidInputUnitsError(args: {
   workflowId: string;
@@ -232,12 +254,254 @@ function enrichRequestWithSelectionMeta(
 function createRuntimeContext(
   override?: Partial<WorkflowRuntimeContext>,
 ): WorkflowRuntimeContext {
-  const zotero = override?.zotero || Zotero;
+  const hostCapabilities = resolveRuntimeHostCapabilities();
+  const zotero =
+    override?.zotero ||
+    resolveRuntimeZotero() ||
+    (typeof Zotero !== "undefined" ? Zotero : undefined);
+  if (!zotero) {
+    throw new Error("Zotero runtime is unavailable");
+  }
   return {
     handlers: override?.handlers || handlers,
     zotero,
     helpers: override?.helpers || createHookHelpers(zotero),
+    hostApi: override?.hostApi || createWorkflowHostApi(),
+    hostApiVersion:
+      typeof override?.hostApiVersion === "number"
+        ? override.hostApiVersion
+        : WORKFLOW_HOST_API_VERSION,
+    addon:
+      typeof override?.addon !== "undefined"
+        ? (override.addon ?? null)
+        : ((resolveRuntimeAddon() as unknown as typeof addon | undefined) ?? null),
+    debugMode:
+      typeof override?.debugMode === "boolean"
+        ? override.debugMode
+        : isDebugModeEnabled(),
+    workflowId: String(override?.workflowId || "").trim() || undefined,
+    packageId: String(override?.packageId || "").trim() || undefined,
+    workflowSourceKind:
+      override?.workflowSourceKind === "builtin" ||
+      override?.workflowSourceKind === "user"
+        ? override.workflowSourceKind
+        : "",
+    hookName:
+      override?.hookName === "filterInputs" ||
+      override?.hookName === "buildRequest" ||
+      override?.hookName === "applyResult"
+        ? override.hookName
+        : "",
+    fetch:
+      typeof override?.fetch !== "undefined"
+        ? (override.fetch ?? null)
+        : (hostCapabilities.fetch ?? null),
+    Buffer:
+      typeof override?.Buffer !== "undefined"
+        ? (override.Buffer ?? null)
+        : (hostCapabilities.Buffer ?? null),
+    btoa:
+      typeof override?.btoa !== "undefined"
+        ? (override.btoa ?? null)
+        : (hostCapabilities.btoa ?? null),
+    atob:
+      typeof override?.atob !== "undefined"
+        ? (override.atob ?? null)
+        : (hostCapabilities.atob ?? null),
+    TextEncoder:
+      typeof override?.TextEncoder !== "undefined"
+        ? (override.TextEncoder ?? null)
+        : (hostCapabilities.TextEncoder ?? null),
+    TextDecoder:
+      typeof override?.TextDecoder !== "undefined"
+        ? (override.TextDecoder ?? null)
+        : (hostCapabilities.TextDecoder ?? null),
+    FileReader:
+      typeof override?.FileReader !== "undefined"
+        ? (override.FileReader ?? null)
+        : (hostCapabilities.FileReader ?? null),
+    navigator:
+      typeof override?.navigator !== "undefined"
+        ? (override.navigator ?? null)
+        : (hostCapabilities.navigator ?? null),
   };
+}
+
+async function withWorkflowExecutionRuntimeScope<T>(
+  runtime: WorkflowRuntimeContext,
+  work: () => Promise<T> | T,
+): Promise<T> {
+  const host = globalThis as Record<string, unknown>;
+  const previous = host[GLOBAL_WORKFLOW_EXECUTION_RUNTIME_KEY];
+  host[GLOBAL_WORKFLOW_EXECUTION_RUNTIME_KEY] = {
+    runtime,
+    zotero: runtime.zotero,
+    handlers: runtime.handlers,
+    helpers: runtime.helpers,
+    addon: runtime.addon ?? null,
+    debugMode: runtime.debugMode === true,
+    workflowId: runtime.workflowId || "",
+    packageId: runtime.packageId || "",
+    workflowSourceKind: runtime.workflowSourceKind || "",
+    hookName: runtime.hookName || "",
+    fetch: runtime.fetch ?? null,
+    Buffer: runtime.Buffer ?? null,
+    btoa: runtime.btoa ?? null,
+    atob: runtime.atob ?? null,
+    TextEncoder: runtime.TextEncoder ?? null,
+    TextDecoder: runtime.TextDecoder ?? null,
+    FileReader: runtime.FileReader ?? null,
+    navigator: runtime.navigator ?? null,
+  };
+  try {
+    return await work();
+  } finally {
+    if (typeof previous === "undefined") {
+      delete host[GLOBAL_WORKFLOW_EXECUTION_RUNTIME_KEY];
+    } else {
+      host[GLOBAL_WORKFLOW_EXECUTION_RUNTIME_KEY] = previous;
+    }
+  }
+}
+
+function createHookRuntimeContext(args: {
+  runtime: WorkflowRuntimeContext;
+  workflow: LoadedWorkflow;
+  hookName: "filterInputs" | "buildRequest" | "applyResult";
+}) {
+  const isPackageHostApiWorkflow =
+    args.workflow.hookExecutionMode === "precompiled-host-hook";
+  return {
+    ...args.runtime,
+    zotero: isPackageHostApiWorkflow
+      ? (undefined as unknown as typeof Zotero)
+      : args.runtime.zotero,
+    addon: isPackageHostApiWorkflow ? null : args.runtime.addon,
+    debugMode: args.runtime.debugMode === true,
+    workflowId: args.workflow.manifest.id,
+    packageId: args.workflow.packageId || "",
+    workflowSourceKind: args.workflow.workflowSourceKind || "",
+    hookName: args.hookName,
+  } satisfies WorkflowRuntimeContext;
+}
+
+function resolveHookCapabilitySource(workflow: LoadedWorkflow) {
+  if (workflow.hookExecutionMode === "precompiled-host-hook") {
+    return "host-api-facade";
+  }
+  if (workflow.hookExecutionMode === "legacy-text-loader") {
+    return "legacy-hook-runtime";
+  }
+  return "node-native-module";
+}
+
+async function runWorkflowHookWithDiagnostics<T>(args: {
+  workflow: LoadedWorkflow;
+  runtime: WorkflowRuntimeContext;
+  hookName: "filterInputs" | "buildRequest" | "applyResult";
+  component: string;
+  operation: string;
+  work: (hookRuntime: WorkflowRuntimeContext) => Promise<T> | T;
+}) {
+  const hookRuntime = createHookRuntimeContext({
+    runtime: args.runtime,
+    workflow: args.workflow,
+    hookName: args.hookName,
+  });
+  const capabilitySource = resolveHookCapabilitySource(args.workflow);
+  const hostApiSummary = summarizeWorkflowHostApiCapabilities(hookRuntime.hostApi);
+  const contract =
+    args.workflow.hookExecutionMode === "precompiled-host-hook"
+      ? "package-host-api-facade"
+      : "legacy-runtime-context";
+  emitWorkflowPackageDiagnostic({
+    level: "debug",
+    scope: "hook",
+    workflowId: hookRuntime.workflowId,
+    packageId: hookRuntime.packageId,
+    workflowSourceKind: hookRuntime.workflowSourceKind,
+    hook: hookRuntime.hookName,
+    component: args.component,
+    operation: args.operation,
+    stage: "workflow-hook-execute-start",
+    message: `workflow hook ${args.hookName} execution started`,
+    runtimeCapabilitySummary: summarizeWorkflowRuntimeCapabilities(hookRuntime),
+    details: {
+      executionMode: args.workflow.hookExecutionMode || "node-native-module",
+      contract,
+      capabilitySource,
+      hostApiVersion: hookRuntime.hostApiVersion,
+      hostApiSummary,
+    },
+    runtime: hookRuntime,
+  });
+  try {
+    const result = await withWorkflowExecutionRuntimeScope(hookRuntime, () =>
+      args.work(hookRuntime),
+    );
+    emitWorkflowPackageDiagnostic({
+      level: "debug",
+      scope: "hook",
+      workflowId: hookRuntime.workflowId,
+      packageId: hookRuntime.packageId,
+      workflowSourceKind: hookRuntime.workflowSourceKind,
+      hook: hookRuntime.hookName,
+      component: args.component,
+      operation: args.operation,
+      stage: "workflow-hook-execute-succeeded",
+      message: `workflow hook ${args.hookName} execution succeeded`,
+      runtimeCapabilitySummary: summarizeWorkflowRuntimeCapabilities(hookRuntime),
+      details: {
+        executionMode: args.workflow.hookExecutionMode || "node-native-module",
+        contract,
+        capabilitySource,
+        hostApiVersion: hookRuntime.hostApiVersion,
+        hostApiSummary,
+      },
+      runtime: hookRuntime,
+    });
+    return result;
+  } catch (error) {
+    attachWorkflowHookFailureMeta(error, {
+      hookName: hookRuntime.hookName || undefined,
+      workflowId: hookRuntime.workflowId || undefined,
+      packageId: hookRuntime.packageId || undefined,
+      workflowSourceKind: hookRuntime.workflowSourceKind || "",
+      capabilitySource,
+      executionMode: args.workflow.hookExecutionMode || "node-native-module",
+    });
+    const normalizedError = summarizeWorkflowExecutionError(error);
+    emitWorkflowPackageDiagnostic({
+      level: "error",
+      scope: "hook",
+      workflowId: hookRuntime.workflowId,
+      packageId: hookRuntime.packageId,
+      workflowSourceKind: hookRuntime.workflowSourceKind,
+      hook: hookRuntime.hookName,
+      component: args.component,
+      operation: args.operation,
+      stage: "workflow-hook-execute-failed",
+      message: `workflow hook ${args.hookName} execution failed`,
+      runtimeCapabilitySummary: summarizeWorkflowRuntimeCapabilities(hookRuntime),
+      details: {
+        errorMessage: normalizedError.message,
+        errorStack: normalizedError.stack,
+        hookName: normalizedError.hookName,
+        packageId: normalizedError.packageId,
+        capabilitySource: normalizedError.capabilitySource,
+        executionMode:
+          normalizedError.executionMode ||
+          args.workflow.hookExecutionMode ||
+          "node-native-module",
+        contract,
+        hostApiVersion: hookRuntime.hostApiVersion,
+        hostApiSummary,
+      },
+      error,
+      runtime: hookRuntime,
+    });
+    throw error;
+  }
 }
 
 function copySelection(selectionContext: unknown): SelectionLike {
@@ -514,10 +778,18 @@ async function resolveAttachmentSelectionUnits(args: {
   const totalUnitsBeforeHook = split.valid.length + split.ambiguousParents.size;
 
   if (args.workflow.hooks.filterInputs) {
-    const fromHook = (await args.workflow.hooks.filterInputs({
-      selectionContext: declarativeFiltered,
-      manifest: args.workflow.manifest,
+    const fromHook = (await runWorkflowHookWithDiagnostics({
+      workflow: args.workflow,
       runtime: args.runtime,
+      hookName: "filterInputs",
+      component: "workflow-runtime",
+      operation: "filter-inputs",
+      work: (hookRuntime) =>
+        args.workflow.hooks.filterInputs!({
+          selectionContext: declarativeFiltered,
+          manifest: args.workflow.manifest,
+          runtime: hookRuntime,
+        }),
     })) as SelectionLike;
 
     const hookSelection = copySelection(fromHook);
@@ -559,10 +831,18 @@ async function resolveSelectionContexts(args: {
     );
     let scopedSelection = copySelection(args.selectionContext);
     if (args.workflow.hooks.filterInputs) {
-      const filtered = await args.workflow.hooks.filterInputs({
-        selectionContext: scopedSelection,
-        manifest: args.workflow.manifest,
+      const filtered = await runWorkflowHookWithDiagnostics({
+        workflow: args.workflow,
         runtime: args.runtime,
+        hookName: "filterInputs",
+        component: "workflow-runtime",
+        operation: "filter-inputs",
+        work: (hookRuntime) =>
+          args.workflow.hooks.filterInputs!({
+            selectionContext: scopedSelection,
+            manifest: args.workflow.manifest,
+            runtime: hookRuntime,
+          }),
       });
       scopedSelection = copySelection(filtered);
     }
@@ -640,11 +920,19 @@ export async function executeBuildRequests(args: {
 
     if (args.workflow.hooks.buildRequest) {
       const builtRequest = enrichRequestWithSelectionMeta(
-        await args.workflow.hooks.buildRequest({
-          selectionContext,
-          manifest: args.workflow.manifest,
-          executionOptions: args.executionOptions,
+        await runWorkflowHookWithDiagnostics({
+          workflow: args.workflow,
           runtime,
+          hookName: "buildRequest",
+          component: "workflow-runtime",
+          operation: "build-request",
+          work: (hookRuntime) =>
+            args.workflow.hooks.buildRequest!({
+              selectionContext,
+              manifest: args.workflow.manifest,
+              executionOptions: args.executionOptions,
+              runtime: hookRuntime,
+            }),
         }),
         selectionContext,
       );
@@ -720,12 +1008,20 @@ export async function executeApplyResult(args: {
   runtime?: Partial<WorkflowRuntimeContext>;
 }) {
   const runtime = createRuntimeContext(args.runtime);
-  return args.workflow.hooks.applyResult({
-    parent: args.parent,
-    bundleReader: args.bundleReader,
-    request: args.request,
-    runResult: args.runResult,
-    manifest: args.workflow.manifest,
+  return runWorkflowHookWithDiagnostics({
+    workflow: args.workflow,
     runtime,
+    hookName: "applyResult",
+    component: "workflow-runtime",
+    operation: "apply-result",
+    work: (hookRuntime) =>
+      args.workflow.hooks.applyResult({
+        parent: args.parent,
+        bundleReader: args.bundleReader,
+        request: args.request,
+        runResult: args.runResult,
+        manifest: args.workflow.manifest,
+        runtime: hookRuntime,
+      }),
   });
 }

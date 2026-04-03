@@ -7,6 +7,7 @@ import {
 } from "../workflowExecuteMessage";
 import { resolveWorkflowExecutionContext } from "../workflowSettings";
 import { executeBuildRequests } from "../../workflows/runtime";
+import { summarizeWorkflowExecutionError } from "../../workflows/errorMeta";
 import type { LoadedWorkflow } from "../../workflows/types";
 import type { WorkflowExecutionOptions } from "../workflowSettingsDomain";
 import type {
@@ -187,13 +188,21 @@ export async function runWorkflowPreparationSeam(args: {
       };
     }
     const reason = normalizeErrorMessage(error, args.messageFormatter);
+    const errorSummary = summarizeWorkflowExecutionError(error);
     resolved.appendRuntimeLog({
       level: "error",
       scope: "workflow-trigger",
       workflowId: args.workflow.manifest.id,
       stage: "build-requests-failed",
       message: "build requests failed",
-      details: { reason },
+      details: {
+        reason,
+        errorMessage: errorSummary.message,
+        errorStack: errorSummary.stack,
+        hookName: errorSummary.hookName,
+        packageId: errorSummary.packageId,
+        errorWorkflowId: errorSummary.workflowId,
+      },
       error,
     });
     resolved.alertWindow(

@@ -21,6 +21,10 @@ import {
 import { createLocalizedMessageFormatter } from "./workflowExecution/messageFormatter";
 import { shouldShowWorkflowNotifications } from "./workflowExecution/feedbackPolicy";
 import { registerDeferredWorkflowCompletion } from "./workflowExecution/deferredCompletionTracker";
+import {
+  ensureSkillRunnerRecoverableContext,
+  promptSkillRunnerTaskReconcileRequests,
+} from "./skillRunnerTaskReconciler";
 import { getLoadedWorkflowSourceById } from "./workflowRuntime";
 import { getString } from "../utils/locale";
 
@@ -188,7 +192,7 @@ export async function executeWorkflowFromCurrentSelection(args: {
   });
 
   if (applySummary.reconcileOwnedPendingJobs.length > 0) {
-    registerDeferredWorkflowCompletion({
+    const registered = registerDeferredWorkflowCompletion({
       runId: runState.runId,
       win: args.win,
       workflowId: args.workflow.manifest.id,
@@ -201,6 +205,45 @@ export async function executeWorkflowFromCurrentSelection(args: {
       pendingJobs: applySummary.reconcileOwnedPendingJobs,
       messageFormatter,
     });
+    if (registered) {
+      for (const pendingJob of applySummary.reconcileOwnedPendingJobs) {
+        const queueJob = runState.queue.getJob(pendingJob.jobId);
+        const request =
+          pendingJob.index >= 0 && pendingJob.index < runState.requests.length
+            ? runState.requests[pendingJob.index]
+            : undefined;
+        if (!queueJob || typeof request === "undefined") {
+          continue;
+        }
+        ensureSkillRunnerRecoverableContext({
+          workflowId: args.workflow.manifest.id,
+          workflowLabel: args.workflow.manifest.label,
+          requestKind: preparation.prepared.executionContext.requestKind,
+          request,
+          backend: preparation.prepared.executionContext.backend,
+          providerId: preparation.prepared.executionContext.providerId,
+          providerOptions: preparation.prepared.executionContext.providerOptions,
+          job: queueJob,
+        });
+      }
+      const promptBackendId =
+        applySummary.reconcileOwnedPendingJobs
+          .map((pendingJob) =>
+            String(
+              runState.queue.getJob(pendingJob.jobId)?.meta.backendId || "",
+            ).trim(),
+          )
+          .find(Boolean) ||
+        String(preparation.prepared.executionContext.backend.id || "").trim() ||
+        undefined;
+      await promptSkillRunnerTaskReconcileRequests({
+        backendId: promptBackendId,
+        requestIds: applySummary.reconcileOwnedPendingJobs
+          .map((job) => String(job.requestId || "").trim())
+          .filter(Boolean),
+        source: "post-register",
+      });
+    }
   }
 
   if (showWorkflowNotifications) {

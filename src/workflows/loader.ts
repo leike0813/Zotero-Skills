@@ -14,12 +14,32 @@ import {
   normalizeDirectoryEntries,
   normalizeManifestProvider,
   parseWorkflowManifestFromText,
+  parseWorkflowPackageManifestFromText,
   resolveBuildStrategy,
   sortLoaderDiagnostics,
   toDiagnosticFromUnknown,
   WorkflowLoaderDiagnosticError,
   type LoaderDiagnostic,
 } from "./loaderContracts";
+import {
+  emitWorkflowPackageDiagnostic,
+  summarizeWorkflowRuntimeCapabilities,
+} from "../modules/workflowPackageDiagnostics";
+import { bundlePackageHookScript } from "./packageHookBundler";
+import {
+  resolveRuntimeConsole,
+  resolveRuntimeHostCapabilities,
+} from "../utils/runtimeBridge";
+import {
+  createWorkflowHostApi,
+  summarizeWorkflowHostApiCapabilities,
+  WORKFLOW_HOST_API_VERSION,
+} from "./hostApi";
+import type {
+  WorkflowHookExecutionMode,
+} from "./types";
+
+type WorkflowModuleResourceKind = "builtin" | "user";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -165,7 +185,7 @@ async function importHooksModuleFromText(filePath: string) {
       `zotero-skills-hook-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.js`,
     );
     await runtime.IOUtils.writeUTF8(tempScriptPath, scriptText);
-    const scope: Record<string, unknown> = {};
+    const scope = createHostHookScope();
     try {
       const file = runtime.Zotero.File.pathToFile(tempScriptPath);
       const scriptUri = runtime.Services.io.newFileURI(file).spec;
@@ -190,61 +210,448 @@ async function importHooksModuleFromText(filePath: string) {
   return factory();
 }
 
-async function loadHooksModule(filePath: string): Promise<Record<string, unknown>> {
-  if (!isZoteroRuntime()) {
-    try {
-      const urlMod = await dynamicImport("url");
-      const moduleUrl = urlMod.pathToFileURL(filePath).href;
-      const loaded = (await dynamicImport(moduleUrl)) as Record<string, unknown>;
-      if (
-        typeof loaded.applyResult === "function" ||
-        typeof loaded.filterInputs === "function" ||
-        typeof loaded.buildRequest === "function"
-      ) {
-        return loaded;
-      }
-    } catch {
-      // fall back to text-based loader
-    }
-    return importHooksModuleFromText(filePath);
-  }
+function hasKnownHookExport(loaded: Record<string, unknown>) {
+  return (
+    typeof loaded.applyResult === "function" ||
+    typeof loaded.filterInputs === "function" ||
+    typeof loaded.buildRequest === "function" ||
+    typeof loaded.normalizeSettings === "function"
+  );
+}
 
+async function importHooksModuleFromNode(
+  filePath: string,
+  allowTextFallback: boolean,
+): Promise<Record<string, unknown>> {
   try {
-    const runtime = globalThis as unknown as {
-      Services?: { io?: { newFileURI?: (file: unknown) => { spec: string } } };
-      Zotero?: { File: { pathToFile: (path: string) => unknown } };
-      ChromeUtils?: { importESModule?: (spec: string) => Record<string, unknown> };
+    const urlMod = await dynamicImport("url");
+    const moduleUrl = urlMod.pathToFileURL(filePath).href;
+    const loaded = (await dynamicImport(moduleUrl)) as Record<string, unknown>;
+    if (allowTextFallback && !hasKnownHookExport(loaded)) {
+      return importHooksModuleFromText(filePath);
+    }
+    return loaded;
+  } catch (error) {
+    if (!allowTextFallback) {
+      throw error;
+    }
+  }
+  return importHooksModuleFromText(filePath);
+}
+
+function createHostHookScope() {
+  const hostCapabilities = resolveRuntimeHostCapabilities();
+  return {
+    __zsHostApi: createWorkflowHostApi(),
+    __zsHostApiVersion: WORKFLOW_HOST_API_VERSION,
+    fetch: hostCapabilities.fetch,
+    Buffer: hostCapabilities.Buffer,
+    btoa: hostCapabilities.btoa,
+    atob: hostCapabilities.atob,
+    TextEncoder: hostCapabilities.TextEncoder,
+    TextDecoder: hostCapabilities.TextDecoder,
+    FileReader: hostCapabilities.FileReader,
+    navigator: hostCapabilities.navigator,
+    console: resolveRuntimeConsole(),
+    IOUtils: (globalThis as Record<string, unknown>).IOUtils,
+  } as Record<string, unknown>;
+}
+
+function summarizeHostHookScope(scope: Record<string, unknown>) {
+  const runtimeCapabilitySummary = summarizeWorkflowRuntimeCapabilities({
+    zotero: false,
+    addon: false,
+    fetch: scope.fetch,
+    Buffer: scope.Buffer,
+    btoa: scope.btoa,
+    atob: scope.atob,
+    TextEncoder: scope.TextEncoder,
+    TextDecoder: scope.TextDecoder,
+    FileReader: scope.FileReader,
+    navigator: scope.navigator,
+  });
+  return {
+    runtimeCapabilitySummary,
+    hostApiSummary: summarizeWorkflowHostApiCapabilities(
+      scope.__zsHostApi as ReturnType<typeof createWorkflowHostApi>,
+    ),
+    hostApiVersion:
+      Number(scope.__zsHostApiVersion || 0) || WORKFLOW_HOST_API_VERSION,
+  };
+}
+
+async function importPrecompiledPackageHooksModule(
+  filePath: string,
+  args: {
+    packageRootDir: string;
+    exportName:
+      | "applyResult"
+      | "filterInputs"
+      | "buildRequest"
+      | "normalizeSettings";
+    workflowSourceKind?: WorkflowModuleResourceKind | "";
+  },
+) {
+  const initialScope = createHostHookScope();
+  const scopeSummary = summarizeHostHookScope(initialScope);
+  emitWorkflowPackageDiagnostic({
+    level: "debug",
+    scope: "system",
+    component: "workflow-loader",
+    operation: "precompile-package-hook",
+    workflowSourceKind: args.workflowSourceKind,
+    stage: "workflow-package-precompile-start",
+    message: "workflow package hook precompile started",
+    filePath,
+    details: {
+      packageRootDir: args.packageRootDir,
+      exportName: args.exportName,
+      executionMode: "precompiled-host-hook",
+      contract: "package-host-api-facade",
+      compiledHookSource: "scan-time-precompile",
+      ...scopeSummary,
+    },
+  });
+
+  const bundled = await bundlePackageHookScript({
+    entryFilePath: filePath,
+    packageRootDir: args.packageRootDir,
+    entryExportName: args.exportName,
+  });
+
+  const runtime = globalThis as unknown as {
+    IOUtils: {
+      writeUTF8: (path: string, data: string) => Promise<void>;
+      remove?: (path: string, options?: { ignoreAbsent?: boolean }) => Promise<void>;
     };
-    const services = runtime.Services as
-      | { io?: { newFileURI?: (file: unknown) => { spec: string } } }
-      | undefined;
-    const zoteroFile = runtime.Zotero?.File;
-    if (!zoteroFile) {
-      throw new Error("Zotero.File unavailable");
+    PathUtils: { tempDir: string };
+    Services: {
+      io: { newFileURI: (file: unknown) => { spec: string } };
+      scriptloader: {
+        loadSubScript: (url: string, obj?: Record<string, unknown>) => void;
+      };
+    };
+    Zotero: { File: { pathToFile: (path: string) => unknown } };
+  };
+
+  const tempScriptPath = joinPath(
+    runtime.PathUtils.tempDir,
+    `zotero-skills-package-hook-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}.js`,
+  );
+  await runtime.IOUtils.writeUTF8(tempScriptPath, bundled.scriptText);
+  const scope = createHostHookScope();
+  try {
+    const file = runtime.Zotero.File.pathToFile(tempScriptPath);
+    const scriptUri = runtime.Services.io.newFileURI(file).spec;
+    runtime.Services.scriptloader.loadSubScript(scriptUri, scope);
+    const loaded = scope.__zoteroSkillsHookExports;
+    if (!loaded || typeof loaded !== "object") {
+      throw new Error("No hook exports loaded from bundled package script");
     }
-    const file = zoteroFile.pathToFile(filePath);
-    const uri = services?.io?.newFileURI?.(file)?.spec;
-    const chromeUtils = runtime.ChromeUtils;
-    if (uri && chromeUtils?.importESModule) {
-      return chromeUtils.importESModule(uri);
+    emitWorkflowPackageDiagnostic({
+      level: "debug",
+      scope: "system",
+      component: "workflow-loader",
+      operation: "precompile-package-hook",
+      workflowSourceKind: args.workflowSourceKind,
+      stage: "workflow-package-precompile-succeeded",
+      message: "workflow package hook precompile succeeded",
+      filePath,
+      details: {
+        packageRootDir: args.packageRootDir,
+        exportName: args.exportName,
+        moduleCount: bundled.moduleCount,
+        cacheHit: bundled.cacheHit,
+        fingerprint: bundled.fingerprint,
+        executionMode: "precompiled-host-hook",
+        contract: "package-host-api-facade",
+        compiledHookSource: "scan-time-precompile",
+        ...summarizeHostHookScope(scope),
+      },
+    });
+    return loaded as Record<string, unknown>;
+  } catch (error) {
+    emitWorkflowPackageDiagnostic({
+      level: "error",
+      scope: "system",
+      component: "workflow-loader",
+      operation: "precompile-package-hook",
+      workflowSourceKind: args.workflowSourceKind,
+      stage: "workflow-package-precompile-failed",
+      message: "workflow package hook precompile failed",
+      filePath,
+      details: {
+        packageRootDir: args.packageRootDir,
+        exportName: args.exportName,
+        executionMode: "precompiled-host-hook",
+        contract: "package-host-api-facade",
+        compiledHookSource: "scan-time-precompile",
+        ...summarizeHostHookScope(scope),
+      },
+      error,
+    });
+    throw error;
+  } finally {
+    if (runtime.IOUtils.remove) {
+      await runtime.IOUtils.remove(tempScriptPath, {
+        ignoreAbsent: true,
+      });
     }
-  } catch {
-    // fall back to text-based loader
+  }
+}
+
+async function loadHooksModule(
+  filePath: string,
+  args?: {
+    allowTextFallback?: boolean;
+    workflowSourceKind?: WorkflowModuleResourceKind | "";
+    packageRootDir?: string;
+    exportName?:
+      | "applyResult"
+      | "filterInputs"
+      | "buildRequest"
+      | "normalizeSettings";
+  },
+): Promise<{
+  loaded: Record<string, unknown>;
+  executionMode: WorkflowHookExecutionMode;
+}> {
+  const allowTextFallback = args?.allowTextFallback !== false;
+  const isPackageHook =
+    !allowTextFallback && !!args?.packageRootDir && !!args?.exportName;
+  if (!isZoteroRuntime()) {
+    return {
+      loaded: await importHooksModuleFromNode(filePath, allowTextFallback),
+      executionMode: isPackageHook
+        ? "precompiled-host-hook"
+        : "node-native-module",
+    };
   }
 
-  return importHooksModuleFromText(filePath);
+  if (allowTextFallback) {
+    emitWorkflowPackageDiagnostic({
+      level: "debug",
+      scope: "system",
+      component: "workflow-loader",
+      operation: "load-hooks-module",
+      workflowSourceKind: args?.workflowSourceKind,
+      stage: "workflow-legacy-text-loader-path",
+      message: "workflow hook load uses legacy text fallback path",
+      filePath,
+    });
+    return {
+      loaded: await importHooksModuleFromText(filePath),
+      executionMode: "legacy-text-loader",
+    };
+  }
+  if (!args?.packageRootDir || !args.exportName) {
+    throw new Error("packageRootDir and exportName are required for package hook bundling");
+  }
+  return {
+    loaded: await importPrecompiledPackageHooksModule(filePath, {
+      packageRootDir: args.packageRootDir,
+      exportName: args.exportName,
+      workflowSourceKind: args.workflowSourceKind,
+    }),
+    executionMode: "precompiled-host-hook",
+  };
 }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-async function loadHooks(
-  workflowRoot: string,
-  manifest: WorkflowManifest,
-): Promise<WorkflowHooksModule> {
-  const hooks: WorkflowHooksModule = {} as WorkflowHooksModule;
+function getDirectoryName(targetPath: string) {
+  const normalized = String(targetPath || "").replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length <= 1) {
+    return "";
+  }
+  const first = normalized.startsWith("/") ? "/" : "";
+  const driveMatch = normalized.match(/^([A-Za-z]:)\//);
+  const drivePrefix = driveMatch?.[1] || "";
+  const parentParts = parts.slice(0, -1);
+  if (drivePrefix) {
+    return joinPath(drivePrefix, ...parentParts.slice(1));
+  }
+  if (first) {
+    return joinPath(first, ...parentParts);
+  }
+  return joinPath(...parentParts);
+}
 
+async function pathExists(targetPath: string) {
+  try {
+    await statPath(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type WorkflowLoadCandidate = {
+  entry: string;
+  packageId: string;
+  packageRootDir: string;
+  manifestPath: string;
+  workflowRoot: string;
+  declaredFromPackage: boolean;
+  manifest: WorkflowManifest;
+};
+
+async function collectPackageWorkflowCandidates(args: {
+  entry: string;
+  packageRootDir: string;
+  packageManifestPath: string;
+  diagnostics: LoaderDiagnostic[];
+}) {
+  const candidates: WorkflowLoadCandidate[] = [];
+  const packageManifestResult = parseWorkflowPackageManifestFromText({
+    raw: await readTextFile(args.packageManifestPath),
+    manifestPath: args.packageManifestPath,
+  });
+  if (!packageManifestResult.manifest) {
+    if (packageManifestResult.diagnostic) {
+      args.diagnostics.push({
+        ...packageManifestResult.diagnostic,
+        entry: args.entry,
+      });
+    }
+    return candidates;
+  }
+  for (const relativeManifestPath of packageManifestResult.manifest.workflows) {
+    const manifestPath = joinPath(args.packageRootDir, relativeManifestPath);
+    const manifestResult = parseWorkflowManifestFromText({
+      raw: await readTextFile(manifestPath),
+      manifestPath,
+    });
+    if (!manifestResult.manifest) {
+      if (manifestResult.diagnostic) {
+        args.diagnostics.push({
+          ...manifestResult.diagnostic,
+          entry: args.entry,
+        });
+      }
+      continue;
+    }
+    candidates.push({
+      entry: args.entry,
+      packageId: packageManifestResult.manifest.id,
+      packageRootDir: args.packageRootDir,
+      manifestPath,
+      workflowRoot: getDirectoryName(manifestPath),
+      declaredFromPackage: true,
+      manifest: normalizeManifestProvider(manifestResult.manifest),
+    });
+  }
+  return candidates;
+}
+
+async function collectSingleWorkflowCandidate(args: {
+  entry: string;
+  workflowRoot: string;
+  manifestPath: string;
+  diagnostics: LoaderDiagnostic[];
+}) {
+  const manifestResult = parseWorkflowManifestFromText({
+    raw: await readTextFile(args.manifestPath),
+    manifestPath: args.manifestPath,
+  });
+  if (!manifestResult.manifest) {
+    if (manifestResult.diagnostic) {
+      args.diagnostics.push({
+        ...manifestResult.diagnostic,
+        entry: args.entry,
+      });
+    }
+    return [] as WorkflowLoadCandidate[];
+  }
+  return [
+    {
+      entry: args.entry,
+      packageId:
+        String(manifestResult.manifest.id || "").trim() || args.entry,
+      packageRootDir: args.workflowRoot,
+      manifestPath: args.manifestPath,
+      workflowRoot: args.workflowRoot,
+      declaredFromPackage: false,
+      manifest: normalizeManifestProvider(manifestResult.manifest),
+    },
+  ];
+}
+
+async function collectWorkflowCandidates(args: {
+  entry: string;
+  workflowRoot: string;
+  diagnostics: LoaderDiagnostic[];
+}) {
+  const packageManifestPath = joinPath(args.workflowRoot, "workflow-package.json");
+  if (await pathExists(packageManifestPath)) {
+    return collectPackageWorkflowCandidates({
+      entry: args.entry,
+      packageRootDir: args.workflowRoot,
+      packageManifestPath,
+      diagnostics: args.diagnostics,
+    });
+  }
+  const manifestPath = joinPath(args.workflowRoot, "workflow.json");
+  if (!(await pathExists(manifestPath))) {
+    return [] as WorkflowLoadCandidate[];
+  }
+  return collectSingleWorkflowCandidate({
+    entry: args.entry,
+    workflowRoot: args.workflowRoot,
+    manifestPath,
+    diagnostics: args.diagnostics,
+  });
+}
+
+async function loadHooks(
+  args: {
+    workflowRoot: string;
+    packageRootDir: string;
+    manifest: WorkflowManifest;
+    isPackageWorkflow: boolean;
+    workflowSourceKind?: WorkflowModuleResourceKind | "";
+  },
+): Promise<{
+  hooks: WorkflowHooksModule;
+  executionMode: WorkflowHookExecutionMode;
+}> {
+  const hooks: WorkflowHooksModule = {} as WorkflowHooksModule;
+  const workflowRoot = args.workflowRoot;
+  const manifest = args.manifest;
+  const allowTextFallback = !args.isPackageWorkflow;
+  let executionMode: WorkflowHookExecutionMode | undefined;
+
+  const assignExecutionMode = (nextMode: WorkflowHookExecutionMode) => {
+    if (!executionMode) {
+      executionMode = nextMode;
+      return;
+    }
+    if (executionMode !== nextMode) {
+      throw new Error(
+        `Inconsistent workflow hook execution modes: ${executionMode} vs ${nextMode}`,
+      );
+    }
+  };
+
+  const assertPackageHookPath = (relativePath: string, exportName: string) => {
+    if (!args.isPackageWorkflow || relativePath.endsWith(".mjs")) {
+      return;
+    }
+    throw new WorkflowLoaderDiagnosticError({
+      category: "manifest_validation_error",
+      message: `Workflow-package hook must use .mjs: ${relativePath}`,
+      workflowId: manifest.id,
+      path: joinPath(workflowRoot, relativePath),
+      reason: `${exportName} hook in workflow-package must use .mjs`,
+    });
+  };
+
+  assertPackageHookPath(manifest.hooks.applyResult, "applyResult");
   const applyResultPath = joinPath(workflowRoot, manifest.hooks.applyResult);
   try {
     await statPath(applyResultPath);
@@ -259,7 +666,14 @@ async function loadHooks(
   }
   let applyResultModule: Record<string, unknown>;
   try {
-    applyResultModule = await loadHooksModule(applyResultPath);
+    const loaded = await loadHooksModule(applyResultPath, {
+      allowTextFallback,
+      workflowSourceKind: args.workflowSourceKind,
+      packageRootDir: args.packageRootDir,
+      exportName: "applyResult",
+    });
+    applyResultModule = loaded.loaded;
+    assignExecutionMode(loaded.executionMode);
   } catch (error) {
     throw new WorkflowLoaderDiagnosticError({
       category: "hook_import_error",
@@ -271,7 +685,7 @@ async function loadHooks(
   }
   if (typeof applyResultModule.applyResult !== "function") {
     throw new WorkflowLoaderDiagnosticError({
-      category: "hook_import_error",
+      category: "hook_export_error",
       message: `Hook export applyResult() not found: ${manifest.hooks.applyResult}`,
       workflowId: manifest.id,
       path: applyResultPath,
@@ -281,6 +695,7 @@ async function loadHooks(
   hooks.applyResult = applyResultModule.applyResult as ApplyResultHook;
 
   if (manifest.hooks.filterInputs) {
+    assertPackageHookPath(manifest.hooks.filterInputs, "filterInputs");
     const filterInputsPath = joinPath(workflowRoot, manifest.hooks.filterInputs);
     try {
       await statPath(filterInputsPath);
@@ -295,7 +710,14 @@ async function loadHooks(
     }
     let filterInputsModule: Record<string, unknown>;
     try {
-      filterInputsModule = await loadHooksModule(filterInputsPath);
+      const loaded = await loadHooksModule(filterInputsPath, {
+        allowTextFallback,
+        workflowSourceKind: args.workflowSourceKind,
+        packageRootDir: args.packageRootDir,
+        exportName: "filterInputs",
+      });
+      filterInputsModule = loaded.loaded;
+      assignExecutionMode(loaded.executionMode);
     } catch (error) {
       throw new WorkflowLoaderDiagnosticError({
         category: "hook_import_error",
@@ -307,7 +729,7 @@ async function loadHooks(
     }
     if (typeof filterInputsModule.filterInputs !== "function") {
       throw new WorkflowLoaderDiagnosticError({
-        category: "hook_import_error",
+        category: "hook_export_error",
         message: `Hook export filterInputs() not found: ${manifest.hooks.filterInputs}`,
         workflowId: manifest.id,
         path: filterInputsPath,
@@ -318,6 +740,7 @@ async function loadHooks(
   }
 
   if (manifest.hooks.buildRequest) {
+    assertPackageHookPath(manifest.hooks.buildRequest, "buildRequest");
     const buildRequestPath = joinPath(workflowRoot, manifest.hooks.buildRequest);
     try {
       await statPath(buildRequestPath);
@@ -332,7 +755,14 @@ async function loadHooks(
     }
     let buildRequestModule: Record<string, unknown>;
     try {
-      buildRequestModule = await loadHooksModule(buildRequestPath);
+      const loaded = await loadHooksModule(buildRequestPath, {
+        allowTextFallback,
+        workflowSourceKind: args.workflowSourceKind,
+        packageRootDir: args.packageRootDir,
+        exportName: "buildRequest",
+      });
+      buildRequestModule = loaded.loaded;
+      assignExecutionMode(loaded.executionMode);
     } catch (error) {
       throw new WorkflowLoaderDiagnosticError({
         category: "hook_import_error",
@@ -344,7 +774,7 @@ async function loadHooks(
     }
     if (typeof buildRequestModule.buildRequest !== "function") {
       throw new WorkflowLoaderDiagnosticError({
-        category: "hook_import_error",
+        category: "hook_export_error",
         message: `Hook export buildRequest() not found: ${manifest.hooks.buildRequest}`,
         workflowId: manifest.id,
         path: buildRequestPath,
@@ -355,6 +785,7 @@ async function loadHooks(
   }
 
   if (manifest.hooks.normalizeSettings) {
+    assertPackageHookPath(manifest.hooks.normalizeSettings, "normalizeSettings");
     const normalizeSettingsPath = joinPath(
       workflowRoot,
       manifest.hooks.normalizeSettings,
@@ -372,7 +803,14 @@ async function loadHooks(
     }
     let normalizeSettingsModule: Record<string, unknown>;
     try {
-      normalizeSettingsModule = await loadHooksModule(normalizeSettingsPath);
+      const loaded = await loadHooksModule(normalizeSettingsPath, {
+        allowTextFallback,
+        workflowSourceKind: args.workflowSourceKind,
+        packageRootDir: args.packageRootDir,
+        exportName: "normalizeSettings",
+      });
+      normalizeSettingsModule = loaded.loaded;
+      assignExecutionMode(loaded.executionMode);
     } catch (error) {
       throw new WorkflowLoaderDiagnosticError({
         category: "hook_import_error",
@@ -384,7 +822,7 @@ async function loadHooks(
     }
     if (typeof normalizeSettingsModule.normalizeSettings !== "function") {
       throw new WorkflowLoaderDiagnosticError({
-        category: "hook_import_error",
+        category: "hook_export_error",
         message:
           `Hook export normalizeSettings() not found: ${manifest.hooks.normalizeSettings}`,
         workflowId: manifest.id,
@@ -396,11 +834,17 @@ async function loadHooks(
       normalizeSettingsModule.normalizeSettings as NormalizeWorkflowSettingsHook;
   }
 
-  return hooks;
+  return {
+    hooks,
+    executionMode: executionMode || "node-native-module",
+  };
 }
 
 export async function loadWorkflowManifests(
   workflowsDir: string,
+  args?: {
+    workflowSourceKind?: WorkflowModuleResourceKind | "";
+  },
 ): Promise<LoadedWorkflows> {
   const diagnostics: LoaderDiagnostic[] = [];
   const workflowsById = new Map<string, LoadedWorkflow>();
@@ -428,67 +872,71 @@ export async function loadWorkflowManifests(
 
   for (const entry of entries) {
     const workflowRoot = joinPath(workflowsDir, entry);
-    const manifestPath = joinPath(workflowRoot, "workflow.json");
     try {
       const stat = await statPath(workflowRoot);
       if (!stat.isDirectory) {
         continue;
       }
-      const manifestResult = parseWorkflowManifestFromText({
-        raw: await readTextFile(manifestPath),
-        manifestPath,
+      const candidates = await collectWorkflowCandidates({
+        entry,
+        workflowRoot,
+        diagnostics,
       });
-      if (!manifestResult.manifest) {
-        if (manifestResult.diagnostic) {
-          diagnostics.push({
-            ...manifestResult.diagnostic,
-            entry,
-          });
+      for (const candidate of candidates) {
+        if (!isNonEmptyString(candidate.manifest.provider)) {
+          diagnostics.push(
+            createLoaderDiagnostic({
+              level: "warning",
+              category: "manifest_validation_error",
+              message:
+                `Skip workflow ${candidate.manifest.id}: missing provider declaration and unable to infer from request kind`,
+              entry: candidate.entry,
+              workflowId: candidate.manifest.id,
+              path: candidate.manifestPath,
+              reason: "provider missing and cannot infer",
+            }),
+          );
+          continue;
         }
-        continue;
-      }
-      const manifest = normalizeManifestProvider(manifestResult.manifest);
-      if (!isNonEmptyString(manifest.provider)) {
-        diagnostics.push(
-          createLoaderDiagnostic({
-            level: "warning",
-            category: "manifest_validation_error",
-            message:
-              `Skip workflow ${manifest.id}: missing provider declaration and unable to infer from request kind`,
-            entry,
-            workflowId: manifest.id,
-            path: manifestPath,
-            reason: "provider missing and cannot infer",
-          }),
-        );
-        continue;
-      }
 
-      const buildStrategy = resolveBuildStrategy(manifest);
-      if (!buildStrategy) {
-        diagnostics.push(
-          createLoaderDiagnostic({
-            level: "warning",
-            category: "manifest_validation_error",
-            message:
-              `Skip workflow ${manifest.id}: missing hooks.buildRequest and request declaration`,
-            entry,
-            workflowId: manifest.id,
-            path: manifestPath,
-            reason: "build strategy unresolved",
-          }),
-        );
-        continue;
-      }
+        const buildStrategy = resolveBuildStrategy(candidate.manifest);
+        if (!buildStrategy) {
+          diagnostics.push(
+            createLoaderDiagnostic({
+              level: "warning",
+              category: "manifest_validation_error",
+              message:
+                `Skip workflow ${candidate.manifest.id}: missing hooks.buildRequest and request declaration`,
+              entry: candidate.entry,
+              workflowId: candidate.manifest.id,
+              path: candidate.manifestPath,
+              reason: "build strategy unresolved",
+            }),
+          );
+          continue;
+        }
 
-      const hooks = await loadHooks(workflowRoot, manifest);
-      workflowsById.set(manifest.id, {
-        manifest,
-        rootDir: workflowRoot,
-        hooks,
-        buildStrategy,
-      });
+        const hookResult = await loadHooks({
+          workflowRoot: candidate.workflowRoot,
+          packageRootDir: candidate.packageRootDir,
+          manifest: candidate.manifest,
+          isPackageWorkflow: candidate.declaredFromPackage,
+          workflowSourceKind: args?.workflowSourceKind,
+        });
+        workflowsById.set(candidate.manifest.id, {
+          manifest: candidate.manifest,
+          rootDir: candidate.workflowRoot,
+          packageId: candidate.packageId,
+          packageRootDir: candidate.packageRootDir,
+          manifestPath: candidate.manifestPath,
+          workflowSourceKind: args?.workflowSourceKind,
+          hooks: hookResult.hooks,
+          buildStrategy,
+          hookExecutionMode: hookResult.executionMode,
+        });
+      }
     } catch (error) {
+      const fallbackPath = joinPath(workflowRoot, "workflow-package.json");
       const normalized = toDiagnosticFromUnknown({
         error,
         fallback: createLoaderDiagnostic({
@@ -496,7 +944,9 @@ export async function loadWorkflowManifests(
           category: "scan_runtime_warning",
           message: `Skip workflow ${entry}: ${String(error)}`,
           entry,
-          path: manifestPath,
+          path: (await pathExists(fallbackPath))
+            ? fallbackPath
+            : joinPath(workflowRoot, "workflow.json"),
         }),
       });
       diagnostics.push({

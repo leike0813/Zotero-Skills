@@ -1,44 +1,68 @@
 import { appendRuntimeLog, type RuntimeLogInput } from "./runtimeLogManager";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
+import { resolveRuntimeAddon } from "../utils/runtimeBridge";
 
 const GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY = "__zsWorkflowRuntimeBridge";
+const ADDON_WORKFLOW_RUNTIME_BRIDGE_KEY = "workflowRuntimeBridge";
 
 type WorkflowRuntimeBridge = {
   appendRuntimeLog: (input: RuntimeLogInput) => ReturnType<typeof appendRuntimeLog>;
   showToast: (args: { text: string; type?: "default" | "success" | "error" }) => void;
 };
 
-export function installWorkflowRuntimeBridge() {
-  const runtime = globalThis as typeof globalThis & {
-    [GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
-  };
+const workflowRuntimeBridge: WorkflowRuntimeBridge = {
+  appendRuntimeLog,
+  showToast: ({ text, type }) => {
+    showWorkflowToast({
+      text: String(text || "").trim(),
+      type: type || "default",
+    });
+  },
+};
 
-  const bridge: WorkflowRuntimeBridge = {
-    appendRuntimeLog,
-    showToast: ({ text, type }) => {
-      showWorkflowToast({
-        text: String(text || "").trim(),
-        type: type || "default",
-      });
-    },
-  };
-
-  runtime[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY] = bridge;
+function writeGlobalBridge(bridge: WorkflowRuntimeBridge) {
   (
-    addon.data as typeof addon.data & {
-      workflowRuntimeBridge?: WorkflowRuntimeBridge;
+    globalThis as typeof globalThis & {
+      [GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
     }
-  ).workflowRuntimeBridge = bridge;
+  )[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY] = bridge;
+}
+
+function writeAddonBridge(bridge: WorkflowRuntimeBridge) {
+  const runtimeAddon = resolveRuntimeAddon();
+  if (!runtimeAddon?.data) {
+    return false;
+  }
+  (
+    runtimeAddon.data as typeof runtimeAddon.data & {
+      [ADDON_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
+    }
+  )[ADDON_WORKFLOW_RUNTIME_BRIDGE_KEY] = bridge;
+  return true;
+}
+
+export function installWorkflowRuntimeBridge() {
+  writeAddonBridge(workflowRuntimeBridge);
+  writeGlobalBridge(workflowRuntimeBridge);
+}
+
+export function ensureWorkflowRuntimeBridgeInstalled() {
+  installWorkflowRuntimeBridge();
+  return workflowRuntimeBridge;
 }
 
 export function clearWorkflowRuntimeBridgeForTests() {
-  const runtime = globalThis as typeof globalThis & {
-    [GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
-  };
-  delete runtime[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY];
   delete (
-    addon.data as typeof addon.data & {
-      workflowRuntimeBridge?: WorkflowRuntimeBridge;
+    globalThis as typeof globalThis & {
+      [GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
     }
-  ).workflowRuntimeBridge;
+  )[GLOBAL_WORKFLOW_RUNTIME_BRIDGE_KEY];
+  const runtimeAddon = resolveRuntimeAddon();
+  if (runtimeAddon?.data) {
+    delete (
+      runtimeAddon.data as typeof runtimeAddon.data & {
+        [ADDON_WORKFLOW_RUNTIME_BRIDGE_KEY]?: WorkflowRuntimeBridge;
+      }
+    )[ADDON_WORKFLOW_RUNTIME_BRIDGE_KEY];
+  }
 }

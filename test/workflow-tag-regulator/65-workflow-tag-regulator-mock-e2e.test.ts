@@ -1,8 +1,19 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
+import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
+import {
+  purgeSkillRunnerBackendReconcileState,
+  startSkillRunnerTaskReconciler,
+  stopSkillRunnerTaskReconciler,
+} from "../../src/modules/skillRunnerTaskReconciler";
+import { resetSkillRunnerBackendHealthRegistryForTests } from "../../src/modules/skillRunnerBackendHealthRegistry";
+import { resetPluginStateStoreForTests } from "../../src/modules/pluginStateStore";
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
+import { resetDeferredWorkflowCompletionTrackerForTests } from "../../src/modules/workflowExecution/deferredCompletionTracker";
+import { listRuntimeLogs } from "../../src/modules/runtimeLogManager";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
+import { setPref } from "../../src/utils/prefs";
 import {
   expectWorkflowSummaryCounter,
   workflowsPath,
@@ -77,6 +88,33 @@ const MOCK_SKILLRUNNER_BASE_URL =
   "http://127.0.0.1:8030";
 const MOCK_BACKEND_ID = "skillrunner-mock";
 
+function resetSkillRunnerDeferredTestState() {
+  stopSkillRunnerTaskReconciler();
+  purgeSkillRunnerBackendReconcileState(MOCK_BACKEND_ID);
+  resetDeferredWorkflowCompletionTrackerForTests();
+  resetSkillRunnerBackendHealthRegistryForTests();
+  resetPluginStateStoreForTests();
+  setPref("skillRunnerRequestLedgerJson", "");
+  setPref("skillRunnerDeferredTasksJson", "");
+  setPref("taskDashboardHistoryJson", "");
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  options: { timeoutMs?: number; intervalMs?: number; message?: string } = {},
+) {
+  const timeoutMs = Math.max(100, Number(options.timeoutMs || 8000));
+  const intervalMs = Math.max(20, Number(options.intervalMs || 100));
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(String(options.message || "timed out waiting for condition"));
+}
+
 function clearTagVocabularyState() {
   Zotero.Prefs.clear(TAG_VOCAB_PREF_KEY, true);
   Zotero.Prefs.clear(TAG_VOCAB_STAGED_PREF_KEY, true);
@@ -98,24 +136,9 @@ function installSuggestTagsDialogMock(
     args: SuggestTagsDialogOpenArgs,
   ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult,
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
-  const addonObj = (runtime.addon || {}) as NonNullable<
-    RuntimeWithEditorBridge["addon"]
-  >;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  if (!addonObj.data.workflowEditorHost) {
-    addonObj.data.workflowEditorHost = {};
-  }
-  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
-  addonObj.data.workflowEditorHost.open = mockOpen;
-  runtime.__zsWorkflowEditorHostOpen = mockOpen;
-  runtime.addon = addonObj;
+  installWorkflowEditorSessionOverrideForTests(mockOpen as any);
   return () => {
-    runtime.__zsWorkflowEditorHostOpen = prevGlobal;
-    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+    installWorkflowEditorSessionOverrideForTests(null);
   };
 }
 
@@ -129,6 +152,13 @@ function listTags(item: Zotero.Item) {
         sensitivity: "base",
       }),
     );
+}
+
+function listNewWorkflowLogs(workflowId: string, seenIds: Set<string>) {
+  return listRuntimeLogs({
+    workflowId,
+    order: "asc",
+  }).filter((entry) => !seenIds.has(String(entry.id || "")));
 }
 
 async function isMockSkillRunnerReachable(baseUrl: string) {
@@ -165,6 +195,7 @@ describe("integration: tag-regulator with mock skill-runner", function () {
   let prevWorkflowSettingsPref: unknown;
 
   beforeEach(function () {
+    resetSkillRunnerDeferredTestState();
     prevBackendsConfigPref = Zotero.Prefs.get(BACKENDS_CONFIG_PREF_KEY, true);
     prevWorkflowSettingsPref = Zotero.Prefs.get(WORKFLOW_SETTINGS_PREF_KEY, true);
     Zotero.Prefs.set(
@@ -193,9 +224,11 @@ describe("integration: tag-regulator with mock skill-runner", function () {
       true,
     );
     clearTagVocabularyState();
+    startSkillRunnerTaskReconciler();
   });
 
   afterEach(function () {
+    resetSkillRunnerDeferredTestState();
     if (typeof prevBackendsConfigPref === "undefined") {
       Zotero.Prefs.clear(BACKENDS_CONFIG_PREF_KEY, true);
     } else {
@@ -253,6 +286,13 @@ describe("integration: tag-regulator with mock skill-runner", function () {
         win,
         workflow,
       });
+      await waitForCondition(
+        () => alerts.length === 1 && listTags(parent).includes("topic:tunnel"),
+        {
+          message:
+            "tag-regulator deferred completion did not update parent tags and emit summary",
+        },
+      );
     } finally {
       restoreOpen();
     }
@@ -326,11 +366,103 @@ describe("integration: tag-regulator with mock skill-runner", function () {
         win: winFor(firstParent),
         workflow,
       });
+      await waitForCondition(
+        () =>
+          openCalls.length === 1 &&
+          JSON.parse(String(Zotero.Prefs.get(TAG_VOCAB_PREF_KEY, true) || "{}"))
+            ?.entries?.some?.((entry: PersistedTagEntry) => entry.tag === "topic:suggested-by-mock") &&
+          listTags(firstParent).includes("topic:suggested-by-mock") &&
+          listTags(firstParent).includes("topic:tunnel"),
+        {
+          message:
+            "first deferred tag-regulator run did not fully converge controlled vocabulary and parent tags",
+        },
+      );
 
+      const seenLogIds = new Set(
+        listRuntimeLogs({
+          workflowId: "tag-regulator",
+          order: "asc",
+        }).map((entry) => String(entry.id || "")),
+      );
       await executeWorkflowFromCurrentSelection({
         win: winFor(secondParent),
         workflow,
       });
+      let secondRequestId = "";
+      let secondRunId = "";
+      await waitForCondition(
+        () => {
+          const foregroundLog = listNewWorkflowLogs("tag-regulator", seenLogIds).find(
+            (entry) => String(entry.stage || "") === "foreground-apply-skipped-auto",
+          ) as
+            | {
+                requestId?: string;
+                runId?: string;
+                details?: Record<string, unknown>;
+              }
+            | undefined;
+          if (!foregroundLog) {
+            return false;
+          }
+          secondRequestId = String(foregroundLog.requestId || "").trim();
+          secondRunId = String(
+            foregroundLog.runId || foregroundLog.details?.runId || "",
+          ).trim();
+          return Boolean(secondRequestId && secondRunId);
+        },
+        {
+          message:
+            "second deferred tag-regulator run did not expose request/run identifiers",
+        },
+      );
+      try {
+        await waitForCondition(
+          () => {
+            const requestStages = listRuntimeLogs({
+              workflowId: "tag-regulator",
+              requestId: secondRequestId,
+              order: "asc",
+            }).map((entry) => String(entry.stage || ""));
+            const runStages = listRuntimeLogs({
+              workflowId: "tag-regulator",
+              runId: secondRunId,
+              order: "asc",
+            }).map((entry) => String(entry.stage || ""));
+            return (
+              requestStages.includes("reconcile-owned-terminal-apply") &&
+              runStages.includes("deferred-run-summary-emitted") &&
+              listTags(secondParent).includes("topic:suggested-by-mock") &&
+              listTags(secondParent).includes("topic:tunnel")
+            );
+          },
+          {
+            message:
+              "second deferred tag-regulator run did not converge parent tags",
+          },
+        );
+      } catch {
+        const newStages = listNewWorkflowLogs("tag-regulator", seenLogIds).map(
+          (entry) => String(entry.stage || ""),
+        );
+        const requestStages = secondRequestId
+          ? listRuntimeLogs({
+              workflowId: "tag-regulator",
+              requestId: secondRequestId,
+              order: "asc",
+            }).map((entry) => String(entry.stage || ""))
+          : [];
+        const runStages = secondRunId
+          ? listRuntimeLogs({
+              workflowId: "tag-regulator",
+              runId: secondRunId,
+              order: "asc",
+            }).map((entry) => String(entry.stage || ""))
+          : [];
+        throw new Error(
+          `second deferred tag-regulator run did not converge parent tags; openCalls=${openCalls.length}; secondRequestId=${secondRequestId}; secondRunId=${secondRunId}; secondTags=${JSON.stringify(listTags(secondParent))}; firstTags=${JSON.stringify(listTags(firstParent))}; newStages=${JSON.stringify(newStages)}; requestStages=${JSON.stringify(requestStages)}; runStages=${JSON.stringify(runStages)}`,
+        );
+      }
     } finally {
       restoreOpen();
     }

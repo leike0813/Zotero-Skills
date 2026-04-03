@@ -201,7 +201,7 @@ export async function runWorkflowApplySeam(args: {
       requestId: result.requestId,
       stage: "provider-finished",
       message: "provider execution finished for job",
-      details: { index: i, taskLabel },
+      details: { index: i, taskLabel, targetParentID },
     });
 
     if (
@@ -227,7 +227,12 @@ export async function runWorkflowApplySeam(args: {
         requestId: result.requestId,
         stage: "foreground-apply-skipped-auto",
         message: "foreground apply skipped for reconcile-owned skillrunner auto terminal result",
-        details: { index: i, taskLabel, runId: args.runState.runId },
+        details: {
+          index: i,
+          taskLabel,
+          runId: args.runState.runId,
+          targetParentID,
+        },
       });
       continue;
     }

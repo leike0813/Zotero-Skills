@@ -36,6 +36,12 @@ class Addon {
       ) => void;
       unregisterRenderer: (rendererId: string) => void;
     };
+    workflowDebugProbe?: {
+      run: (args: {
+        selectionContext: unknown;
+        workflowId?: string;
+      }) => Promise<unknown>;
+    };
     dialog?: DialogHelper;
   };
   // Lifecycle hooks

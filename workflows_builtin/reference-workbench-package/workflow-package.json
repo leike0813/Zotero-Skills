@@ -1,0 +1,9 @@
+{
+  "id": "reference-workbench-package",
+  "version": "1.0.0",
+  "workflows": [
+    "literature-digest/workflow.json",
+    "reference-note-editor/workflow.json",
+    "reference-matching/workflow.json"
+  ]
+}

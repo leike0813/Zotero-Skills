@@ -1,10 +1,11 @@
-import type { WorkflowManifest } from "./types";
+import type { WorkflowManifest, WorkflowPackageManifest } from "./types";
 import {
   DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
   PASS_THROUGH_BACKEND_TYPE,
 } from "../config/defaults";
 import Ajv, { type ErrorObject, type ValidateFunction } from "ajv/dist/2020";
 import workflowManifestSchema from "../schemas/workflow.schema.json";
+import workflowPackageManifestSchema from "../schemas/workflow-package.schema.json";
 
 export type LoaderDiagnosticLevel = "warning" | "error";
 
@@ -13,6 +14,7 @@ export type LoaderDiagnosticCategory =
   | "manifest_validation_error"
   | "hook_missing_error"
   | "hook_import_error"
+  | "hook_export_error"
   | "scan_path_error"
   | "scan_runtime_warning";
 
@@ -62,6 +64,9 @@ const ajvLogger = {
 };
 let validateWorkflowManifestSchema: ValidateFunction<WorkflowManifest> | null =
   null;
+let validateWorkflowPackageManifestSchema:
+  | ValidateFunction<WorkflowPackageManifest>
+  | null = null;
 
 function getWorkflowManifestValidator() {
   if (!validateWorkflowManifestSchema) {
@@ -75,6 +80,20 @@ function getWorkflowManifestValidator() {
       ajv.compile<WorkflowManifest>(workflowManifestSchema);
   }
   return validateWorkflowManifestSchema;
+}
+
+function getWorkflowPackageManifestValidator() {
+  if (!validateWorkflowPackageManifestSchema) {
+    const ajv = new Ajv({
+      allErrors: true,
+      strict: true,
+      $data: true,
+      logger: ajvLogger,
+    });
+    validateWorkflowPackageManifestSchema =
+      ajv.compile<WorkflowPackageManifest>(workflowPackageManifestSchema);
+  }
+  return validateWorkflowPackageManifestSchema;
 }
 
 function formatManifestValidationError(
@@ -179,6 +198,44 @@ export function parseWorkflowManifestFromText(args: {
   }
   return {
     manifest: normalizeManifestProvider(parsed),
+    diagnostic: null,
+  };
+}
+
+export function parseWorkflowPackageManifestFromText(args: {
+  raw: string;
+  manifestPath: string;
+}) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args.raw);
+  } catch (error) {
+    return {
+      manifest: null,
+      diagnostic: createLoaderDiagnostic({
+        level: "warning",
+        category: "manifest_parse_error",
+        message: `Invalid workflow package manifest: ${args.manifestPath}`,
+        path: args.manifestPath,
+        reason: String(error),
+      }),
+    };
+  }
+  const validate = getWorkflowPackageManifestValidator();
+  if (!validate(parsed)) {
+    return {
+      manifest: null,
+      diagnostic: createLoaderDiagnostic({
+        level: "warning",
+        category: "manifest_validation_error",
+        message: `Invalid workflow package manifest: ${args.manifestPath}`,
+        path: args.manifestPath,
+        reason: describeManifestValidationErrors(validate.errors),
+      }),
+    };
+  }
+  return {
+    manifest: parsed,
     diagnostic: null,
   };
 }

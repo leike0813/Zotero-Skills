@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
 
 type TagEntry = {
   tag: string;

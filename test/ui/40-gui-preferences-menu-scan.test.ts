@@ -215,6 +215,45 @@ function makePassThroughWorkflow(id: string, label: string): LoadedWorkflow {
   };
 }
 
+function makeDebugOnlyWorkflow(id: string, label: string): LoadedWorkflow {
+  return {
+    manifest: {
+      id,
+      label,
+      provider: "pass-through",
+      debug_only: true,
+      hooks: {
+        applyResult: "hooks/applyResult.js",
+      },
+    },
+    rootDir: joinPath("workflows", id),
+    hooks: {
+      applyResult: async () => ({ ok: true }),
+    },
+    buildStrategy: "declarative",
+  };
+}
+
+function makeNoValidInputWorkflow(id: string, label: string): LoadedWorkflow {
+  return {
+    manifest: {
+      id,
+      label,
+      provider: "pass-through",
+      hooks: {
+        filterInputs: "hooks/filterInputs.js",
+        applyResult: "hooks/applyResult.js",
+      },
+    },
+    rootDir: joinPath("workflows", id),
+    hooks: {
+      filterInputs: async () => ({}),
+      applyResult: async () => ({ ok: true }),
+    },
+    buildStrategy: "hook",
+  };
+}
+
 function setWorkflowState(workflows: LoadedWorkflow[]) {
   const runtime = globalThis as {
     addon: {
@@ -1383,12 +1422,45 @@ describe("gui: workflow context menu", function () {
     assert.equal(workflowItem.getAttribute("disabled"), null);
   });
 
+  it("hides debug-only workflows when debug mode is disabled and shows them when enabled", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Debug Visibility Parent" },
+    });
+    setWorkflowState([
+      makePassThroughWorkflow("normal-workflow", "Normal Workflow"),
+      makeDebugOnlyWorkflow("workflow-debug-probe", "Workflow Debug Probe"),
+    ]);
+    const win = createMainWindow([parent]);
+    ensureWorkflowMenuForWindow(win);
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+
+    setDebugModeOverrideForTests(false);
+    popup.dispatch("popupshowing");
+    for (let i = 0; i < 10; i++) {
+      await flushTasks();
+    }
+    const labelsWhenHidden = popup.children.map((entry) => entry.getAttribute("label") || "");
+    assert.isTrue(labelsWhenHidden.some((entry) => entry.startsWith("Normal Workflow")));
+    assert.isFalse(labelsWhenHidden.some((entry) => entry.startsWith("Workflow Debug Probe")));
+
+    setDebugModeOverrideForTests(true);
+    popup.dispatch("popupshowing");
+    for (let i = 0; i < 10; i++) {
+      await flushTasks();
+    }
+    const labelsWhenVisible = popup.children.map((entry) => entry.getAttribute("label") || "");
+    assert.isTrue(labelsWhenVisible.some((entry) => entry.startsWith("Workflow Debug Probe")));
+  });
+
   it("shows no-valid-input hint instead of raw error name when workflow cannot run on current selection", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "No Valid Input Parent" },
     });
-    setWorkflowState([makeLoadedWorkflow("workflow-a", "Workflow A")]);
+    setWorkflowState([makeNoValidInputWorkflow("workflow-a", "Workflow A")]);
     const win = createMainWindow([parent]);
     ensureWorkflowMenuForWindow(win);
     const popup = win.document.getElementById(

@@ -1,7 +1,12 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
-import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
+import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
+import {
+  installTagVocabularyHostApiGlobals,
+  installTagVocabularySyncCapture,
+} from "../workflow-tag-vocabulary/hostApiTestUtils";
 
 type RuntimeWithFetch = typeof globalThis & {
   fetch?: (input: string, init?: Record<string, unknown>) => Promise<{
@@ -10,10 +15,6 @@ type RuntimeWithFetch = typeof globalThis & {
     statusText?: string;
     json: () => Promise<unknown>;
   }>;
-  __zsWorkflowRuntimeBridge?: {
-    appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
-    showToast?: (args: { text?: string; type?: string }) => void;
-  };
 };
 
 function installFetchMock(
@@ -28,24 +29,10 @@ function installFetchMock(
 }
 
 function installSyncBridgeMock(
-  logs: Array<Record<string, unknown>>,
+  logs: RuntimeLogEntry[],
   toasts: Array<{ text?: string; type?: string }> = [],
 ) {
-  const runtime = globalThis as RuntimeWithFetch;
-  const previous = runtime.__zsWorkflowRuntimeBridge;
-  runtime.__zsWorkflowRuntimeBridge = {
-    appendRuntimeLog: (entry) => {
-      logs.push(entry);
-      return entry;
-    },
-    showToast: (args) => {
-      toasts.push(args);
-      return undefined;
-    },
-  };
-  return () => {
-    runtime.__zsWorkflowRuntimeBridge = previous;
-  };
+  return installTagVocabularySyncCapture({ logs, toasts });
 }
 
 function listTags(item: Zotero.Item) {
@@ -69,15 +56,19 @@ describe("workflow: tag-manager github sync", function () {
   const LOCAL_PREF_KEY = `${config.prefsPrefix}.tagVocabularyLocalCommittedJson`;
   const REMOTE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyRemoteCommittedJson`;
   const STAGED_PREF_KEY = `${config.prefsPrefix}.tagVocabularyStagedJson`;
+  let restoreHostApi: (() => void) | null = null;
 
   beforeEach(function () {
     Zotero.Prefs.clear(ACTIVE_PREF_KEY, true);
     Zotero.Prefs.clear(LOCAL_PREF_KEY, true);
     Zotero.Prefs.clear(REMOTE_PREF_KEY, true);
     Zotero.Prefs.clear(STAGED_PREF_KEY, true);
+    restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
+    restoreHostApi?.();
+    restoreHostApi = null;
     Zotero.Prefs.clear(ACTIVE_PREF_KEY, true);
     Zotero.Prefs.clear(LOCAL_PREF_KEY, true);
     Zotero.Prefs.clear(REMOTE_PREF_KEY, true);

@@ -1,5 +1,4 @@
 import { isWindowAlive } from "../utils/window";
-import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import { refreshWorkflowMenus } from "./workflowMenu";
 import {
   applyRunOnceWorkflowSettingsDraft,
@@ -17,6 +16,7 @@ import {
   type FormSchemaEntry,
 } from "./workflowSettingsDialogModel";
 import { resolveBackendDisplayName } from "../backends/displayName";
+import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
 
 type FormSchemaType = "string" | "number" | "boolean";
 
@@ -599,7 +599,7 @@ export async function openWorkflowSettingsDialog(args?: {
     return;
   }
   const alertWindow = getAlertWindow(args?.window);
-  const workflows = getLoadedWorkflowEntries();
+  const workflows = getVisibleLoadedWorkflowEntries();
   if (workflows.length === 0) {
     alertWindow?.alert?.(getString("workflow-settings-no-workflows" as any));
     return;

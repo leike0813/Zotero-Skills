@@ -3,11 +3,13 @@ import { getString } from "../utils/locale";
 import { buildSelectionContext } from "./selectionContext";
 import { executeBuildRequests } from "../workflows/runtime";
 import { executeWorkflowFromCurrentSelection } from "./workflowExecute";
-import { getLoadedWorkflowEntries, getLoadedWorkflowSourceById } from "./workflowRuntime";
+import { getLoadedWorkflowSourceById } from "./workflowRuntime";
 import { resolveProvider } from "../providers/registry";
 import { resolveWorkflowExecutionContext } from "./workflowSettings";
 import { appendRuntimeLog } from "./runtimeLogManager";
 import { alertWindow } from "./workflowExecution/feedbackSeam";
+import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
+import type { LoadedWorkflow } from "../workflows/types";
 
 const ROOT_MENU_ID = `${config.addonRef}-workflows-menu`;
 const ROOT_POPUP_ID = `${config.addonRef}-workflows-popup`;
@@ -109,7 +111,7 @@ function buildTriggerFailureMessage(workflowLabel: string, error: unknown) {
 
 async function triggerWorkflowFromMenu(args: {
   win: _ZoteroTypes.MainWindow;
-  workflow: ReturnType<typeof getLoadedWorkflowEntries>[number];
+  workflow: LoadedWorkflow;
 }) {
   try {
     await executeWorkflowFromCurrentSelection({
@@ -145,7 +147,7 @@ export async function rebuildWorkflowActionPopup(
 ) {
   const includeTaskManagerItem = options?.includeTaskManagerItem !== false;
   clearPopupChildren(popup);
-  const workflows = getLoadedWorkflowEntries();
+  const workflows = getVisibleLoadedWorkflowEntries();
   if (includeTaskManagerItem) {
     appendTaskManagerItem(win, popup);
     appendMenuSeparator(win, popup);

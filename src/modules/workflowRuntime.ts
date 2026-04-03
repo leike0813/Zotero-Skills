@@ -131,8 +131,12 @@ async function loadMergedWorkflowManifests(args: {
   builtinWorkflowsDir: string;
 }) {
   const [loadedFromBuiltin, loadedFromUser] = await Promise.all([
-    loadWorkflowManifests(args.builtinWorkflowsDir),
-    loadWorkflowManifests(args.workflowsDir),
+    loadWorkflowManifests(args.builtinWorkflowsDir, {
+      workflowSourceKind: "builtin",
+    }),
+    loadWorkflowManifests(args.workflowsDir, {
+      workflowSourceKind: "user",
+    }),
   ]);
 
   const byWorkflowId = new Map<string, LoadedWorkflow>();

@@ -18,7 +18,6 @@ import {
   normalizeDashboardTabKey,
 } from "./taskDashboardSnapshot";
 import {
-  getLoadedWorkflowEntries,
   getLoadedWorkflowSourceById,
 } from "./workflowRuntime";
 import {
@@ -48,6 +47,7 @@ import {
   isSkillRunnerBackendReconcileFlagged,
   subscribeSkillRunnerBackendHealth,
 } from "./skillRunnerBackendHealthRegistry";
+import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
 
 type DashboardState = {
   backends: BackendInstance[];
@@ -709,7 +709,7 @@ async function buildWorkflowOptionsView(args: {
   state: DashboardState;
   backends: BackendInstance[];
 }) {
-  const loaded = getLoadedWorkflowEntries();
+  const loaded = getVisibleLoadedWorkflowEntries();
   if (loaded.length === 0) {
     return {
       workflows: [],
@@ -773,7 +773,7 @@ async function buildWorkflowOptionsView(args: {
 async function buildHomeWorkflowSummaries(args: {
   backends: BackendInstance[];
 }) {
-  const loaded = getLoadedWorkflowEntries();
+  const loaded = getVisibleLoadedWorkflowEntries();
   const entries = await Promise.all(
     loaded.map(async (workflow) => {
       const descriptor = await buildWorkflowSettingsUiDescriptor({
@@ -796,7 +796,7 @@ async function buildHomeWorkflowDocView(args: {
   state: DashboardState;
   workflowId: string;
 }) {
-  const loaded = getLoadedWorkflowEntries();
+  const loaded = getVisibleLoadedWorkflowEntries();
   const matched = loaded.find(
     (entry) => entry.manifest.id === args.workflowId,
   );
@@ -1187,8 +1187,8 @@ async function buildDashboardSnapshot(args: {
       if (entry.workflowId) uniqueWorkflows.add(entry.workflowId);
     }
 
-    const { getLoadedWorkflowEntries } = await import("./workflowRuntime");
-    const loadedWorkflows = getLoadedWorkflowEntries();
+    const { getVisibleLoadedWorkflowEntries } = await import("./workflowVisibility");
+    const loadedWorkflows = getVisibleLoadedWorkflowEntries();
 
     const mappedBackends = Array.from(uniqueBackends).sort().map((bId) => {
       const foundBackend = args.backends.find(b => b.id === bId);

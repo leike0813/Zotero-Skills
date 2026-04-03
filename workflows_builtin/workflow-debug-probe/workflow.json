@@ -1,0 +1,15 @@
+{
+  "id": "workflow-debug-probe",
+  "label": "Workflow Debug Probe",
+  "version": "0.1.0",
+  "provider": "pass-through",
+  "debug_only": true,
+  "execution": {
+    "feedback": {
+      "showNotifications": false
+    }
+  },
+  "hooks": {
+    "applyResult": "hooks/applyResult.js"
+  }
+}

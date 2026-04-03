@@ -94,6 +94,9 @@ type DialogCtor = new (rows: number, columns: number) => {
 
 const rendererRegistry = new Map<string, WorkflowEditorRenderer>();
 let sessionQueue: Promise<void> = Promise.resolve();
+let workflowEditorSessionOverrideForTests:
+  | ((args: WorkflowEditorOpenArgs) => Promise<WorkflowEditorOpenResult> | WorkflowEditorOpenResult)
+  | null = null;
 
 function createHtmlElement<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -642,6 +645,9 @@ function enqueueSession<T>(task: () => Promise<T>) {
 }
 
 export async function openWorkflowEditorSession(args: WorkflowEditorOpenArgs) {
+  if (workflowEditorSessionOverrideForTests) {
+    return workflowEditorSessionOverrideForTests(args);
+  }
   if (args.detached === true) {
     return openDialogSession(args);
   }
@@ -700,6 +706,15 @@ export function installWorkflowEditorHostBridge() {
 
 export function clearWorkflowEditorRendererRegistry() {
   rendererRegistry.clear();
+}
+
+export function installWorkflowEditorSessionOverrideForTests(
+  override?:
+    | ((args: WorkflowEditorOpenArgs) => Promise<WorkflowEditorOpenResult> | WorkflowEditorOpenResult)
+    | null,
+) {
+  workflowEditorSessionOverrideForTests =
+    typeof override === "function" ? override : null;
 }
 
 export function createWorkflowEditorPanelContainer(doc: Document) {

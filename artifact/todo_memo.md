@@ -39,7 +39,7 @@
 - [x] **修复 Toast 不自动消失（也有可能是停留时间太长）的 BUG**
 - [x] **添加 Tag 受控词表订阅和发布功能**
 - [x] 返回的 Suggest Tags 按最新的受控词表进行去重
-- [ ] **重构 workflow 核心设计，允许一个 workflow 包中携带多个 workflow，避免像 Tag Regulator 和 Tag Manager 这样的 workflow 按现在的规则必须被拆分的问题**
+- [x] **重构 workflow 核心设计，允许一个 workflow 包中携带多个 workflow，避免像 Tag Regulator 和 Tag Manager 这样的 workflow 按现在的规则必须被拆分的问题**
 - [ ] 添加专属 Note 的导入导出 workflow （导入/导出Digest、References和Citation Analysis note）
 - [ ] 让 Tag Manager 不选中父条目也可以触发
 - [ ] Dashboard 增加 Tag Manager 快捷方式（可选，要做的话也得做成注册式的）
@@ -47,5 +47,5 @@
 - [ ] 更详细的前后端通讯状态机
 - [ ] 进一步抽出所有可复用的手搓 UI 控件（例如之前已经实现的下拉菜单等，统一搜索并抽出），尤其是带 scroll 的控件，每次加入新的该类控件都会遇到重置 scroll 位置的问题，最好直接抽成通用控件
 - [ ] 进一步升级到各 workflow 可通用的 html 组件，原来基于原生控件的 helper 整体升级（可选）
-- [ ] 从已有的 workflow 中进一步提炼可抽取的公用 helper， 降低 workflow 开发难度 
+- [ ] 从已有的 workflow 中进一步提炼可抽取的公用 helper， 降低 workflow 开发难度 (进一步重构升级hostAPI)zhi
 

@@ -3,6 +3,12 @@ import { config } from "../../package.json";
 import hooks, {
   setSkillRunnerStartupBackendReconcileRunnerForTests,
 } from "../../src/hooks";
+import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
+import {
+  getRuntimeLogDiagnosticMode,
+  resetRuntimeLogAllowedLevels,
+  setRuntimeLogDiagnosticMode,
+} from "../../src/modules/runtimeLogManager";
 
 type LocalizationRequest = {
   id: string;
@@ -74,6 +80,9 @@ describe("hooks startup template cleanup", function () {
     }
     runtime.Localization = prevLocalization;
     setSkillRunnerStartupBackendReconcileRunnerForTests();
+    setDebugModeOverrideForTests();
+    resetRuntimeLogAllowedLevels();
+    setRuntimeLogDiagnosticMode(false);
   });
 
   it("registers preferences pane on startup", async function () {
@@ -104,5 +113,14 @@ describe("hooks startup template cleanup", function () {
     await hooks.onStartup();
 
     assert.equal(calls, 1);
+  });
+
+  it("enables runtime diagnostic log mode on startup when hardcoded debug mode is on", async function () {
+    setDebugModeOverrideForTests(true);
+    setRuntimeLogDiagnosticMode(false);
+
+    await hooks.onStartup();
+
+    assert.isTrue(getRuntimeLogDiagnosticMode());
   });
 });

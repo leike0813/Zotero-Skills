@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { handlers } from "../../src/handlers";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
+import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import {
@@ -212,52 +213,9 @@ async function buildRunResultForNote(note: Zotero.Item) {
 function installEditorOpenMock(
   mockOpen: (args: HostOpenArgs) => Promise<HostOpenResult> | HostOpenResult,
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
-  const addonObj = (runtime.addon || {}) as NonNullable<
-    RuntimeWithEditorBridge["addon"]
-  >;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  if (!addonObj.data.workflowEditorHost) {
-    addonObj.data.workflowEditorHost = {};
-  }
-  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
-  addonObj.data.workflowEditorHost.open = mockOpen;
-  try {
-    runtime.__zsWorkflowEditorHostOpen = mockOpen;
-  } catch {
-    try {
-      Object.defineProperty(runtime, "__zsWorkflowEditorHostOpen", {
-        configurable: true,
-        writable: true,
-        value: mockOpen,
-      });
-    } catch {
-      // ignore if global bridge cannot be patched in this runtime
-    }
-  }
-  try {
-    runtime.addon = addonObj;
-  } catch {
-    // ignore readonly runtime.addon assignment
-  }
+  installWorkflowEditorSessionOverrideForTests(mockOpen as any);
   return () => {
-    try {
-      runtime.__zsWorkflowEditorHostOpen = prevGlobal;
-    } catch {
-      try {
-        Object.defineProperty(runtime, "__zsWorkflowEditorHostOpen", {
-          configurable: true,
-          writable: true,
-          value: prevGlobal,
-        });
-      } catch {
-        // ignore readonly restoration errors
-      }
-    }
-    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+    installWorkflowEditorSessionOverrideForTests(null);
   };
 }
 

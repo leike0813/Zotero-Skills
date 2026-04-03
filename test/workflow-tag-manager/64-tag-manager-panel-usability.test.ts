@@ -1,5 +1,6 @@
 import { assert } from "chai";
-import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
+import { installTagVocabularyHostApiGlobals } from "../workflow-tag-vocabulary/hostApiTestUtils";
 
 type TagEntry = {
   tag: string;
@@ -318,6 +319,17 @@ function createRendererHarness(entries: TagEntry[]) {
 }
 
 describe("workflow: tag-manager panel usability", function () {
+  let restoreHostApiGlobals: (() => void) | null = null;
+
+  beforeEach(function () {
+    restoreHostApiGlobals = installTagVocabularyHostApiGlobals();
+  });
+
+  afterEach(function () {
+    restoreHostApiGlobals?.();
+    restoreHostApiGlobals = null;
+  });
+
   const sampleEntries: TagEntry[] = [
     {
       tag: "topic:alpha",

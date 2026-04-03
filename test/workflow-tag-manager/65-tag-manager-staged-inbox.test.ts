@@ -1,7 +1,8 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
-import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
+import { installTagVocabularyHostApiGlobals } from "../workflow-tag-vocabulary/hostApiTestUtils";
 
 type ControlledEntry = {
   tag: string;
@@ -257,11 +258,16 @@ function listTags(item: Zotero.Item) {
 }
 
 describe("workflow: tag-manager staged inbox", function () {
+  let restoreHostApi: (() => void) | null = null;
+
   beforeEach(function () {
     clearVocabularyPrefs();
+    restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
+    restoreHostApi?.();
+    restoreHostApi = null;
     clearVocabularyPrefs();
   });
 

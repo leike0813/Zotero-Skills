@@ -12,6 +12,8 @@ import { openBackendManagerDialog } from "./modules/backendManager";
 import { openTaskManagerDialog } from "./modules/taskManagerDialog";
 import { installWorkflowEditorHostBridge } from "./modules/workflowEditorHost";
 import { installWorkflowRuntimeBridge } from "./modules/workflowRuntimeBridge";
+import { enableWorkflowPackageDiagnosticsForDebugMode } from "./modules/workflowPackageDiagnostics";
+import { installWorkflowDebugProbeBridge } from "./modules/workflowDebugProbe";
 import {
   ensureDashboardToolbarButton,
   removeDashboardToolbarButton,
@@ -187,6 +189,8 @@ async function onStartup() {
   initLocale();
   installWorkflowEditorHostBridge();
   installWorkflowRuntimeBridge();
+  installWorkflowDebugProbeBridge();
+  enableWorkflowPackageDiagnosticsForDebugMode();
 
   const runtimeRootURI =
     typeof rootURI === "string" && rootURI

@@ -1,7 +1,7 @@
 # workflow-execution-seams Specification
 
 ## Purpose
-TBD - created by archiving change refactor-workflow-execution-seams. Update Purpose after archive.
+Define the stable workflow execution boundaries, package workflow loading contract, and workflow-host integration contract used by the plugin core and builtin workflows.
 ## Requirements
 ### Requirement: Workflow execution orchestration SHALL expose explicit seam boundaries
 The execution pipeline SHALL be organized into explicit seams for preparation, run coordination, result application, and feedback reporting.
@@ -98,6 +98,47 @@ builtin registry or a user override.
 - **WHEN** a workflow trigger fails for a workflow ID that exists in both builtin and user directories
 - **THEN** runtime diagnostics SHALL include the currently loaded workflow source
 - **AND** operators SHALL be able to distinguish builtin regression from user override behavior
+
+### Requirement: Workflow loader SHALL support multi-workflow packages
+The workflow loader SHALL support a package root that declares multiple child workflow manifests while remaining compatible with the existing single-workflow directory format.
+
+#### Scenario: Package root yields multiple loaded workflows
+- **WHEN** a workflow directory contains `workflow-package.json`
+- **AND** that package manifest lists multiple child workflow manifests
+- **THEN** the loader SHALL register one loaded workflow per listed child manifest
+- **AND** each loaded workflow SHALL retain its own `workflowId`
+
+#### Scenario: Legacy single-workflow directory remains valid
+- **WHEN** a workflow directory contains a root `workflow.json`
+- **THEN** the loader SHALL continue to load it as a single workflow
+
+### Requirement: Builtin workflow packages SHALL preserve workflow-level UX identity
+Bundling multiple workflows into one package SHALL NOT change workflow-level UI identity, settings identity, or user override identity.
+
+#### Scenario: Settings and UI continue to address workflowId
+- **WHEN** a bundled builtin workflow is shown in menus, dashboard, or settings
+- **THEN** it SHALL still be addressed by its workflow `id`
+- **AND** packaging metadata SHALL NOT become a new UI grouping requirement
+
+#### Scenario: User override remains workflow-scoped
+- **WHEN** a user workflow and a builtin packaged workflow share the same workflow `id`
+- **THEN** the user workflow SHALL override only that workflow
+- **AND** the rest of the builtin package SHALL remain available
+
+### Requirement: Workflow package internal sharing
+Builtin workflow packages SHALL be allowed to expose package-local implementation modules under `lib/` for use by workflows declared inside the same package.
+
+#### Scenario: same-package lib reuse
+- **WHEN** two workflows are declared from the same `workflow-package.json`
+- **THEN** their hooks MAY import modules from that package's `lib/` directory
+- **AND** this does not change workflow registration identity, which remains keyed by `workflowId`
+
+### Requirement: Workflow package refactors are behavior-preserving
+Refactoring builtin workflow-package internals into package-local shared modules MUST NOT change workflow manifests, settings keys, or user-facing behavior.
+
+#### Scenario: package-local refactor keeps external contract stable
+- **WHEN** builtin workflows are reorganized to use package-local `lib/` modules
+- **THEN** their `workflowId`, manifest shape, settings persistence, and UI entry points remain unchanged
 
 ### Requirement: Tag Manager SHALL support configurable GitHub vocabulary sync
 The `tag-manager` workflow SHALL support persisted workflow parameters for
@@ -206,15 +247,76 @@ depend on sibling builtin workflow code or workflow-side shared business modules
 - **WHEN** it is loaded from `workflows_builtin/**`
 - **THEN** it MUST NOT import another builtin workflow directory or `workflows_builtin/shared/*`
 
-### Requirement: Builtin workflow loading remains compatible with fallback loading
-Builtin workflow hooks MUST remain loadable through the current workflow loader
-fallback path.
+### Requirement: Workflow package hooks SHALL execute through a core host API facade
+Workflow-package hooks MUST consume host capabilities through the plugin core `hostApi` facade rather than reading raw `Zotero`, `addon`, or bridge-carried globals.
 
-#### Scenario: Builtin tag workflows are discovered after boundary repair
-- **GIVEN** the builtin workflow directory contains `tag-manager` and `tag-regulator`
-- **WHEN** workflow manifests are loaded
-- **THEN** both workflows remain discoverable and executable
-- **AND** the loading path is not blocked by removed cross-file hook imports
+#### Scenario: Package hook reads host capabilities
+- **WHEN** a workflow-package hook needs prefs, items, editor, file, logging, or notification capabilities
+- **THEN** the hook SHALL resolve them from `runtime.hostApi`
+- **AND** the hook SHALL fail explicitly when `hostApi` or a required host capability is missing
+
+### Requirement: Workflow package execution SHALL advertise precompiled host-hook contract
+Package workflow diagnostics MUST describe the precompiled host-hook contract instead of raw-runtime bridge metadata.
+
+#### Scenario: Debug probe inspects a package workflow after migration
+- **WHEN** workflow debug probe evaluates a workflow-package hook
+- **THEN** the result includes `executionMode=precompiled-host-hook`
+- **AND** the result includes `contract=package-host-api-facade`
+- **AND** the result includes `hostApiVersion` and `hostApiSummary`
+- **AND** the result SHALL NOT include raw Zotero shape or bridge/token carrier fields
+
+### Requirement: Workflow package direct test/runtime helpers SHALL use the active host-api contract
+Direct package helper tests and package-local utilities MUST execute under the same host-api contract used by production package hooks.
+
+#### Scenario: Test invokes package-local helper without workflow execution pipeline
+- **WHEN** a test directly invokes package-local helper code or renderer actions
+- **THEN** it SHALL provide the active `hostApi` contract through runtime scope or host-api globals used by the package runtime adapter
+- **AND** the test SHALL NOT depend on deprecated workflow runtime bridge shims
+
+### Requirement: Workflow package runtime diagnostics SHALL be debug-gated
+Workflow-package runtime diagnostics MUST remain silent in normal mode and MUST emit structured diagnostics only when the hardcoded debug mode is enabled.
+
+#### Scenario: Debug mode disabled
+- **WHEN** workflow-package loader, execution scope, or package-local runtime accessors run in normal mode
+- **THEN** no additional workflow-package diagnostic log entries are emitted
+
+#### Scenario: Debug mode enabled
+- **WHEN** the hardcoded debug mode is enabled
+- **THEN** workflow-package diagnostics are emitted to runtime logs and Zotero console output
+
+### Requirement: Workflow package execution diagnostics SHALL describe host-api contract
+Workflow hook execution diagnostics MUST record hook execution start and failure with the active host-api contract summary.
+
+#### Scenario: Package hook executes in debug mode
+- **WHEN** a package hook executes in debug mode
+- **THEN** diagnostics include workflow id, package id, hook name, workflow source kind, `executionMode`, `contract`, `hostApiVersion`, and `hostApiSummary`
+
+### Requirement: Debug-only workflow visibility SHALL be gated by debug mode
+The system SHALL allow builtin workflows to declare `debug_only: true` and SHALL hide those workflows from normal workflow menus and lists when hardcoded debug mode is disabled.
+
+#### Scenario: Debug mode enabled
+- **WHEN** hardcoded debug mode is enabled
+- **THEN** `debug_only` workflows are visible in workflow menus and workflow lists
+
+#### Scenario: Debug mode disabled
+- **WHEN** hardcoded debug mode is disabled
+- **THEN** `debug_only` workflows are hidden from workflow menus and workflow lists
+
+### Requirement: Workflow Debug Probe
+The system SHALL provide a debug-only builtin workflow that reuses the real workflow preflight chain and reports why loaded workflows are enabled or disabled for the current selection.
+
+#### Scenario: Probe execution
+- **WHEN** the debug probe workflow is triggered with a non-empty selection
+- **THEN** it runs selection-context rebuild, execution-context resolution, provider resolution, and build-request preflight for visible non-debug workflows
+- **AND** it opens a read-only diagnostic panel
+- **AND** it writes the same structured result to runtime logs
+
+### Requirement: Structured Hook Failure Logging
+The system SHALL preserve structured hook failure diagnostics in normal execution logs.
+
+#### Scenario: Hook failure
+- **WHEN** `filterInputs`, `buildRequest`, or `applyResult` throws
+- **THEN** logs retain `error.message`, `error.stack`, hook name, and package metadata
 
 ### Requirement: Tag-Regulator Suggest Intake Must Respect Subscription Publish Transactions
 `tag-regulator` suggest intake SHALL use the active tag vocabulary mode to decide whether a selected suggest tag is committed locally or published remotely.

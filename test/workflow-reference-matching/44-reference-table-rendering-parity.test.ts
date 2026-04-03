@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { handlers } from "../../src/handlers";
+import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
 import { createHookHelpers } from "../../src/workflows/helpers";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { executeApplyResult } from "../../src/workflows/runtime";
@@ -101,20 +102,6 @@ async function buildRunResultForNote(note: Zotero.Item) {
 }
 
 function installEditorOpenPassthroughMock() {
-  const runtime = globalThis as {
-    __zsWorkflowEditorHostOpen?: (
-      args: { initialState?: { references?: ReferenceEntry[] } },
-    ) => Promise<{ saved: boolean; result: ReferenceEntry[] }>;
-    addon?: {
-      data?: {
-        workflowEditorHost?: {
-          open?: (
-            args: { initialState?: { references?: ReferenceEntry[] } },
-          ) => Promise<{ saved: boolean; result: ReferenceEntry[] }>;
-        };
-      };
-    };
-  };
   const mockOpen = async (args: {
     initialState?: { references?: ReferenceEntry[] };
   }) => ({
@@ -123,21 +110,9 @@ function installEditorOpenPassthroughMock() {
       ? args.initialState.references
       : [],
   });
-  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
-  const addonObj = (runtime.addon || {}) as NonNullable<typeof runtime.addon>;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  if (!addonObj.data.workflowEditorHost) {
-    addonObj.data.workflowEditorHost = {};
-  }
-  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
-  addonObj.data.workflowEditorHost.open = mockOpen;
-  runtime.__zsWorkflowEditorHostOpen = mockOpen;
-  runtime.addon = addonObj;
+  installWorkflowEditorSessionOverrideForTests(mockOpen as any);
   return () => {
-    runtime.__zsWorkflowEditorHostOpen = prevGlobal;
-    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+    installWorkflowEditorSessionOverrideForTests(null);
   };
 }
 

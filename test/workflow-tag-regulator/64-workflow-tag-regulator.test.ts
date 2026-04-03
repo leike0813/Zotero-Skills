@@ -2,13 +2,21 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
+import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
+import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
+import { createHookHelpers } from "../../src/workflows/helpers";
+import { WORKFLOW_HOST_API_VERSION } from "../../src/workflows/hostApi";
 import {
   executeApplyResult,
   executeBuildRequests,
 } from "../../src/workflows/runtime";
-import { __tagManagerTestOnly } from "../../workflows_builtin/tag-manager/hooks/applyResult.js";
-import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-regulator/hooks/applyResult.js";
+import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
+import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-regulator/hooks/applyResult.mjs";
+import {
+  installTagVocabularyHostApiGlobals,
+  installTagVocabularySyncCapture,
+} from "../workflow-tag-vocabulary/hostApiTestUtils";
 import {
   existsPath,
   readUtf8,
@@ -112,10 +120,6 @@ type RuntimeWithEditorBridge = typeof globalThis & {
         ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult;
       };
     };
-  };
-  __zsWorkflowRuntimeBridge?: {
-    appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
-    showToast?: (args: { text?: string; type?: string }) => void;
   };
 };
 
@@ -323,46 +327,17 @@ function installSuggestTagsDialogMock(
     args: SuggestTagsDialogOpenArgs,
   ) => Promise<SuggestTagsDialogOpenResult> | SuggestTagsDialogOpenResult,
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
-  const addonObj = (runtime.addon || {}) as NonNullable<
-    RuntimeWithEditorBridge["addon"]
-  >;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  if (!addonObj.data.workflowEditorHost) {
-    addonObj.data.workflowEditorHost = {};
-  }
-  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
-  addonObj.data.workflowEditorHost.open = mockOpen;
-  runtime.__zsWorkflowEditorHostOpen = mockOpen;
-  runtime.addon = addonObj;
+  installWorkflowEditorSessionOverrideForTests(mockOpen as any);
   return () => {
-    runtime.__zsWorkflowEditorHostOpen = prevGlobal;
-    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+    installWorkflowEditorSessionOverrideForTests(null);
   };
 }
 
 function installTagVocabularySyncBridgeMock(
   toasts: Array<{ text?: string; type?: string }>,
-  logs: Array<Record<string, unknown>> = [],
+  logs: RuntimeLogEntry[] = [],
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const previous = runtime.__zsWorkflowRuntimeBridge;
-  runtime.__zsWorkflowRuntimeBridge = {
-    appendRuntimeLog: (entry) => {
-      logs.push(entry);
-      return entry;
-    },
-    showToast: (args) => {
-      toasts.push(args);
-      return undefined;
-    },
-  };
-  return () => {
-    runtime.__zsWorkflowRuntimeBridge = previous;
-  };
+  return installTagVocabularySyncCapture({ toasts, logs });
 }
 
 function installFetchMock(
@@ -415,11 +390,16 @@ async function getTagRegulatorWorkflow() {
 }
 
 describe("workflow: tag-regulator", function () {
+  let restoreHostApi: (() => void) | null = null;
+
   beforeEach(function () {
     clearTagVocabularyState();
+    restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
+    restoreHostApi?.();
+    restoreHostApi = null;
     clearTagVocabularyState();
   });
 
@@ -607,6 +587,90 @@ describe("workflow: tag-regulator", function () {
     const yamlText = await readUtf8(yamlPath);
     assert.include(yamlText, "- topic:remote-only");
     assert.notInclude(yamlText, "- topic:local-only");
+  });
+
+  it("buildRequest keeps runtime-scoped prefs access when package runtime has no global Zotero fallback", async function () {
+    saveRemoteCommittedVocabularyState([
+      {
+        tag: "topic:runtime-only",
+        facet: "topic",
+        source: "remote",
+        note: "",
+        deprecated: false,
+      },
+    ]);
+    saveWorkflowSettingsState("tag-manager", {
+      github_owner: "demo-owner",
+      github_repo: "Zotero_TagVocab",
+      file_path: "tags/tags.json",
+      github_token: "secret-token",
+    });
+
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Tag Regulator Runtime Scoped Prefs Parent" },
+    });
+    await handlers.tag.add(parent, ["topic:legacy"]);
+
+    const workflow = await getTagRegulatorWorkflow();
+    const selectionContext = await buildSelectionContext([parent]);
+    const originalZotero = (globalThis as typeof globalThis & { Zotero?: typeof Zotero })
+      .Zotero;
+    delete (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero;
+
+    try {
+      const request = (await workflow.hooks.buildRequest?.({
+        selectionContext,
+        manifest: workflow.manifest,
+        executionOptions: {
+          workflowParams: {
+            valid_tags_format: "yaml",
+          },
+        },
+        runtime: {
+          helpers: createHookHelpers(originalZotero!),
+          hostApiVersion: WORKFLOW_HOST_API_VERSION,
+          hostApi: {
+            prefs: {
+              get(key: string, global = true) {
+                return originalZotero!.Prefs.get(key, global);
+              },
+              set(key: string, value: unknown, global = true) {
+                originalZotero!.Prefs.set(key, value as any, global);
+              },
+              clear(key: string, global = true) {
+                originalZotero!.Prefs.clear(key, global);
+              },
+            },
+            addon: {
+              getConfig() {
+                return {
+                  addonName: "Zotero Skills",
+                  addonRef: "zotero-skills",
+                  prefsPrefix: config.prefsPrefix,
+                };
+              },
+            },
+            file: {
+              getTempDirectoryPath() {
+                return String(originalZotero!.getTempDirectory?.()?.path || "");
+              },
+            },
+          },
+          workflowId: "tag-regulator",
+          packageId: workflow.packageId,
+          workflowSourceKind: workflow.workflowSourceKind,
+          hookName: "buildRequest",
+        },
+      })) as TagRegulatorRequest;
+
+      const yamlPath = String(request.upload_files?.[0].path || "");
+      const yamlText = await readUtf8(yamlPath);
+      assert.include(yamlText, "- topic:runtime-only");
+    } finally {
+      (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
+        originalZotero;
+    }
   });
 
   it("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {

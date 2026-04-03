@@ -262,6 +262,25 @@ export async function startMockSkillRunnerServer(args: {
         return;
       }
 
+      if (
+        (method === "HEAD" || method === "GET") &&
+        url === "/v1/system/ping"
+      ) {
+        res.statusCode = 200;
+        if (method === "GET") {
+          res.setHeader("content-type", "application/json");
+          res.end(
+            JSON.stringify({
+              ok: true,
+              status: "ok",
+            }),
+          );
+          return;
+        }
+        res.end();
+        return;
+      }
+
       const uploadMatch = url.match(/^\/v1\/jobs\/([^/]+)\/upload$/);
       if (method === "POST" && uploadMatch) {
         const requestId = uploadMatch[1];

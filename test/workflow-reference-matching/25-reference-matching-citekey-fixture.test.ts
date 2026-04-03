@@ -1,7 +1,7 @@
 import { assert } from "chai";
 import notePayloadFixture from "../fixtures/workflow-reference-matching/mix-all-reference-note-payload.json";
 import bbtCitekeyFixture from "../fixtures/workflow-reference-matching/mix-all-bbt-citekeys-23124.json";
-import { __referenceMatchingTestOnly } from "../../workflows_builtin/reference-matching/hooks/applyResult.js";
+import { __referenceMatchingTestOnly } from "../../workflows_builtin/reference-workbench-package/reference-matching/hooks/applyResult.mjs";
 
 type ReferenceFixtureEntry = {
   id: string;

@@ -16,8 +16,8 @@ Plugin core modules under `src/**` SHALL NOT encode business semantics for any c
 - **WHEN** a workflow requires custom field fallback/normalization
 - **THEN** that behavior is implemented in workflow-owned extension logic, not hardcoded in core modules
 
-### Requirement: Protocol-level concerns MAY stay in core
-Core modules under `src/**` MAY implement shared protocol/runtime concerns that are workflow-agnostic.
+### Requirement: Protocol-level concerns MAY stay in core only when they remain workflow-agnostic
+Core modules under `src/**` MAY implement shared protocol/runtime concerns only when those concerns remain workflow-agnostic and MUST NOT embed concrete workflow business semantics.
 
 #### Scenario: Request kind and provider orchestration
 - **WHEN** execution context is prepared

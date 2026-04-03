@@ -1,8 +1,14 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
+import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
+import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
+import {
+  installTagVocabularyHostApiGlobals,
+  installTagVocabularySyncCapture,
+} from "../workflow-tag-vocabulary/hostApiTestUtils";
 import { workflowsPath } from "../zotero/workflow-test-utils";
 
 type HostOpenArgs = {
@@ -30,10 +36,6 @@ type RuntimeWithEditorBridge = typeof globalThis & {
   __zsWorkflowEditorHostOpen?: (
     args: HostOpenArgs,
   ) => Promise<HostOpenResult> | HostOpenResult;
-  __zsWorkflowRuntimeBridge?: {
-    appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
-    showToast?: (args: { text?: string; type?: string }) => void;
-  };
   fetch?: (input: string, init?: Record<string, unknown>) => Promise<{
     ok: boolean;
     status: number;
@@ -46,10 +48,6 @@ type RuntimeWithEditorBridge = typeof globalThis & {
         open?: (
           args: HostOpenArgs,
         ) => Promise<HostOpenResult> | HostOpenResult;
-      };
-      workflowRuntimeBridge?: {
-        appendRuntimeLog?: (entry: Record<string, unknown>) => unknown;
-        showToast?: (args: { text?: string; type?: string }) => void;
       };
     };
   };
@@ -162,56 +160,17 @@ async function getTagManagerWorkflow() {
 function installEditorOpenMock(
   mockOpen: (args: HostOpenArgs) => Promise<HostOpenResult> | HostOpenResult,
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevGlobal = runtime.__zsWorkflowEditorHostOpen;
-  const addonObj = (runtime.addon || {}) as NonNullable<
-    RuntimeWithEditorBridge["addon"]
-  >;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  if (!addonObj.data.workflowEditorHost) {
-    addonObj.data.workflowEditorHost = {};
-  }
-  const prevAddonOpen = addonObj.data.workflowEditorHost.open;
-  addonObj.data.workflowEditorHost.open = mockOpen;
-  runtime.__zsWorkflowEditorHostOpen = mockOpen;
-  runtime.addon = addonObj;
+  installWorkflowEditorSessionOverrideForTests(mockOpen as any);
   return () => {
-    runtime.__zsWorkflowEditorHostOpen = prevGlobal;
-    addonObj.data!.workflowEditorHost!.open = prevAddonOpen;
+    installWorkflowEditorSessionOverrideForTests(null);
   };
 }
 
 function installTagVocabularySyncBridgeMock(args: {
-  logs?: Array<Record<string, unknown>>;
-  toasts?: string[];
+  logs?: RuntimeLogEntry[];
+  toasts?: Array<{ text?: string; type?: string }>;
 }) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevGlobal = runtime.__zsWorkflowRuntimeBridge;
-  const addonObj = (runtime.addon || {}) as NonNullable<
-    RuntimeWithEditorBridge["addon"]
-  >;
-  if (!addonObj.data) {
-    addonObj.data = {};
-  }
-  const prevAddonBridge = addonObj.data.workflowRuntimeBridge;
-  const bridge = {
-    appendRuntimeLog: (entry: Record<string, unknown>) => {
-      args.logs?.push(entry);
-      return entry;
-    },
-    showToast: (payload: { text?: string }) => {
-      args.toasts?.push(String(payload?.text || ""));
-    },
-  };
-  runtime.__zsWorkflowRuntimeBridge = bridge;
-  addonObj.data.workflowRuntimeBridge = bridge;
-  runtime.addon = addonObj;
-  return () => {
-    runtime.__zsWorkflowRuntimeBridge = prevGlobal;
-    addonObj.data!.workflowRuntimeBridge = prevAddonBridge;
-  };
+  return installTagVocabularySyncCapture(args);
 }
 
 function installFetchMock(
@@ -230,12 +189,17 @@ function toBase64(text: string) {
 }
 
 describe("workflow: tag-manager", function () {
+  let restoreHostApi: (() => void) | null = null;
+
   beforeEach(function () {
     clearTagVocabularyState();
     clearWorkflowSettingsState();
+    restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
+    restoreHostApi?.();
+    restoreHostApi = null;
     clearTagVocabularyState();
     clearWorkflowSettingsState();
   });
@@ -570,8 +534,8 @@ describe("workflow: tag-manager", function () {
       itemType: "journalArticle",
       fields: { title: "Tag Manager Remote Publish Failure Parent" },
     });
-    const logs: Array<Record<string, unknown>> = [];
-    const toasts: string[] = [];
+    const logs: RuntimeLogEntry[] = [];
+    const toasts: Array<{ text?: string; type?: string }> = [];
     const restoreBridge = installTagVocabularySyncBridgeMock({
       logs,
       toasts,
@@ -686,7 +650,7 @@ describe("workflow: tag-manager", function () {
     );
     assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:remote-stable"]);
     assert.isTrue(
-      toasts.some((entry) => entry.includes("remote publish failed")),
+      toasts.some((entry) => String(entry.text || "").includes("remote publish failed")),
     );
     assert.isTrue(
       logs.some((entry) => String(entry.stage || "") === "publish-failed"),

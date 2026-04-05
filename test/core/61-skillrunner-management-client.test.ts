@@ -214,6 +214,7 @@ describe("skillrunner management client", function () {
 
     await client.getRun({ requestId: "req-2" });
     await client.getPending({ requestId: "req-2" });
+    await client.getAuthSession({ requestId: "req-2" });
     await client.listRunChatHistory({ requestId: "req-2", fromSeq: 2 });
     await client.listRunEventHistory({ requestId: "req-2", fromSeq: 3 });
 
@@ -222,6 +223,7 @@ describe("skillrunner management client", function () {
       [
         "GET http://127.0.0.1:8030/v1/jobs/req-2",
         "GET http://127.0.0.1:8030/v1/jobs/req-2/interaction/pending",
+        "GET http://127.0.0.1:8030/v1/jobs/req-2/auth/session",
         "GET http://127.0.0.1:8030/v1/jobs/req-2/chat/history?from_seq=2",
         "GET http://127.0.0.1:8030/v1/jobs/req-2/events/history?from_seq=3",
       ],

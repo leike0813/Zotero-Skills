@@ -245,10 +245,21 @@ describe("workflow scan + registry integration", function () {
     await syncBuiltinWorkflowsOnStartup();
     const state = await rescanWorkflowRegistry();
     const packageWorkflow = state.loaded.workflows.find(
-      (entry) => entry.packageId === "reference-workbench-package",
+      (entry) => entry.packageId === "literature-workbench-package",
     );
     assert.isOk(packageWorkflow);
     assert.equal(packageWorkflow?.hookExecutionMode, "precompiled-host-hook");
+  });
+
+  it("loads literature-explainer from literature-workbench-package after registry rescan", async function () {
+    await syncBuiltinWorkflowsOnStartup();
+    const state = await rescanWorkflowRegistry();
+    const workflow = state.loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-explainer",
+    );
+    assert.isOk(workflow);
+    assert.equal(workflow?.packageId, "literature-workbench-package");
+    assert.equal(workflow?.hookExecutionMode, "precompiled-host-hook");
   });
 
   it("shows first error detail when scan target directory is invalid", async function () {

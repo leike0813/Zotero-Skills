@@ -18,6 +18,8 @@ logs
 .vscode/
 .history/
 .codex/
+.claude/
+.qwen/
 
 .pnpmfile.cjs
 

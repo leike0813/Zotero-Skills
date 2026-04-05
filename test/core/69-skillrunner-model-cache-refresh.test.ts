@@ -127,10 +127,12 @@ describe("skillrunner model cache refresh", function () {
             engine: "opencode",
             models: [
               {
+                provider_id: "openai",
                 provider: "openai",
                 model: "gpt-5",
                 display_name: "OpenAI GPT-5",
                 deprecated: false,
+                supported_effort: ["default", "low", "medium", "high"],
               },
             ],
           });
@@ -145,8 +147,55 @@ describe("skillrunner model cache refresh", function () {
       baseUrl: "http://127.0.0.1:8030",
     });
     assert.equal(cached?.modelsByEngine.opencode?.[0]?.id, "openai/gpt-5");
+    assert.equal(cached?.modelsByEngine.opencode?.[0]?.provider_id, "openai");
     assert.equal(cached?.modelsByEngine.opencode?.[0]?.provider, "openai");
     assert.equal(cached?.modelsByEngine.opencode?.[0]?.model, "gpt-5");
+    assert.deepEqual(cached?.modelsByEngine.opencode?.[0]?.supported_effort, [
+      "default",
+      "low",
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("upgrades legacy cache rows by recovering provider_id from provider or id", function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      updatedAt: "2026-04-05T00:00:00.000Z",
+      engines: ["opencode", "qwen"],
+      modelsByEngine: {
+        opencode: [
+          {
+            id: "openai/gpt-5",
+            display_name: "OpenAI GPT-5",
+            provider: "openai",
+            model: "gpt-5",
+            supported_effort: ["default", "medium", "high"],
+          },
+        ],
+        qwen: [
+          {
+            id: "dashscope/qwen-max",
+            display_name: "Qwen Max",
+            model: "qwen-max",
+            supported_effort: ["default"],
+          },
+        ],
+      },
+    });
+
+    const cached = getSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+    });
+    assert.equal(cached?.modelsByEngine.opencode?.[0]?.provider_id, "openai");
+    assert.equal(cached?.modelsByEngine.qwen?.[0]?.provider_id, "dashscope");
+    assert.deepEqual(cached?.modelsByEngine.opencode?.[0]?.supported_effort, [
+      "default",
+      "medium",
+      "high",
+    ]);
   });
 
   it("auto-refresh scheduler performs startup refresh and periodic refresh", async function () {

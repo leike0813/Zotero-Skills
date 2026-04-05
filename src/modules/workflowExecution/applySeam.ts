@@ -16,6 +16,7 @@ import {
 } from "./requestMeta";
 import { isActive } from "../skillRunnerProviderStateMachine";
 import { resolveSkillRunnerExecutionModeFromRequest } from "../skillRunnerExecutionMode";
+import { canWorkflowRunWithoutSelection } from "../workflowSelectionPolicy";
 
 type RunResultLike = {
   status?: string;
@@ -146,7 +147,14 @@ export async function runWorkflowApplySeam(args: {
       typeof job.meta.targetParentID === "number"
         ? job.meta.targetParentID
         : resolveTargetParentIDFromRequest(args.runState.requests[i]);
-    if (!targetParentID) {
+    const applyParent =
+      typeof targetParentID === "number" && targetParentID > 0
+        ? targetParentID
+        : null;
+    if (
+      !applyParent &&
+      !canWorkflowRunWithoutSelection(args.runState.workflow.manifest)
+    ) {
       failed += 1;
       const reason = "cannot resolve target parent";
       failureReasons.push(`job-${i}: ${reason}`);
@@ -201,7 +209,7 @@ export async function runWorkflowApplySeam(args: {
       requestId: result.requestId,
       stage: "provider-finished",
       message: "provider execution finished for job",
-      details: { index: i, taskLabel, targetParentID },
+      details: { index: i, taskLabel, targetParentID: applyParent || undefined },
     });
 
     if (
@@ -231,7 +239,7 @@ export async function runWorkflowApplySeam(args: {
           index: i,
           taskLabel,
           runId: args.runState.runId,
-          targetParentID,
+          targetParentID: applyParent || undefined,
         },
       });
       continue;
@@ -247,7 +255,7 @@ export async function runWorkflowApplySeam(args: {
         requestId: result.requestId,
         stage: "apply-start",
         message: "applyResult started",
-        details: { index: i, taskLabel },
+        details: { index: i, taskLabel, targetParentID: applyParent || undefined },
       });
       let bundleReader: BundleReader = resolved.createUnavailableBundleReader(
         result.requestId,
@@ -259,7 +267,7 @@ export async function runWorkflowApplySeam(args: {
       }
       await resolved.executeApplyResult({
         workflow: args.runState.workflow,
-        parent: targetParentID,
+        parent: applyParent,
         bundleReader,
         request: args.runState.requests[i],
         runResult: job.result,
@@ -281,7 +289,7 @@ export async function runWorkflowApplySeam(args: {
         requestId: result.requestId,
         stage: "apply-succeeded",
         message: "applyResult succeeded",
-        details: { index: i, taskLabel, targetParentID },
+        details: { index: i, taskLabel, targetParentID: applyParent || undefined },
       });
     } catch (error) {
       failed += 1;
@@ -306,7 +314,12 @@ export async function runWorkflowApplySeam(args: {
         requestId: result.requestId,
         stage: "apply-failed",
         message: "applyResult failed",
-        details: { index: i, taskLabel, reason },
+        details: {
+          index: i,
+          taskLabel,
+          reason,
+          targetParentID: applyParent || undefined,
+        },
         error,
       });
     } finally {

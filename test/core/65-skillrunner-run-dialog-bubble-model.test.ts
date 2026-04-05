@@ -79,6 +79,7 @@ describe("skillrunner run dialog bubble message model", function () {
 
   it("normalizes known message kind and defaults unknown to unknown", function () {
     assert.equal(normalizeRunDialogMessageKind("assistant_process"), "assistant_process");
+    assert.equal(normalizeRunDialogMessageKind("assistant_message"), "assistant_message");
     assert.equal(normalizeRunDialogMessageKind("assistant_final"), "assistant_final");
     assert.equal(normalizeRunDialogMessageKind("weird_kind"), "unknown");
   });
@@ -141,6 +142,7 @@ describe("skillrunner run dialog bubble message model", function () {
     text: string;
     attempt?: number;
     messageId?: string;
+    replacesMessageId?: string;
   }): SkillRunnerConversationEntry {
     return {
       seq: args.seq,
@@ -156,11 +158,46 @@ describe("skillrunner run dialog bubble message model", function () {
         correlation: args.messageId
           ? {
               message_id: args.messageId,
+              ...(args.replacesMessageId
+                ? {
+                    replaces_message_id: args.replacesMessageId,
+                  }
+                : {}),
             }
-          : {},
+          : args.replacesMessageId
+            ? {
+                replaces_message_id: args.replacesMessageId,
+              }
+            : {},
       },
     };
   }
+
+  it("removes matched assistant_message by replaces_message_id before inserting assistant_final", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_message",
+        text: "draft-1",
+        attempt: 1,
+        messageId: "m-1",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "final-1",
+        attempt: 1,
+        messageId: "f-1",
+        replacesMessageId: "m-1",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 1);
+    assert.equal(output[0].kind, "assistant_final");
+    assert.equal(output[0].text, "final-1");
+  });
 
   it("removes the last matched assistant_process by message_id when assistant_final arrives", function () {
     const messages: SkillRunnerConversationEntry[] = [
@@ -194,12 +231,37 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.equal(output[1].text, "final-2");
   });
 
+  it("falls back to same message_id when replaces_message_id is absent", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_message",
+        text: "draft-1",
+        attempt: 1,
+        messageId: "m-1",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "final-1",
+        attempt: 1,
+        messageId: "m-1",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.lengthOf(output, 1);
+    assert.equal(output[0].kind, "assistant_final");
+    assert.equal(output[0].text, "final-1");
+  });
+
   it("falls back to normalized text matching when final has no message_id", function () {
     const messages: SkillRunnerConversationEntry[] = [
       entry({
         seq: 1,
         role: "assistant",
-        kind: "assistant_process",
+        kind: "assistant_message",
         text: "  same   final text ",
       }),
       entry({
@@ -220,7 +282,7 @@ describe("skillrunner run dialog bubble message model", function () {
       entry({
         seq: 1,
         role: "assistant",
-        kind: "assistant_process",
+        kind: "assistant_message",
         text: "attempt-1-draft",
         attempt: 1,
         messageId: "same-id",
@@ -228,7 +290,7 @@ describe("skillrunner run dialog bubble message model", function () {
       entry({
         seq: 2,
         role: "assistant",
-        kind: "assistant_process",
+        kind: "assistant_message",
         text: "attempt-2-draft",
         attempt: 2,
         messageId: "same-id",
@@ -245,7 +307,7 @@ describe("skillrunner run dialog bubble message model", function () {
     const output = buildRunDialogDisplayMessages(messages);
     assert.lengthOf(output, 2);
     assert.equal(output[0].text, "attempt-1-draft");
-    assert.equal(output[0].kind, "assistant_process");
+    assert.equal(output[0].kind, "assistant_message");
     assert.equal(output[1].text, "attempt-2-final");
     assert.equal(output[1].kind, "assistant_final");
   });
@@ -391,11 +453,11 @@ describe("skillrunner run dialog bubble message model", function () {
         engine: "opencode",
         provider_id: "openai",
         prompt: "choose auth method",
-        available_methods: ["authorization_code", "api_key"],
+        available_methods: ["auth_code_or_url", "api_key"],
         ask_user: {
           kind: "choose_one",
           options: [
-            { label: "Code", value: "authorization_code" },
+            { label: "Code", value: "auth_code_or_url" },
             { label: "API Key", value: "api_key" },
           ],
         },
@@ -407,13 +469,13 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.equal(normalized.pendingAuth?.providerId, "openai");
     assert.equal(normalized.pendingAuth?.prompt, "choose auth method");
     assert.deepEqual(normalized.pendingAuth?.availableMethods, [
-      "authorization_code",
+      "auth_code_or_url",
       "api_key",
     ]);
     assert.deepEqual(normalized.pendingAuth?.askUser, {
       kind: "choose_one",
       options: [
-        { label: "Code", value: "authorization_code" },
+        { label: "Code", value: "auth_code_or_url" },
         { label: "API Key", value: "api_key" },
       ],
     });
@@ -430,9 +492,9 @@ describe("skillrunner run dialog bubble message model", function () {
         engine: "opencode",
         provider_id: "openai",
         prompt: "provide code",
-        challenge_kind: "authorization_code",
+        challenge_kind: "auth_code_or_url",
         accepts_chat_input: true,
-        input_kind: "authorization_code",
+        input_kind: "auth_code_or_url",
         auth_url: "https://auth.example",
         user_code: "ABCDE",
         last_error: "expired code",
@@ -445,9 +507,9 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.equal(normalized.pendingOwner, "waiting_auth.challenge_active");
     assert.equal(normalized.pendingAuth?.phase, "challenge_active");
     assert.equal(normalized.pendingAuth?.authSessionId, "sess-1");
-    assert.equal(normalized.pendingAuth?.challengeKind, "authorization_code");
+    assert.equal(normalized.pendingAuth?.challengeKind, "auth_code_or_url");
     assert.equal(normalized.pendingAuth?.acceptsChatInput, true);
-    assert.equal(normalized.pendingAuth?.inputKind, "authorization_code");
+    assert.equal(normalized.pendingAuth?.inputKind, "auth_code_or_url");
     assert.equal(normalized.pendingAuth?.authUrl, "https://auth.example");
     assert.equal(normalized.pendingAuth?.userCode, "ABCDE");
     assert.equal(normalized.pendingAuth?.lastError, "expired code");
@@ -455,6 +517,30 @@ describe("skillrunner run dialog bubble message model", function () {
       kind: "upload_files",
       files: [{ name: "oauth.json", required: true }],
     });
+  });
+
+  it("keeps auto-poll auth challenge read-only when chat input is not accepted", function () {
+    const normalized = normalizeRunDialogPendingState({
+      request_id: "req-1",
+      status: "waiting_auth",
+      pending_owner: "waiting_auth.challenge_active",
+      pending_auth: {
+        phase: "challenge_active",
+        auth_session_id: "sess-2",
+        engine: "qwen",
+        provider_id: "dashscope",
+        prompt: "continue auth in browser",
+        challenge_kind: "auth_code_or_url",
+        accepts_chat_input: false,
+        input_kind: null,
+        auth_url: "https://auth.example/device",
+        user_code: "FGHIJ",
+      },
+    });
+    assert.equal(normalized.pendingAuth?.acceptsChatInput, false);
+    assert.isUndefined(normalized.pendingAuth?.inputKind);
+    assert.equal(normalized.pendingAuth?.authUrl, "https://auth.example/device");
+    assert.equal(normalized.pendingAuth?.userCode, "FGHIJ");
   });
 
   it("marks interaction/auth control events for state refresh", function () {

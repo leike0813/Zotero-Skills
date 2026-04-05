@@ -16,6 +16,7 @@ import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { setPref } from "../../src/utils/prefs";
 import {
   expectWorkflowSummaryCounter,
+  isZoteroRuntime,
   workflowsPath,
 } from "../zotero/workflow-test-utils";
 
@@ -189,7 +190,13 @@ async function getTagRegulatorWorkflow() {
   return workflow!;
 }
 
-describe("integration: tag-regulator with mock skill-runner", function () {
+const describeEditorIntegrationSuite = isZoteroRuntime()
+  ? describe.skip
+  : describe;
+
+describeEditorIntegrationSuite(
+  "integration: tag-regulator with mock skill-runner",
+  function () {
   this.timeout(20000);
   let prevBackendsConfigPref: unknown;
   let prevWorkflowSettingsPref: unknown;
@@ -495,4 +502,5 @@ describe("integration: tag-regulator with mock skill-runner", function () {
       "topic:tunnel",
     ]);
   });
-});
+  },
+);

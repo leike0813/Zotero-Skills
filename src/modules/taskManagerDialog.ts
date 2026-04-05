@@ -466,7 +466,11 @@ function isWorkflowSettingsStructuralRefreshChange(args: {
   }
   if (
     args.changedSection === "providerOptions" &&
-    (args.changedKey === "engine" || args.changedKey === "model_provider")
+    (
+      args.changedKey === "engine" ||
+      args.changedKey === "provider_id" ||
+      args.changedKey === "model"
+    )
   ) {
     return true;
   }

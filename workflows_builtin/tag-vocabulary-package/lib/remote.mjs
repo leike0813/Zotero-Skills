@@ -42,11 +42,7 @@ export function encodeBase64Utf8(text, runtime) {
 }
 
 export function decodeBase64Utf8(text, runtime) {
-  return decodeRuntimeBase64Utf8(
-    text,
-    "GitHub contents payload content is empty",
-    runtime,
-  );
+  return decodeRuntimeBase64Utf8(text, runtime);
 }
 
 export async function fetchJsonOrThrow(url, options, runtime) {

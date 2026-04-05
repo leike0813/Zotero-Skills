@@ -7,6 +7,7 @@ import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { createHookHelpers } from "../../src/workflows/helpers";
 import { WORKFLOW_HOST_API_VERSION } from "../../src/workflows/hostApi";
+import { resetRuntimeBridgeOverrideForTests } from "../../src/utils/runtimeBridge";
 import {
   executeApplyResult,
   executeBuildRequests,
@@ -14,11 +15,13 @@ import {
 import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
 import { __tagRegulatorApplyResultTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-regulator/hooks/applyResult.mjs";
 import {
+  installWorkflowFetchMockAcrossRuntimes,
   installTagVocabularyHostApiGlobals,
   installTagVocabularySyncCapture,
 } from "../workflow-tag-vocabulary/hostApiTestUtils";
 import {
   existsPath,
+  isZoteroRuntime,
   readUtf8,
   workflowsPath,
 } from "../zotero/workflow-test-utils";
@@ -351,14 +354,7 @@ function installFetchMock(
     json: () => Promise<unknown>;
   }>,
 ) {
-  const runtime = globalThis as typeof globalThis & {
-    fetch?: typeof mockFetch;
-  };
-  const previous = runtime.fetch;
-  runtime.fetch = mockFetch;
-  return () => {
-    runtime.fetch = previous;
-  };
+  return installWorkflowFetchMockAcrossRuntimes(mockFetch);
 }
 
 function toBase64(text: string) {
@@ -390,16 +386,19 @@ async function getTagRegulatorWorkflow() {
 }
 
 describe("workflow: tag-regulator", function () {
+  const itNodeOnly = isZoteroRuntime() ? it.skip : it;
   let restoreHostApi: (() => void) | null = null;
 
   beforeEach(function () {
     clearTagVocabularyState();
+    resetRuntimeBridgeOverrideForTests();
     restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
     restoreHostApi?.();
     restoreHostApi = null;
+    resetRuntimeBridgeOverrideForTests();
     clearTagVocabularyState();
   });
 
@@ -589,23 +588,7 @@ describe("workflow: tag-regulator", function () {
     assert.notInclude(yamlText, "- topic:local-only");
   });
 
-  it("buildRequest keeps runtime-scoped prefs access when package runtime has no global Zotero fallback", async function () {
-    saveRemoteCommittedVocabularyState([
-      {
-        tag: "topic:runtime-only",
-        facet: "topic",
-        source: "remote",
-        note: "",
-        deprecated: false,
-      },
-    ]);
-    saveWorkflowSettingsState("tag-manager", {
-      github_owner: "demo-owner",
-      github_repo: "Zotero_TagVocab",
-      file_path: "tags/tags.json",
-      github_token: "secret-token",
-    });
-
+  itNodeOnly("buildRequest keeps runtime-scoped prefs access when package runtime has no global Zotero fallback", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Runtime Scoped Prefs Parent" },
@@ -614,66 +597,88 @@ describe("workflow: tag-regulator", function () {
 
     const workflow = await getTagRegulatorWorkflow();
     const selectionContext = await buildSelectionContext([parent]);
-    const originalZotero = (globalThis as typeof globalThis & { Zotero?: typeof Zotero })
-      .Zotero;
-    delete (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero;
-
-    try {
-      const request = (await workflow.hooks.buildRequest?.({
-        selectionContext,
-        manifest: workflow.manifest,
-        executionOptions: {
+    const prefsPrefix = `${config.prefsPrefix}.runtime-scope-${Date.now()}`;
+    const prefStore = new Map<string, string>();
+    prefStore.set(
+      `${prefsPrefix}.tagVocabularyRemoteCommittedJson`,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            tag: "topic:runtime-only",
+            facet: "topic",
+            source: "remote",
+            note: "",
+            deprecated: false,
+          },
+        ],
+      }),
+    );
+    prefStore.set(
+      `${prefsPrefix}.workflowSettingsJson`,
+      JSON.stringify({
+        "tag-manager": {
           workflowParams: {
-            valid_tags_format: "yaml",
+            github_owner: "demo-owner",
+            github_repo: "Zotero_TagVocab",
+            file_path: "tags/tags.json",
+            github_token: "secret-token",
           },
         },
-        runtime: {
-          helpers: createHookHelpers(originalZotero!),
-          hostApiVersion: WORKFLOW_HOST_API_VERSION,
-          hostApi: {
-            prefs: {
-              get(key: string, global = true) {
-                return originalZotero!.Prefs.get(key, global);
-              },
-              set(key: string, value: unknown, global = true) {
-                originalZotero!.Prefs.set(key, value as any, global);
-              },
-              clear(key: string, global = true) {
-                originalZotero!.Prefs.clear(key, global);
-              },
-            },
-            addon: {
-              getConfig() {
-                return {
-                  addonName: "Zotero Skills",
-                  addonRef: "zotero-skills",
-                  prefsPrefix: config.prefsPrefix,
-                };
-              },
-            },
-            file: {
-              getTempDirectoryPath() {
-                return String(originalZotero!.getTempDirectory?.()?.path || "");
-              },
-            },
-          },
-          workflowId: "tag-regulator",
-          packageId: workflow.packageId,
-          workflowSourceKind: workflow.workflowSourceKind,
-          hookName: "buildRequest",
-        },
-      })) as TagRegulatorRequest;
+      }),
+    );
 
-      const yamlPath = String(request.upload_files?.[0].path || "");
-      const yamlText = await readUtf8(yamlPath);
-      assert.include(yamlText, "- topic:runtime-only");
-    } finally {
-      (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
-        originalZotero;
-    }
+    const request = (await workflow.hooks.buildRequest?.({
+      selectionContext,
+      manifest: workflow.manifest,
+      executionOptions: {
+        workflowParams: {
+          valid_tags_format: "yaml",
+        },
+      },
+      runtime: {
+        helpers: createHookHelpers(Zotero),
+        hostApiVersion: WORKFLOW_HOST_API_VERSION,
+        hostApi: {
+          prefs: {
+            get(key: string) {
+              return prefStore.get(String(key || "").trim()) || "";
+            },
+            set(key: string, value: unknown) {
+              prefStore.set(String(key || "").trim(), String(value ?? ""));
+            },
+            clear(key: string) {
+              prefStore.delete(String(key || "").trim());
+            },
+          },
+          addon: {
+            getConfig() {
+              return {
+                addonName: "Zotero Skills",
+                addonRef: "zotero-skills",
+                prefsPrefix,
+              };
+            },
+          },
+          file: {
+            getTempDirectoryPath() {
+              return String(Zotero.getTempDirectory?.()?.path || "");
+            },
+          },
+        },
+        workflowId: "tag-regulator",
+        packageId: workflow.packageId,
+        workflowSourceKind: workflow.workflowSourceKind,
+        hookName: "buildRequest",
+      },
+    })) as TagRegulatorRequest;
+
+    const yamlPath = String(request.upload_files?.[0].path || "");
+    const yamlText = await readUtf8(yamlPath);
+    assert.include(yamlText, "- topic:runtime-only");
   });
 
-  it("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
+  itNodeOnly("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:tunnel",
@@ -759,7 +764,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(listTags(parent), ["status:2-to-read", "topic:tunnel"]);
   });
 
-  it("does not open suggest-tags dialog or write vocabulary when suggest_tags is empty", async function () {
+  itNodeOnly("does not open suggest-tags dialog or write vocabulary when suggest_tags is empty", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:stable",
@@ -827,7 +832,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(loadTagVocabularyState().entries, before);
   });
 
-  it("reclassifies stale controlled suggest tags before opening join-all dialog", async function () {
+  itNodeOnly("reclassifies stale controlled suggest tags before opening join-all dialog", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -960,7 +965,7 @@ describe("workflow: tag-regulator", function () {
     ]);
   });
 
-  it("keeps staged suggest tags visible and merges current parent binding before dialog", async function () {
+  itNodeOnly("keeps staged suggest tags visible and merges current parent binding before dialog", async function () {
     Zotero.Prefs.set(
       TAG_VOCAB_STAGED_PREF_KEY,
       JSON.stringify({
@@ -1069,7 +1074,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(alreadyStaged?.parentBindings || [], [parent.id, 999]);
   });
 
-  it("stages suggest tags with parent bindings without mutating parent tags", async function () {
+  itNodeOnly("stages suggest tags with parent bindings without mutating parent tags", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Stage Parent Binding" },
@@ -1134,7 +1139,7 @@ describe("workflow: tag-regulator", function () {
     }
   });
 
-  it("falls back to staged with toast when subscription-mode join publish fails without mutating parent tags", async function () {
+  itNodeOnly("falls back to staged with toast when subscription-mode join publish fails without mutating parent tags", async function () {
     saveRemoteCommittedVocabularyState([]);
     saveWorkflowSettingsState("tag-manager", {
       github_owner: "demo-owner",
@@ -1253,7 +1258,7 @@ describe("workflow: tag-regulator", function () {
     }
   });
 
-  it("opens dialog only for suggest tags that remain unresolved after live reconcile", async function () {
+  itNodeOnly("opens dialog only for suggest tags that remain unresolved after live reconcile", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:already-controlled",
@@ -1360,7 +1365,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(listTags(parent), ["topic:already-controlled"]);
   });
 
-  it("keeps operation idempotent during join-all intake after live reconcile", async function () {
+  itNodeOnly("keeps operation idempotent during join-all intake after live reconcile", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:existing",
@@ -1459,7 +1464,7 @@ describe("workflow: tag-regulator", function () {
     ]);
   });
 
-  it("applies close-policy staged intake when dialog closes without explicit action and keeps parent tags unchanged", async function () {
+  itNodeOnly("applies close-policy staged intake when dialog closes without explicit action and keeps parent tags unchanged", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:stable",
@@ -1550,7 +1555,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(listTags(parent), ["topic:tunnel"]);
   });
 
-  it("rejects invalid suggest tags with diagnostics while accepting valid tags in join-all path", async function () {
+  itNodeOnly("rejects invalid suggest tags with diagnostics while accepting valid tags in join-all path", async function () {
     const restoreOpen = installSuggestTagsDialogMock(async () => ({
       saved: false,
       actionId: "join-all",
@@ -1762,7 +1767,7 @@ describe("workflow: tag-regulator", function () {
     assert.deepEqual(listTags(parent), before);
   });
 
-  it("uses resultJson.result.data and ignores poll responseJson envelope", async function () {
+  itNodeOnly("uses resultJson.result.data and ignores poll responseJson envelope", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator ResponseJson Parent" },
@@ -1985,7 +1990,7 @@ describe("workflow: tag-regulator", function () {
     }
   });
 
-  it("opens suggest dialog with a wider responsive layout", async function () {
+  itNodeOnly("opens suggest dialog with a wider responsive layout", async function () {
     let capturedArgs: SuggestTagsDialogOpenArgs | null = null;
     const restoreBridge = installSuggestTagsDialogMock((args) => {
       capturedArgs = args;

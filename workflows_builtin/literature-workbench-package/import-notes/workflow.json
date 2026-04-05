@@ -1,0 +1,10 @@
+{
+  "id": "import-notes",
+  "label": "Import Notes",
+  "version": "1.0.0",
+  "provider": "pass-through",
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.mjs",
+    "applyResult": "hooks/applyResult.mjs"
+  }
+}

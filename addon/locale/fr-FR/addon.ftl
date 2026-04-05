@@ -313,6 +313,7 @@ backend-manager-error-bearer-required = Ligne { $row }: le jeton bearer est requ
 backend-manager-error-timeout-invalid = Ligne { $row }: le délai doit être un nombre positif
 backend-display-local-skillrunner = Backend local
 task-dashboard-backend-unavailable-tag = Indisponible
+task-dashboard-skillrunner-backend-unavailable = Indisponible
 skillrunner-local-runtime-toast-up = Backend local démarré.
 skillrunner-local-runtime-toast-down = Backend local arrêté.
 skillrunner-local-runtime-toast-abnormal-stop = Backend local arrêté de manière inattendue.

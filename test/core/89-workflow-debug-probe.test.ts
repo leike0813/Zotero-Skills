@@ -13,6 +13,7 @@ import {
   installRuntimeBridgeOverrideForTests,
   resetRuntimeBridgeOverrideForTests,
 } from "../../src/utils/runtimeBridge";
+import { resetWorkflowHostApiForTests } from "../../src/workflows/hostApi";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
 import { executeBuildRequests } from "../../src/workflows/runtime";
 import { executeApplyResult } from "../../src/workflows/runtime";
@@ -92,12 +93,14 @@ describe("workflow debug probe", function () {
     clearRuntimeLogs();
     setDebugModeOverrideForTests(true);
     resetRuntimeBridgeOverrideForTests();
+    resetWorkflowHostApiForTests();
   });
 
   afterEach(function () {
     clearRuntimeLogs();
     setDebugModeOverrideForTests();
     resetRuntimeBridgeOverrideForTests();
+    resetWorkflowHostApiForTests();
   });
 
   it("classifies enabled workflows and hook failures using real preflight execution", async function () {
@@ -255,64 +258,28 @@ describe("workflow debug probe", function () {
       fields: { title: "Debug Probe Host Scope Parent" },
     });
     const selectionContext = await buildSelectionContext([parent]);
-    const previousZotero = (globalThis as Record<string, unknown>).Zotero;
-    try {
-      delete (globalThis as Record<string, unknown>).Zotero;
-      installRuntimeBridgeOverrideForTests({
-        zotero: {
-          Items: {
-            get() {
-              return null;
-            },
-          },
-          Prefs: {
-            get() {
-              return "";
-            },
-            set() {
-              return undefined;
-            },
-          },
-          File: {
-            pathToFile(path: string) {
-              return path;
-            },
-          },
-        } as any,
-        addon: {
-          data: {
-            config: {
-              addonName: "probe-addon",
-            },
-          },
-        } as any,
-      });
+    const checks = await collectWorkflowDebugProbeChecks({
+      selectionContext,
+      workflows: [
+        {
+          ...makePassThroughWorkflow({
+            id: "bundle-host-summary",
+            label: "Bundle Host Summary",
+            packageId: "debug-package",
+          }),
+          hookExecutionMode: "precompiled-host-hook",
+        },
+      ],
+    });
 
-      const checks = await collectWorkflowDebugProbeChecks({
-        selectionContext,
-        workflows: [
-          {
-            ...makePassThroughWorkflow({
-              id: "bundle-host-summary",
-              label: "Bundle Host Summary",
-              packageId: "debug-package",
-            }),
-            hookExecutionMode: "precompiled-host-hook",
-          },
-        ],
-      });
-
-      assert.lengthOf(checks, 1);
-      assert.deepInclude(checks[0].hostApiSummary || {}, {
-        items: true,
-        prefs: true,
-        editor: true,
-      });
-      assert.equal(checks[0].hostApiVersion, 2);
-      assert.equal(checks[0].compiledHookSource, "scan-time-precompile");
-    } finally {
-      (globalThis as Record<string, unknown>).Zotero = previousZotero;
-    }
+    assert.lengthOf(checks, 1);
+    assert.deepInclude(checks[0].hostApiSummary || {}, {
+      items: true,
+      prefs: true,
+      editor: true,
+    });
+    assert.equal(checks[0].hostApiVersion, 2);
+    assert.equal(checks[0].compiledHookSource, "scan-time-precompile");
   });
 
   it("injects runtime addon into applyResult hook context", async function () {

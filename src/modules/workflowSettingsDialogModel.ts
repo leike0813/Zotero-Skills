@@ -1,4 +1,5 @@
 import { resolveProviderById } from "../providers/registry";
+import { isSkillRunnerProviderScopedEngine } from "../providers/skillrunner/modelCatalog";
 import type { ProviderRuntimeOptionSchemaEntry } from "../providers/types";
 import type { BackendInstance } from "../backends/types";
 import type { WorkflowParameterSchema } from "../workflows/types";
@@ -17,6 +18,7 @@ export type FormSchemaEntry = {
   enumValues?: string[];
   allowCustom?: boolean;
   defaultValue?: unknown;
+  disabled?: boolean;
 };
 
 export type WorkflowSettingsDialogProfileItem = {
@@ -76,6 +78,7 @@ function fromProviderOptionSchema(
     description: entry.description,
     enumValues: entry.type === "string" ? normalizeEnum(entry.enum) : [],
     defaultValue: entry.default,
+    disabled: entry.disabled === true,
   }));
 }
 
@@ -96,7 +99,27 @@ export function resolveProviderSchemaEntries(args: {
     const schema = provider.getRuntimeOptionSchema?.() || {};
     const entries = fromProviderOptionSchema(schema);
     const values = args.currentValues || {};
-    return entries.map((entry) => {
+    const engine = String(values.engine || "").trim();
+    const scope =
+      args.backend &&
+      typeof args.backend.id === "string" &&
+      typeof args.backend.baseUrl === "string"
+        ? {
+            backendId: args.backend.id,
+            baseUrl: args.backend.baseUrl,
+          }
+        : undefined;
+    const isSkillRunnerScopedProviderField =
+      args.providerId === "skillrunner" &&
+      isSkillRunnerProviderScopedEngine(engine, scope);
+    return entries
+      .filter((entry) => {
+        if (entry.key === "provider_id" && !isSkillRunnerScopedProviderField) {
+          return false;
+        }
+        return true;
+      })
+      .map((entry) => {
       if (entry.type !== "string") {
         return entry;
       }
@@ -109,6 +132,15 @@ export function resolveProviderSchemaEntries(args: {
         return {
           ...entry,
           enumValues: normalizeEnum(dynamicEnum),
+          disabled:
+            entry.key === "effort" && normalizeEnum(dynamicEnum).length <= 1,
+        };
+      }
+      if (entry.key === "effort") {
+        return {
+          ...entry,
+          enumValues: ["default"],
+          disabled: true,
         };
       }
       return entry;

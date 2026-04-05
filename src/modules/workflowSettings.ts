@@ -3,7 +3,7 @@ import type { BackendInstance } from "../backends/types";
 import { resolveBackendDisplayName } from "../backends/displayName";
 import { resolveProviderById, normalizeProviderRuntimeOptions } from "../providers/registry";
 import {
-  normalizeSkillRunnerModelForProvider,
+  isSkillRunnerProviderScopedEngine,
   resolveSkillRunnerModelNameForProvider,
 } from "../providers/skillrunner/modelCatalog";
 import type { LoadedWorkflow } from "../workflows/types";
@@ -46,6 +46,7 @@ type WorkflowSettingsSchemaEntry = {
   enumValues?: string[];
   allowCustom?: boolean;
   defaultValue?: unknown;
+  disabled?: boolean;
   min?: number;
   max?: number;
 };
@@ -244,11 +245,6 @@ function normalizeProviderOptionsForUi(args: {
     return next;
   }
   const engine = String(next.engine || "").trim();
-  const modelProvider = String(next.model_provider || "").trim();
-  const model = String(next.model || "").trim();
-  if (engine !== "opencode" || !modelProvider || !model) {
-    return next;
-  }
   const scope =
     args.backend &&
     typeof args.backend.id === "string" &&
@@ -258,19 +254,25 @@ function normalizeProviderOptionsForUi(args: {
           baseUrl: args.backend.baseUrl,
         }
       : undefined;
-  const canonical = normalizeSkillRunnerModelForProvider({
-    engine,
-    provider: modelProvider,
-    model,
-    scope,
-  });
-  if (!canonical) {
+  const isProviderScoped = isSkillRunnerProviderScopedEngine(engine, scope);
+  const providerId = String(next.provider_id || next.model_provider || "").trim();
+  const model = String(next.model || "").trim();
+  delete next.model_provider;
+  if (!isProviderScoped) {
+    return next;
+  }
+  if (!providerId) {
+    delete next.provider_id;
+    return next;
+  }
+  next.provider_id = providerId;
+  if (!model) {
     return next;
   }
   const uiModelName = resolveSkillRunnerModelNameForProvider({
     engine,
-    provider: modelProvider,
-    model: canonical,
+    provider: providerId,
+    model,
     scope,
   });
   if (uiModelName) {
@@ -353,6 +355,19 @@ function toProviderSchemaEntries(args: {
   const providerId = resolveProviderId(args.workflow);
   const provider = resolveProviderById(providerId);
   const schema = provider.getRuntimeOptionSchema?.() || {};
+  const providerEngine = String(args.providerOptions.engine || "").trim();
+  const providerScope =
+    args.backend &&
+    typeof args.backend.id === "string" &&
+    typeof args.backend.baseUrl === "string"
+      ? {
+          backendId: args.backend.id,
+          baseUrl: args.backend.baseUrl,
+        }
+      : undefined;
+  const isProviderScopedFieldVisible =
+    providerId === "skillrunner" &&
+    isSkillRunnerProviderScopedEngine(providerEngine, providerScope);
   const baseEntries = Object.entries(schema).map(([key, entry]) => {
     const enumValues = entry.type === "string" ? toStringEnum(entry.enum) : [];
     const dynamicEnum =
@@ -363,26 +378,37 @@ function toProviderSchemaEntries(args: {
             backend: args.backend,
           }) || []
         : [];
+    const resolvedEnumValues =
+      key === "effort" && entry.type === "string"
+        ? toStringEnum(dynamicEnum.length > 0 ? dynamicEnum : enumValues.length > 0 ? enumValues : ["default"])
+        : entry.type === "string" && dynamicEnum.length > 0
+          ? toStringEnum(dynamicEnum)
+          : enumValues;
     return {
       key,
       type: entry.type,
       title: entry.title,
       description: entry.description,
-      enumValues:
-        entry.type === "string" && dynamicEnum.length > 0
-          ? toStringEnum(dynamicEnum)
-          : enumValues,
+      enumValues: resolvedEnumValues,
       defaultValue: entry.default,
+      disabled:
+        key === "effort" && entry.type === "string" && resolvedEnumValues.length <= 1,
     };
+  });
+  const filteredEntries = baseEntries.filter((entry) => {
+    if (entry.key === "provider_id" && !isProviderScopedFieldVisible) {
+      return false;
+    }
+    return true;
   });
   const mode = resolveSkillRunnerMode(args.workflow);
   if (providerId !== "skillrunner" || !mode) {
-    return baseEntries;
+    return filteredEntries;
   }
   if (mode === "interactive") {
-    return baseEntries.filter((entry) => entry.key !== "no_cache");
+    return filteredEntries.filter((entry) => entry.key !== "no_cache");
   }
-  return baseEntries.filter((entry) => entry.key !== "interactive_auto_reply");
+  return filteredEntries.filter((entry) => entry.key !== "interactive_auto_reply");
 }
 
 export async function buildWorkflowSettingsUiDescriptor(args: {
@@ -594,5 +620,48 @@ export async function resolveWorkflowExecutionContext(args: {
     workflowParams,
     providerOptions: constrainedProviderOptions,
     providerId,
+  };
+}
+
+export function resolveWorkflowExecutionOptionsPreview(args: {
+  workflow: LoadedWorkflow;
+  executionOptionsOverride?: WorkflowExecutionOptions;
+}) {
+  const saved = getWorkflowSettings(args.workflow.manifest.id);
+  const merged = mergeExecutionOptions(saved, args.executionOptionsOverride);
+  const schemaNormalizedWorkflowParams = normalizeWorkflowParamsBySchema(
+    args.workflow.manifest,
+    merged.workflowParams,
+  );
+  const workflowParams = applyExecutionWorkflowParamsNormalizer({
+    workflow: args.workflow,
+    rawWorkflowParams:
+      (merged.workflowParams as Record<string, unknown> | undefined) || {},
+    normalizedWorkflowParams: schemaNormalizedWorkflowParams,
+  });
+  let providerId = "";
+  let constrainedProviderOptions =
+    (merged.providerOptions as Record<string, unknown> | undefined) || {};
+  try {
+    providerId = resolveProviderId(args.workflow);
+    const provider = resolveProviderById(providerId);
+    const providerOptions = normalizeProviderRuntimeOptions({
+      providerId: provider.id,
+      options: merged.providerOptions,
+      backend: undefined,
+    });
+    constrainedProviderOptions = constrainSkillRunnerProviderOptionsByMode({
+      workflow: args.workflow,
+      options: providerOptions,
+    });
+  } catch {
+    constrainedProviderOptions = isObject(merged.providerOptions)
+      ? { ...merged.providerOptions }
+      : {};
+  }
+  return {
+    providerId,
+    workflowParams,
+    providerOptions: constrainedProviderOptions,
   };
 }

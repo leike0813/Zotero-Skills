@@ -3,7 +3,13 @@ import {
   buildWorkflowSettingsDialogDraft,
   buildWorkflowSettingsDialogRenderModel,
   collectSchemaValues,
+  resolveProviderSchemaEntries,
 } from "../../src/modules/workflowSettingsDialogModel";
+import {
+  clearSkillRunnerModelCache,
+  upsertSkillRunnerModelCacheEntry,
+} from "../../src/providers/skillrunner/modelCache";
+import { config } from "../../package.json";
 
 type FakeControl = {
   getAttribute: (name: string) => string | null;
@@ -31,6 +37,22 @@ function makeContainer(controls: FakeControl[]): HTMLElement {
 }
 
 describe("workflow settings dialog model", function () {
+  const cachePrefKey = `${config.prefsPrefix}.skillRunnerModelCacheJson`;
+  let previousPref: unknown;
+
+  beforeEach(function () {
+    previousPref = Zotero.Prefs.get(cachePrefKey, true);
+    clearSkillRunnerModelCache();
+  });
+
+  afterEach(function () {
+    if (typeof previousPref === "undefined") {
+      Zotero.Prefs.clear(cachePrefKey, true);
+    } else {
+      Zotero.Prefs.set(cachePrefKey, previousPref, true);
+    }
+  });
+
   it("builds deterministic render model without mutating initial state", function () {
     const initialState = {
       selectedProfile: "skillrunner-default",
@@ -232,7 +254,7 @@ describe("workflow settings dialog model", function () {
     });
   });
 
-  it("collects opencode model provider and model from choice controls", function () {
+  it("collects opencode provider_id and model from choice controls", function () {
     const controls: FakeControl[] = [
       makeControl(
         {
@@ -245,7 +267,7 @@ describe("workflow settings dialog model", function () {
       ),
       makeControl(
         {
-          "data-zs-option-key": "model_provider",
+          "data-zs-option-key": "provider_id",
           "data-zs-option-type": "string",
           "data-zs-choice-control": "1",
           "data-zs-choice-value": "openai",
@@ -261,13 +283,102 @@ describe("workflow settings dialog model", function () {
         },
         {},
       ),
+      makeControl(
+        {
+          "data-zs-option-key": "effort",
+          "data-zs-option-type": "string",
+          "data-zs-choice-control": "1",
+          "data-zs-choice-value": "high",
+        },
+        {},
+      ),
     ];
 
     const result = collectSchemaValues(makeContainer(controls));
     assert.deepEqual(result, {
       engine: "opencode",
-      model_provider: "openai",
+      provider_id: "openai",
       model: "gpt-5",
+      effort: "high",
     });
+  });
+
+  it("keeps provider_id field for provider-scoped qwen engine and hides it for gemini", function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      updatedAt: "2026-04-05T00:00:00.000Z",
+      engines: ["qwen"],
+      modelsByEngine: {
+        qwen: [
+          {
+            id: "dashscope/qwen-max",
+            provider_id: "dashscope",
+            provider: "dashscope",
+            model: "qwen-max",
+            display_name: "Qwen Max",
+            supported_effort: ["default"],
+          },
+        ],
+      },
+    });
+
+    const backend = {
+      id: "skillrunner-local",
+      type: "skillrunner",
+      baseUrl: "http://127.0.0.1:8030",
+      auth: { kind: "none" },
+    } as const;
+
+    const qwenEntries = resolveProviderSchemaEntries({
+      providerId: "skillrunner",
+      currentValues: { engine: "qwen", provider_id: "dashscope" },
+      backend,
+    });
+    assert.includeMembers(
+      qwenEntries.map((entry) => entry.key),
+      ["provider_id", "model", "effort"],
+    );
+    const qwenEffort = qwenEntries.find((entry) => entry.key === "effort");
+    assert.deepEqual(qwenEffort?.enumValues || [], ["default"]);
+    assert.equal(qwenEffort?.disabled, true);
+
+    const geminiEntries = resolveProviderSchemaEntries({
+      providerId: "skillrunner",
+      currentValues: {
+        engine: "gemini",
+        provider_id: "google",
+        model: "gemini-2.5-pro",
+      },
+      backend,
+    });
+    assert.notInclude(
+      geminiEntries.map((entry) => entry.key),
+      "provider_id",
+    );
+    const geminiEffort = geminiEntries.find((entry) => entry.key === "effort");
+    assert.deepEqual(geminiEffort?.enumValues || [], ["default"]);
+    assert.equal(geminiEffort?.disabled, true);
+  });
+
+  it("enables effort choices for codex models that advertise supported_effort", function () {
+    const entries = resolveProviderSchemaEntries({
+      providerId: "skillrunner",
+      currentValues: {
+        engine: "codex",
+        model: "gpt-5.2",
+        effort: "high",
+      },
+    });
+
+    const effort = entries.find((entry) => entry.key === "effort");
+    assert.deepEqual(effort?.enumValues || [], [
+      "default",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    assert.equal(effort?.disabled, false);
   });
 });

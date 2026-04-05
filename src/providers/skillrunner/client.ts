@@ -716,7 +716,11 @@ export class SkillRunnerClient {
     providerOptions: Record<string, unknown>,
   ): SkillRunnerHttpStepsRequest {
     const engine = String(providerOptions.engine || "").trim();
+    const providerId = String(
+      providerOptions.provider_id || providerOptions.model_provider || "",
+    ).trim();
     const model = String(providerOptions.model || "").trim();
+    const effort = String(providerOptions.effort || "").trim() || "default";
     const runtimeOptions: Record<string, unknown> = isObjectRecord(
       request.runtime_options,
     )
@@ -763,7 +767,9 @@ export class SkillRunnerClient {
           json: {
             skill_id: request.skill_id,
             ...(engine ? { engine } : {}),
+            ...(providerId ? { provider_id: providerId } : {}),
             ...(model ? { model } : {}),
+            effort,
             ...(request.input ? { input: request.input } : {}),
             parameter: request.parameter || {},
             ...(Object.keys(runtimeOptions).length > 0

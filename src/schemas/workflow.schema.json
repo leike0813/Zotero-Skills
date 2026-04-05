@@ -26,6 +26,9 @@
     "inputs": {
       "$ref": "#/$defs/inputsSpec"
     },
+    "trigger": {
+      "$ref": "#/$defs/triggerSpec"
+    },
     "execution": {
       "$ref": "#/$defs/executionSpec"
     },
@@ -200,6 +203,15 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "triggerSpec": {
+      "type": "object",
+      "properties": {
+        "requiresSelection": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

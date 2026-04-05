@@ -550,7 +550,7 @@ function encodeBase64Utf8(text) {
 }
 
 function decodeBase64Utf8(text) {
-  return decodeRuntimeBase64Utf8(String(text || "").replace(/\s+/g, ""));
+  return decodeRuntimeBase64Utf8(text);
 }
 
 function sanitizeRemoteTags(tags) {

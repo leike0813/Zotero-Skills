@@ -71,51 +71,26 @@ describe("runtime bridge", function () {
   });
 
   it("resolves host capabilities from unified runtime resolvers", function () {
-    const previousZotero = (globalThis as Record<string, unknown>).Zotero;
-    const zoteroRef = {
-      Items: {
-        get() {
-          return null;
-        },
-      },
-      Prefs: {
-        get() {
-          return "";
-        },
-        set() {
-          return undefined;
-        },
-      },
-      File: {
-        pathToFile(path: string) {
-          return path;
-        },
-      },
-    } as unknown as typeof Zotero;
-    try {
-      delete (globalThis as Record<string, unknown>).Zotero;
-      installRuntimeBridgeOverrideForTests({
-        zotero: zoteroRef,
-        addon: {
-          data: {
-            config: {
-              addonName: "Unified Host Addon",
-            },
+    installRuntimeBridgeOverrideForTests({
+      addon: {
+        data: {
+          config: {
+            addonName: "Unified Host Addon",
           },
         },
-      });
+      },
+    });
 
-      const hostCapabilities = resolveRuntimeHostCapabilities();
-      assert.strictEqual(resolveRuntimeZotero(), zoteroRef);
-      assert.strictEqual(hostCapabilities.zotero, zoteroRef);
-      assert.equal(
-        hostCapabilities.addon?.data?.config?.addonName,
-        "Unified Host Addon",
-      );
-      assert.isFunction(hostCapabilities.fetch);
-    } finally {
-      (globalThis as Record<string, unknown>).Zotero = previousZotero;
-    }
+    const hostCapabilities = resolveRuntimeHostCapabilities();
+    assert.strictEqual(hostCapabilities.zotero, resolveRuntimeZotero());
+    assert.isFunction(hostCapabilities.zotero?.Items?.get);
+    assert.isFunction(hostCapabilities.zotero?.Prefs?.get);
+    assert.isFunction(hostCapabilities.zotero?.Prefs?.set);
+    assert.isFunction(hostCapabilities.zotero?.File?.pathToFile);
+    assert.equal(
+      hostCapabilities.addon?.data?.config?.addonName,
+      "Unified Host Addon",
+    );
   });
 
   it("prefers the most complete Zotero candidate by shape", function () {

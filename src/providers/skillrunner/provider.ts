@@ -16,20 +16,31 @@ import type {
 import { appendRuntimeLog } from "../../modules/runtimeLogManager";
 import {
   getDefaultSkillRunnerEngine,
-  getDefaultSkillRunnerModelProvider,
+  getSkillRunnerCanonicalProviderId,
+  isSkillRunnerProviderScopedEngine,
   listSkillRunnerEngines,
+  listSkillRunnerModelEffortOptions,
   listSkillRunnerModelOptions,
   listSkillRunnerModelOptionsForProvider,
   listSkillRunnerModelProviders,
+  normalizeSkillRunnerEffort,
   normalizeSkillRunnerModelForProvider,
   normalizeSkillRunnerModel,
-  splitSkillRunnerModelId,
+  resolveSkillRunnerModelNameForProvider,
+  splitSkillRunnerModelSpec,
 } from "./modelCatalog";
 import { SkillRunnerClient } from "./client";
 import { ensureManagedLocalRuntimeForBackend } from "../../modules/skillRunnerLocalRuntimeManager";
 
-function isOpencodeEngine(engine: string) {
-  return String(engine || "").trim() === "opencode";
+function toBackendCatalogScope(backend?: BackendInstance) {
+  return backend &&
+    typeof backend.id === "string" &&
+    typeof backend.baseUrl === "string"
+    ? {
+        backendId: backend.id,
+        baseUrl: backend.baseUrl,
+      }
+    : undefined;
 }
 
 function normalizeNoCache(value: unknown) {
@@ -97,8 +108,7 @@ export class SkillRunnerProvider implements Provider {
 
   getRuntimeOptionSchema() {
     const defaultEngine = getDefaultSkillRunnerEngine() || "gemini";
-    const defaultModelProvider =
-      getDefaultSkillRunnerModelProvider(defaultEngine) || "";
+    const defaultModelProvider = getSkillRunnerCanonicalProviderId(defaultEngine) || "";
     return {
       engine: {
         type: "string" as const,
@@ -107,11 +117,11 @@ export class SkillRunnerProvider implements Provider {
         default: defaultEngine,
         enum: listSkillRunnerEngines(),
       },
-      model_provider: {
+      provider_id: {
         type: "string" as const,
-        title: "Model Provider",
+        title: "Provider",
         description:
-          "Model provider for OpenCode. Other engines use a fixed provider.",
+          "Model provider for the selected engine. Provider-aware engines require an explicit provider.",
         default: defaultModelProvider,
       },
       model: {
@@ -119,6 +129,13 @@ export class SkillRunnerProvider implements Provider {
         title: "Model",
         description: "Optional model override for selected engine.",
         default: "",
+      },
+      effort: {
+        type: "string" as const,
+        title: "Effort",
+        description:
+          "Reasoning effort for the selected model. Unsupported models stay on default.",
+        default: "default",
       },
       no_cache: {
         type: "boolean" as const,
@@ -164,15 +181,21 @@ export class SkillRunnerProvider implements Provider {
       typeof rawEngine === "string" && rawEngine.trim()
         ? rawEngine.trim()
         : getDefaultSkillRunnerEngine();
-    if (args.key === "model_provider") {
+    if (args.key === "provider_id") {
+      if (!isSkillRunnerProviderScopedEngine(normalizedEngine, backendContext)) {
+        return [];
+      }
       return listSkillRunnerModelProviders(normalizedEngine, backendContext);
     }
     if (args.key === "model") {
-      if (isOpencodeEngine(normalizedEngine)) {
-        const modelProviderRaw = String(args.options.model_provider || "").trim();
-        const modelProvider =
-          modelProviderRaw ||
-          getDefaultSkillRunnerModelProvider(normalizedEngine, backendContext);
+      if (isSkillRunnerProviderScopedEngine(normalizedEngine, backendContext)) {
+        const modelProviderRaw = String(
+          args.options.provider_id || args.options.model_provider || "",
+        ).trim();
+        const modelProvider = modelProviderRaw;
+        if (!modelProvider) {
+          return [];
+        }
         return listSkillRunnerModelOptionsForProvider(
           normalizedEngine,
           modelProvider,
@@ -183,6 +206,20 @@ export class SkillRunnerProvider implements Provider {
         (entry) => entry.value,
       );
     }
+    if (args.key === "effort") {
+      const providerId = isSkillRunnerProviderScopedEngine(
+        normalizedEngine,
+        backendContext,
+      )
+        ? String(args.options.provider_id || args.options.model_provider || "").trim()
+        : getSkillRunnerCanonicalProviderId(normalizedEngine);
+      return listSkillRunnerModelEffortOptions({
+        engine: normalizedEngine,
+        provider: providerId,
+        model: String(args.options.model || "").trim(),
+        scope: backendContext,
+      });
+    }
     return [];
   }
 
@@ -192,8 +229,10 @@ export class SkillRunnerProvider implements Provider {
         ? (options as Record<string, unknown>)
         : {};
     const rawEngine = source.engine;
-    const rawModelProvider = source.model_provider;
+    const rawProviderId = source.provider_id;
+    const rawLegacyModelProvider = source.model_provider;
     const rawModel = source.model;
+    const rawEffort = source.effort;
     const rawNoCache = source.no_cache;
     const rawInteractiveAutoReply = source.interactive_auto_reply;
     const rawHardTimeoutSeconds = source.hard_timeout_seconds;
@@ -201,67 +240,90 @@ export class SkillRunnerProvider implements Provider {
       typeof rawEngine === "string" && rawEngine.trim()
         ? rawEngine.trim()
         : getDefaultSkillRunnerEngine() || "gemini";
-    const backendContext =
-      backend &&
-      typeof backend.id === "string" &&
-      typeof backend.baseUrl === "string"
-        ? {
-            backendId: backend.id,
-            baseUrl: backend.baseUrl,
-          }
-        : undefined;
+    const backendContext = toBackendCatalogScope(backend);
     const rawModelText = String(rawModel || "").trim();
-    const parsedRawModel =
-      isOpencodeEngine(normalizedEngine) && rawModelText
-        ? splitSkillRunnerModelId(rawModelText)
-        : null;
+    const parsedRawModel = rawModelText
+      ? splitSkillRunnerModelSpec(rawModelText)
+      : null;
     const providerCandidates = listSkillRunnerModelProviders(
       normalizedEngine,
       backendContext,
     );
     const explicitProvider =
-      typeof rawModelProvider === "string" ? rawModelProvider.trim() : "";
-    let normalizedModelProvider =
-      (explicitProvider && providerCandidates.includes(explicitProvider)
-        ? explicitProvider
-        : "") ||
-      (parsedRawModel && providerCandidates.includes(parsedRawModel.provider)
-        ? parsedRawModel.provider
-        : "") ||
-      getDefaultSkillRunnerModelProvider(normalizedEngine, backendContext) ||
-      "";
+      typeof rawProviderId === "string"
+        ? rawProviderId.trim()
+        : typeof rawLegacyModelProvider === "string"
+          ? rawLegacyModelProvider.trim()
+          : "";
+    const isProviderScoped = isSkillRunnerProviderScopedEngine(
+      normalizedEngine,
+      backendContext,
+    );
+    let normalizedProviderId = isProviderScoped
+      ? (explicitProvider && providerCandidates.includes(explicitProvider)
+          ? explicitProvider
+          : "") ||
+        (parsedRawModel &&
+        parsedRawModel.provider &&
+        providerCandidates.includes(parsedRawModel.provider)
+          ? parsedRawModel.provider
+          : "")
+      : getSkillRunnerCanonicalProviderId(normalizedEngine) ||
+        explicitProvider ||
+        String(parsedRawModel?.provider || "").trim();
 
     let normalizedModel = "";
-    if (isOpencodeEngine(normalizedEngine)) {
-      const normalizedCombined = normalizeSkillRunnerModel(
-        normalizedEngine,
-        rawModelText,
-        backendContext,
-      );
-      if (normalizedCombined) {
-        normalizedModel = normalizedCombined;
-        const parsedCombined = splitSkillRunnerModelId(normalizedCombined);
-        if (parsedCombined) {
-          normalizedModelProvider = parsedCombined.provider;
-        }
-      } else if (normalizedModelProvider) {
-        const rawModelName = parsedRawModel ? parsedRawModel.model : rawModelText;
-        if (rawModelName) {
-          normalizedModel = normalizeSkillRunnerModelForProvider({
+    if (isProviderScoped) {
+      const rawModelName = parsedRawModel ? parsedRawModel.model : rawModelText;
+      if (normalizedProviderId && rawModelName) {
+        normalizedModel =
+          normalizeSkillRunnerModelForProvider({
             engine: normalizedEngine,
-            provider: normalizedModelProvider,
+            provider: normalizedProviderId,
             model: rawModelName,
             scope: backendContext,
+          }) ||
+          resolveSkillRunnerModelNameForProvider({
+            engine: normalizedEngine,
+            provider: normalizedProviderId,
+            model: rawModelText,
+            scope: backendContext,
           });
+      }
+      if (!normalizedModel && parsedRawModel) {
+        normalizedProviderId =
+          (parsedRawModel.provider &&
+          providerCandidates.includes(parsedRawModel.provider)
+            ? parsedRawModel.provider
+            : "") || normalizedProviderId;
+        if (normalizedProviderId) {
+          normalizedModel =
+            normalizeSkillRunnerModelForProvider({
+              engine: normalizedEngine,
+              provider: normalizedProviderId,
+              model: parsedRawModel.model,
+              scope: backendContext,
+            }) || parsedRawModel.model;
         }
       }
     } else {
       normalizedModel = normalizeSkillRunnerModel(
         normalizedEngine,
-        rawModel,
+        parsedRawModel ? parsedRawModel.model : rawModel,
         backendContext,
       );
     }
+    const normalizedEffort = normalizeSkillRunnerEffort({
+      engine: normalizedEngine,
+      provider: normalizedProviderId,
+      model: normalizedModel,
+      effort:
+        rawEffort ??
+        (parsedRawModel && parsedRawModel.effort
+          ? parsedRawModel.effort
+          : "default"),
+      scope: backendContext,
+    });
 
     const normalizedNoCache = normalizeNoCache(rawNoCache);
     const normalizedInteractiveAutoReply = normalizeBooleanOption(
@@ -271,8 +333,9 @@ export class SkillRunnerProvider implements Provider {
     if (typeof rawNoCache === "boolean") {
       return {
         engine: normalizedEngine,
-        model_provider: normalizedModelProvider,
+        provider_id: normalizedProviderId,
         model: normalizedModel,
+        effort: normalizedEffort,
         no_cache: normalizedNoCache,
         interactive_auto_reply: normalizedInteractiveAutoReply,
         ...(typeof normalizedHardTimeout === "number"
@@ -283,8 +346,9 @@ export class SkillRunnerProvider implements Provider {
     if (typeof rawNoCache === "string") {
       return {
         engine: normalizedEngine,
-        model_provider: normalizedModelProvider,
+        provider_id: normalizedProviderId,
         model: normalizedModel,
+        effort: normalizedEffort,
         no_cache: normalizedNoCache,
         interactive_auto_reply: normalizedInteractiveAutoReply,
         ...(typeof normalizedHardTimeout === "number"
@@ -294,8 +358,9 @@ export class SkillRunnerProvider implements Provider {
     }
     return {
       engine: normalizedEngine,
-      model_provider: normalizedModelProvider,
+      provider_id: normalizedProviderId,
       model: normalizedModel,
+      effort: normalizedEffort,
       no_cache: normalizedNoCache,
       interactive_auto_reply: normalizedInteractiveAutoReply,
       ...(typeof normalizedHardTimeout === "number"
@@ -364,6 +429,7 @@ export class SkillRunnerProvider implements Provider {
       details: {
         requestKind: args.requestKind,
         engine: normalizedProviderOptions.engine,
+        provider_id: normalizedProviderOptions.provider_id,
         model: normalizedProviderOptions.model,
       },
     });

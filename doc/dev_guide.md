@@ -29,6 +29,11 @@
 - `src/modules/taskDashboardHistory.ts`：Dashboard 历史持久层（30 天保留）
 - `src/modules/skillRunnerManagementDialog.ts`：SkillRunner 管理页内嵌宿主
 - `src/providers/skillrunner/managementClient.ts`：SkillRunner 管理 API 客户端（Dashboard 观察页）
+- `src/modules/workflowDebugProbe.ts`：Debug Probe 诊断 workflow 支持
+- `src/modules/workflowPackageDiagnostics.ts`：Workflow Package 诊断工具
+- `src/modules/skillRunnerCtlBridge.ts`：SkillRunner 本地后端控制桥接
+- `src/modules/skillRunnerTaskReconciler.ts`：SkillRunner 任务收敛器
+- `src/modules/workflowExecution/deferredCompletionTracker.ts`：延迟完成追踪器
 
 说明：`src/transport/` 当前未启用，网络逻辑在 provider 内部实现。
 
@@ -160,6 +165,7 @@ Dashboard 当前不支持：
 
 - 架构总览：`doc/architecture-flow.md`
 - Workflows：`doc/components/workflows.md`
+- Workflow Package Schema：`src/schemas/workflow-package.schema.json`
 - Workflow Manifest Schema：`src/schemas/workflow.schema.json`
 - Workflow Hook Helpers：`doc/components/workflow-hook-helpers.md`
 - Providers：`doc/components/providers.md`
@@ -172,3 +178,5 @@ Dashboard 当前不支持：
 - UI Shell：`doc/components/ui-shell.md`
 - Mock：`doc/components/zotero-mock.md`
 - 测试：`doc/testing-framework.md`
+- SkillRunner 状态机 SSOT：`doc/components/skillrunner-provider-state-machine-ssot.md`
+- 本地后端一键部署状态机：`doc/components/skillrunner-local-runtime-oneclick-state-machine-ssot.md`

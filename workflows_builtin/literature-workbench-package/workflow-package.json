@@ -1,0 +1,12 @@
+{
+  "id": "literature-workbench-package",
+  "version": "1.0.0",
+  "workflows": [
+    "export-notes/workflow.json",
+    "import-notes/workflow.json",
+    "literature-explainer/workflow.json",
+    "literature-digest/workflow.json",
+    "reference-note-editor/workflow.json",
+    "reference-matching/workflow.json"
+  ]
+}

@@ -3,13 +3,15 @@ import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
 import { executeWorkflowFromCurrentSelection } from "../../src/modules/workflowExecute";
+import { resetRuntimeBridgeOverrideForTests } from "../../src/utils/runtimeBridge";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
 import {
+  installWorkflowFetchMockAcrossRuntimes,
   installTagVocabularyHostApiGlobals,
   installTagVocabularySyncCapture,
 } from "../workflow-tag-vocabulary/hostApiTestUtils";
-import { workflowsPath } from "../zotero/workflow-test-utils";
+import { isZoteroRuntime, workflowsPath } from "../zotero/workflow-test-utils";
 
 type HostOpenArgs = {
   rendererId?: string;
@@ -36,12 +38,6 @@ type RuntimeWithEditorBridge = typeof globalThis & {
   __zsWorkflowEditorHostOpen?: (
     args: HostOpenArgs,
   ) => Promise<HostOpenResult> | HostOpenResult;
-  fetch?: (input: string, init?: Record<string, unknown>) => Promise<{
-    ok: boolean;
-    status: number;
-    statusText?: string;
-    json: () => Promise<unknown>;
-  }>;
   addon?: {
     data?: {
       workflowEditorHost?: {
@@ -174,25 +170,32 @@ function installTagVocabularySyncBridgeMock(args: {
 }
 
 function installFetchMock(
-  mockFetch: NonNullable<RuntimeWithEditorBridge["fetch"]>,
+  mockFetch: (
+    input: string,
+    init?: Record<string, unknown>,
+  ) => Promise<{
+    ok: boolean;
+    status: number;
+    statusText?: string;
+    json: () => Promise<unknown>;
+  }>,
 ) {
-  const runtime = globalThis as RuntimeWithEditorBridge;
-  const prevFetch = runtime.fetch;
-  runtime.fetch = mockFetch;
-  return () => {
-    runtime.fetch = prevFetch;
-  };
+  return installWorkflowFetchMockAcrossRuntimes(mockFetch);
 }
 
 function toBase64(text: string) {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
-describe("workflow: tag-manager", function () {
+const describeEditorSuite = isZoteroRuntime() ? describe.skip : describe;
+
+describeEditorSuite("workflow: tag-manager", function () {
+  const itNodeOnly = isZoteroRuntime() ? it.skip : it;
   let restoreHostApi: (() => void) | null = null;
 
   beforeEach(function () {
     clearTagVocabularyState();
+    resetRuntimeBridgeOverrideForTests();
     clearWorkflowSettingsState();
     restoreHostApi = installTagVocabularyHostApiGlobals();
   });
@@ -200,6 +203,7 @@ describe("workflow: tag-manager", function () {
   afterEach(function () {
     restoreHostApi?.();
     restoreHostApi = null;
+    resetRuntimeBridgeOverrideForTests();
     clearTagVocabularyState();
     clearWorkflowSettingsState();
   });
@@ -347,7 +351,50 @@ describe("workflow: tag-manager", function () {
     assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:stable"]);
   });
 
-  it("subscribes remote vocabulary before opening editor when GitHub sync is configured", async function () {
+  it("runs without any selected items and still opens tag manager editor", async function () {
+    const workflow = await getTagManagerWorkflow();
+    const calls: HostOpenArgs[] = [];
+    const restoreOpen = installEditorOpenMock(async (args) => {
+      calls.push(args);
+      return {
+        saved: true,
+        result: {
+          entries: [
+            {
+              tag: "topic:global",
+              facet: "topic",
+              source: "manual",
+              note: "global",
+              deprecated: false,
+            },
+          ],
+        },
+      };
+    });
+    const alerts: string[] = [];
+    const win = {
+      ZoteroPane: {
+        getSelectedItems: () => [],
+      },
+      alert: (message: string) => alerts.push(message),
+    } as unknown as _ZoteroTypes.MainWindow;
+
+    try {
+      await executeWorkflowFromCurrentSelection({
+        win,
+        workflow,
+      });
+    } finally {
+      restoreOpen();
+    }
+
+    assert.lengthOf(calls, 1);
+    assert.equal(calls[0].rendererId, "tag-manager.default.v1");
+    assert.lengthOf(alerts, 0);
+    assert.deepEqual(exportPersistedTagVocabularyStrings(), ["topic:global"]);
+  });
+
+  itNodeOnly("subscribes remote vocabulary before opening editor when GitHub sync is configured", async function () {
     saveWorkflowSettingsState("tag-manager", {
       github_owner: "demo-owner",
       github_repo: "Zotero_TagVocab",
@@ -412,7 +459,7 @@ describe("workflow: tag-manager", function () {
     assert.equal((calls[0].initialState as Record<string, unknown>)?.remoteSyncState, "subscribed");
   });
 
-  it("publishes remote vocabulary after local save when GitHub sync is configured", async function () {
+  itNodeOnly("publishes remote vocabulary after local save when GitHub sync is configured", async function () {
     saveWorkflowSettingsState("tag-manager", {
       github_owner: "demo-owner",
       github_repo: "Zotero_TagVocab",
@@ -513,7 +560,7 @@ describe("workflow: tag-manager", function () {
     assert.deepEqual(published.abbrevs, { llm: "LLM" });
   });
 
-  it("keeps remote committed snapshot unchanged and preserves failed draft when remote publish fails", async function () {
+  itNodeOnly("keeps remote committed snapshot unchanged and preserves failed draft when remote publish fails", async function () {
     saveWorkflowSettingsState("tag-manager", {
       github_owner: "demo-owner",
       github_repo: "Zotero_TagVocab",

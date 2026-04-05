@@ -8,8 +8,10 @@ export type SkillRunnerModelCacheModel = {
   id: string;
   display_name: string;
   deprecated?: boolean;
+  provider_id?: string;
   provider?: string;
   model?: string;
+  supported_effort?: string[];
 };
 
 export type SkillRunnerModelCacheEntry = {
@@ -67,6 +69,20 @@ function splitProviderModel(value: string): {
   };
 }
 
+function normalizeSupportedEffort(raw: unknown) {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const normalized = Array.from(
+    new Set(
+      raw
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function readJsonOrThrow(response: Response, path: string) {
   return response.text().then((text) => {
     let parsed: unknown = {};
@@ -116,13 +132,16 @@ function parseModelCacheEntry(raw: unknown): SkillRunnerModelCacheEntry | null {
         continue;
       }
       const parsedFromId = splitProviderModel(String(modelRaw.id || "").trim());
+      const providerIdRaw = String(modelRaw.provider_id || "").trim();
       const providerRaw = String(modelRaw.provider || "").trim();
       const modelRawValue = String(modelRaw.model || "").trim();
-      const provider = providerRaw || parsedFromId?.provider || "";
+      const providerId = providerIdRaw || providerRaw || parsedFromId?.provider || "";
+      const provider = providerRaw || providerId || parsedFromId?.provider || "";
       const model = modelRawValue || parsedFromId?.model || "";
+      const supportedEffort = normalizeSupportedEffort(modelRaw.supported_effort);
       const id =
         String(modelRaw.id || "").trim() ||
-        (provider && model ? `${provider}/${model}` : "");
+        (providerId && model ? `${providerId}/${model}` : "");
       if (!id) {
         continue;
       }
@@ -131,8 +150,10 @@ function parseModelCacheEntry(raw: unknown): SkillRunnerModelCacheEntry | null {
         id,
         display_name: displayName || id,
         deprecated: modelRaw.deprecated === true,
+        ...(providerId ? { provider_id: providerId } : {}),
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
+        ...(supportedEffort ? { supported_effort: supportedEffort } : {}),
       });
     }
     if (normalizedModels.length > 0) {
@@ -245,11 +266,14 @@ function parseEngineModelsPayload(payload: unknown) {
     }
     const id = String(row.id || "").trim();
     const parsedFromId = splitProviderModel(id);
+    const providerIdRaw = String(row.provider_id || "").trim();
     const providerRaw = String(row.provider || "").trim();
     const modelRawValue = String(row.model || "").trim();
-    const provider = providerRaw || parsedFromId?.provider || "";
+    const providerId = providerIdRaw || providerRaw || parsedFromId?.provider || "";
+    const provider = providerRaw || providerId || parsedFromId?.provider || "";
     const model = modelRawValue || parsedFromId?.model || "";
-    const normalizedId = id || (provider && model ? `${provider}/${model}` : "");
+    const supportedEffort = normalizeSupportedEffort(row.supported_effort);
+    const normalizedId = id || (providerId && model ? `${providerId}/${model}` : "");
     if (!normalizedId) {
       continue;
     }
@@ -257,8 +281,10 @@ function parseEngineModelsPayload(payload: unknown) {
       id: normalizedId,
       display_name: String(row.display_name || row.displayName || "").trim() || normalizedId,
       deprecated: row.deprecated === true,
+      ...(providerId ? { provider_id: providerId } : {}),
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
+      ...(supportedEffort ? { supported_effort: supportedEffort } : {}),
     });
   }
   return models;

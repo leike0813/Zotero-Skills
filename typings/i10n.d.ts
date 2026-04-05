@@ -327,6 +327,7 @@ export type FluentMessageId =
   | 'task-dashboard-runtime-logs-tab-title'
   | 'task-dashboard-sidebar-empty'
   | 'task-dashboard-sidebar-title'
+  | 'task-dashboard-skillrunner-backend-unavailable'
   | 'task-dashboard-skillrunner-cancel'
   | 'task-dashboard-skillrunner-cancel-failed'
   | 'task-dashboard-skillrunner-chat-empty'

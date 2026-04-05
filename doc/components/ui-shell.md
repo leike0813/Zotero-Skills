@@ -22,6 +22,7 @@
   - 解析 workflow execution context
   - 尝试构建 request
   - 失败则菜单项禁用并附带原因
+- Debug-only workflow（`manifest.debug_only: true`）仅在调试模式下显示
 
 ## Dashboard（当前实现）
 

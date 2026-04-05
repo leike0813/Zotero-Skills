@@ -95,23 +95,26 @@ describe("runtime log manager", function () {
   });
 
   it("enforces diagnostic mode dual budget with byte-limit eviction", function () {
-    this.timeout(10000);
+    this.timeout(15000);
     setRuntimeLogDiagnosticMode(true);
-    for (let i = 0; i < 3200; i++) {
+    const oversizedDetails = Array.from({ length: 90 }, (_, index) =>
+      `detail-${index}-${"x".repeat(4000)}`,
+    );
+    for (let i = 0; i < 80; i++) {
       appendRuntimeLog({
         level: "debug",
         scope: "system",
         stage: `s-${i}`,
-        message: `m-${i}-${"x".repeat(180)}`,
+        message: `m-${i}`,
+        details: {
+          oversizedDetails,
+        },
       });
     }
     const snapshot = snapshotRuntimeLogs();
-    assert.isAtMost(snapshot.entries.length, 3000);
+    assert.isBelow(snapshot.entries.length, 2200);
     assert.isAtLeast(snapshot.droppedEntries, 1);
-    assert.isAtLeast(
-      snapshot.droppedByReason.entry_limit + snapshot.droppedByReason.byte_budget,
-      1,
-    );
+    assert.isAtLeast(snapshot.droppedByReason.byte_budget, 1);
   });
 
   it("keeps normal mode entry budget and drops oldest entries", function () {

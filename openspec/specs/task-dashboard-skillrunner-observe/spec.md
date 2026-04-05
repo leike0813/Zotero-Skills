@@ -282,3 +282,62 @@ Managed local backend health view MUST not wait for next probe cycle once lease 
 - **WHEN** local managed backend completes lease acquire successfully
 - **THEN** backend health state MUST be set to reachable immediately
 - **AND** reconcile gating for that backend MUST be cleared without waiting a probe tick
+
+### Requirement: SkillRunner run dialog chat view MUST consume canonical replay with dual projection
+
+Plugin run dialog MUST render SkillRunner conversation from canonical chat replay rows instead of reconstructing FCMP groupings locally.
+
+#### Scenario: browser-side chat view projects the same timeline into plain and bubble modes
+
+- **WHEN** run dialog receives conversation rows containing `assistant_process`, `assistant_message`, and `assistant_final`
+- **THEN** browser-side chat core MUST maintain one mode-independent canonical timeline
+- **AND** switching between `plain` and `bubble` MUST only change projection, not historical grouping
+- **AND** `plain` MUST be the default mode for a newly opened dialog session
+
+#### Scenario: run dialog snapshot carries frontend projection fields
+
+- **WHEN** host serializes run dialog snapshot messages
+- **THEN** each message row MUST preserve `attempt`
+- **AND** each row MUST preserve correlation fields required for projection, including `message_id` and `replaces_message_id`
+- **AND** browser-side projection MUST NOT rely on jobs API or ad-hoc FCMP reconstruction to infer message convergence
+
+### Requirement: Shared chat core compatibility MUST remain fail-soft
+
+Run dialog MUST tolerate stale cached chat core assets during rollout.
+
+#### Scenario: cached old chat core object does not expose full dual-view API
+
+- **WHEN** `chat_thinking_core.js` is stale and lacks some dual-view methods
+- **THEN** run dialog MUST guard `setDisplayMode` / `getDisplayMode` calls defensively
+- **AND** dialog MUST fall back to default `plain` mode instead of failing initialization
+- **AND** the HTML template MUST reference the shared chat core script with cache-busting
+
+### Requirement: Dashboard MUST provide SkillRunner run observation and interaction view
+系统 MUST 在 Dashboard 中提供 SkillRunner backend 的 run 观察页，支持对话流查看与交互操作。
+
+#### Scenario: waiting_auth input visibility follows accepts_chat_input contract
+- **WHEN** run 进入 `waiting_auth`
+- **AND** pending auth payload has `accepts_chat_input=true` and non-empty `input_kind`
+- **THEN** 系统 MUST 显示 auth 输入框
+- **AND** auth 提交 MUST 使用 `submission.kind = input_kind` 或默认 `auth_code_or_url`
+
+#### Scenario: waiting_auth auto-poll challenge hides input composer
+- **WHEN** run 进入 `waiting_auth`
+- **AND** pending auth payload has `accepts_chat_input=false` and empty `input_kind`
+- **THEN** 系统 MUST 隐藏 auth 输入框
+- **AND** 系统 MUST 继续展示 `auth_url` / `user_code`
+- **AND** 系统 MUST 继续观察会话而不是要求伪输入
+
+#### Scenario: waiting_auth observes pending and auth session together
+- **WHEN** run 处于 `waiting_auth`
+- **THEN** 前端 MUST 同时观察 `interaction/pending` 与 `auth/session`
+- **AND** `interaction/pending` 继续作为交互卡片 SSOT
+- **AND** `auth/session` 作为底层鉴权状态补充诊断
+
+#### Scenario: waiting_auth exit restarts the events state channel
+- **WHEN** run 处于 `waiting_auth`
+- **AND** 前端观察到 `interaction/pending` 或 `auth/session` 已表明鉴权等待退出
+- **THEN** 前端 MUST 主动重建该 request 的状态通道
+- **AND** 重建目标 MUST 是 `events/history -> events SSE`
+- **AND** 前端 MUST NOT 直接用 jobs API 轮询去改写 `queued/running` 非终态
+

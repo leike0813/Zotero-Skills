@@ -318,6 +318,52 @@ The system SHALL preserve structured hook failure diagnostics in normal executio
 - **WHEN** `filterInputs`, `buildRequest`, or `applyResult` throws
 - **THEN** logs retain `error.message`, `error.stack`, hook name, and package metadata
 
+### Requirement: Workflow trigger selection gating SHALL follow explicit manifest policy
+Workflow trigger gating MUST read the manifest-level `trigger.requiresSelection` contract rather than inferring empty-selection eligibility from provider shape.
+
+#### Scenario: Workflow omits explicit no-selection trigger policy
+- **WHEN** a workflow is triggered with no selected items
+- **AND** the manifest omits `trigger.requiresSelection` or does not set it to `false`
+- **THEN** the menu SHALL render that workflow as disabled for `no selection`
+- **AND** the preparation seam SHALL reject execution before request build
+
+#### Scenario: Workflow explicitly allows no-selection trigger
+- **WHEN** a workflow manifest declares `"trigger": { "requiresSelection": false }`
+- **AND** the workflow is triggered with no selected items
+- **THEN** the menu SHALL keep that workflow enabled
+- **AND** the preparation seam SHALL allow execution to continue
+- **AND** runtime request build SHALL create exactly one empty-selection execution unit for that trigger
+
+### Requirement: Empty-selection eligibility SHALL NOT be inferred from provider kind
+The execution system MUST NOT treat `provider`, `request.kind`, or missing `inputs.unit` as implicit permission to run without selection.
+
+#### Scenario: Pass-through workflow still requires selection by default
+- **WHEN** a `pass-through` workflow does not declare `trigger.requiresSelection: false`
+- **AND** the current selection is empty
+- **THEN** the workflow SHALL remain disabled and non-executable
+- **AND** the system SHALL NOT silently fall back to provider-based no-selection execution
+
+### Requirement: Workflow Package Hooks SHALL Be Able To Request File And Directory Selection Through Host API
+Workflow package hooks MUST access user-driven file system pickers through the core host API facade rather than direct toolkit globals.
+
+#### Scenario: Package hook picks export directory
+- **WHEN** a package workflow needs the user to choose an export destination
+- **THEN** it SHALL request the destination through `runtime.hostApi.file.pickDirectory(...)`
+- **AND** a user cancel SHALL return `null`
+
+#### Scenario: Package hook picks import file
+- **WHEN** a package workflow needs the user to choose an import file
+- **THEN** it SHALL request the file through `runtime.hostApi.file.pickFile(...)`
+- **AND** the hook MAY provide title, starting directory, and file filters
+
+### Requirement: Workflow Runtime Context SHALL Expose Workflow Asset Roots To Package Hooks
+Package hooks that read packaged assets MUST receive the workflow and package root directories through runtime context.
+
+#### Scenario: Import workflow loads copied schema assets
+- **WHEN** a package workflow needs to read local schema assets bundled under its workflow directory
+- **THEN** runtime context SHALL expose `workflowRootDir`
+- **AND** the hook SHALL be able to resolve workflow-local asset paths through the host file API
+
 ### Requirement: Tag-Regulator Suggest Intake Must Respect Subscription Publish Transactions
 `tag-regulator` suggest intake SHALL use the active tag vocabulary mode to decide whether a selected suggest tag is committed locally or published remotely.
 
@@ -347,3 +393,21 @@ When a staged tag with parent bindings successfully enters committed vocabulary,
 - **WHEN** Tag Manager successfully publishes a staged tag that carries tag-regulator parent bindings
 - **THEN** the tag SHALL be appended to each bound parent item
 - **AND** the staged entry SHALL be removed after the bindings are applied
+
+### Requirement: Workflow package hooks SHALL support multi-file import selection through host API
+
+Workflow package hooks MUST be able to request multi-file selection through
+the core host API facade.
+
+#### Scenario: package hook requests multiple import files
+
+- **WHEN** a package workflow needs the user to select multiple import files in one interaction
+- **THEN** it SHALL call `runtime.hostApi.file.pickFiles(...)`
+- **AND** the host API SHALL return an ordered array of absolute file paths
+
+#### Scenario: user cancels multi-file picker
+
+- **WHEN** the user dismisses the multi-file picker without choosing files
+- **THEN** `runtime.hostApi.file.pickFiles(...)` SHALL return `null`
+- **AND** the workflow SHALL be able to abort import cleanly without partial selection
+

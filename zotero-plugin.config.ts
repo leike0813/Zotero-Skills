@@ -11,17 +11,17 @@ function normalizeTestDomain(value: string | undefined): TestDomain {
   return "all";
 }
 
-function resolveTestEntries(domain: TestDomain) {
+function resolveTestEntries(domain: TestDomain): string | string[] {
   if (domain === "core") {
-    return "test/core";
+    return ["test/core"];
   }
   if (domain === "ui") {
-    return "test/ui";
+    return ["test/ui"];
   }
   if (domain === "workflow") {
-    return "test/workflow-*";
+    return ["test/workflow-*"];
   }
-  return "test";
+  return ["test/core", "test/ui", "test/workflow-*"];
 }
 
 const TEST_DOMAIN = normalizeTestDomain(process.env.ZOTERO_TEST_DOMAIN);

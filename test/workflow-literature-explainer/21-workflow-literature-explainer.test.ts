@@ -13,15 +13,45 @@ import {
   workflowsPath,
   writeUtf8,
 } from "./workflow-test-utils";
+import { applyResult as applyLiteratureExplainerResult } from "../../workflows_builtin/literature-workbench-package/literature-explainer/hooks/applyResult.mjs";
 
-function parsePayloadData(noteContent: string) {
-  const match = String(noteContent || "").match(
-    /data-zs-payload=(["'])conversation-note-markdown\1[^>]*data-zs-value=(["'])([^"']+)\2/i,
+async function writeZoteroDebugSnapshot(name: string, payload: unknown) {
+  try {
+    const tempFile = Zotero.getTempDirectory();
+    tempFile.append(name);
+    await Zotero.File.putContentsAsync(
+      tempFile,
+      JSON.stringify(payload, null, 2),
+    );
+  } catch {
+    // best-effort diagnostics only
+  }
+}
+
+function readTagAttribute(tagText: string, name: string) {
+  const escaped = String(name || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(tagText || "").match(
+    new RegExp(`${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"),
   );
   if (!match) {
+    return "";
+  }
+  return String(match[1] || match[2] || match[3] || "");
+}
+
+function parsePayloadData(noteContent: string) {
+  const payloadTagMatch = String(noteContent || "").match(
+    /<span[^>]*data-zs-payload=(["'])conversation-note-markdown\1[^>]*>/i,
+  );
+  if (!payloadTagMatch) {
     return null;
   }
-  const decoded = decodeBase64Utf8(match[3]);
+  const payloadTag = payloadTagMatch[0];
+  const encoded = readTagAttribute(payloadTag, "data-zs-value");
+  if (!encoded) {
+    return null;
+  }
+  const decoded = decodeBase64Utf8(encoded);
   return JSON.parse(decoded) as {
     path?: string;
     format?: string;
@@ -81,6 +111,8 @@ describe("workflow: literature-explainer", function () {
     })) as Array<{
       kind: string;
       skill_id: string;
+      targetParentID?: number;
+      taskName?: string;
       runtime_options?: { execution_mode?: string };
       input?: { source_path?: string };
       upload_files?: Array<{ key: string; path: string }>;
@@ -89,6 +121,8 @@ describe("workflow: literature-explainer", function () {
     assert.lengthOf(requests, 1);
     assert.equal(requests[0].kind, "skillrunner.job.v1");
     assert.equal(requests[0].skill_id, "literature-explainer");
+    assert.equal(requests[0].targetParentID, parent.id);
+    assert.equal(requests[0].taskName, "paper.md");
     assert.equal(requests[0].runtime_options?.execution_mode, "interactive");
     assert.equal(requests[0].upload_files?.[0]?.key, "source_path");
     assert.equal(requests[0].upload_files?.[0]?.path, mdPath);
@@ -117,11 +151,15 @@ describe("workflow: literature-explainer", function () {
       workflow,
       selectionContext: context,
     })) as Array<{
+      targetParentID?: number;
+      taskName?: string;
       upload_files?: Array<{ key: string; path: string }>;
       input?: { source_path?: string };
     }>;
 
     assert.lengthOf(requests, 1);
+    assert.equal(requests[0].targetParentID, parent.id);
+    assert.equal(requests[0].taskName, "paper.pdf");
     assert.equal(requests[0].upload_files?.[0]?.key, "source_path");
     assert.equal(requests[0].upload_files?.[0]?.path, pdfPath);
     assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
@@ -136,6 +174,7 @@ describe("workflow: literature-explainer", function () {
     const markdown = "# Summary\n\n- Point A\n- Point B\n";
 
     const workflow = await getWorkflow();
+    const notesBefore = parent.getNotes().length;
     const applied = (await executeApplyResult({
       workflow,
       parent,
@@ -156,6 +195,8 @@ describe("workflow: literature-explainer", function () {
 
     assert.lengthOf(applied.notes || [], 1);
     const note = Zotero.Items.get((applied.notes || [])[0].id)!;
+    assert.equal(parent.getNotes().length, notesBefore + 1);
+    assert.equal(Number(note.parentID || 0), parent.id);
     const noteContent = note.getNote();
     assert.match(noteContent, /data-zs-note-kind="conversation-note"/);
     assert.match(noteContent, /<h1>Conversation Note \d{10}<\/h1>/);
@@ -168,6 +209,279 @@ describe("workflow: literature-explainer", function () {
     assert.equal(payload?.format, "markdown");
     assert.equal(payload?.version, 1);
     assert.equal(payload?.content, markdown);
+  });
+
+  it("creates a conversation note when applyResult receives parent id instead of item object", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Literature Explainer Parent Id Apply Parent" },
+    });
+    const notePath = "result/note.parent-id.md";
+    const markdown = "# Parent Id Path\n\n- HostApi addNote should resolve raw parent refs.\n";
+
+    const workflow = await getWorkflow();
+    const applied = (await executeApplyResult({
+      workflow,
+      parent: parent.id,
+      bundleReader: {
+        async readText(entryPath: string) {
+          if (entryPath === "result/result.json") {
+            return JSON.stringify({
+              note_path: notePath,
+            });
+          }
+          if (entryPath === notePath) {
+            return markdown;
+          }
+          throw new Error(`missing bundle entry: ${entryPath}`);
+        },
+      },
+    })) as { notes?: Zotero.Item[]; parent_item_id?: number };
+
+    assert.lengthOf(applied.notes || [], 1);
+    assert.equal(applied.parent_item_id, parent.id);
+    const note = Zotero.Items.get((applied.notes || [])[0].id)!;
+    assert.equal(Number(note.parentID || 0), parent.id);
+    assert.include(note.getNote(), "Parent Id Path");
+  });
+
+  it("falls back to runtime btoa when Buffer is null", async function () {
+    const originalBuffer = (globalThis as typeof globalThis & { Buffer?: unknown }).Buffer;
+    const nodeBuffer = originalBuffer as typeof Buffer;
+    let capturedContent = "";
+    const runtimeBtoa = (source: string) => {
+      if (typeof globalThis.btoa === "function") {
+        return globalThis.btoa(source);
+      }
+      if (nodeBuffer) {
+        return nodeBuffer.from(source, "binary").toString("base64");
+      }
+      throw new Error("expected btoa or Buffer support in test runtime");
+    };
+
+    try {
+      (globalThis as typeof globalThis & { Buffer?: unknown }).Buffer = null;
+      const applied = (await applyLiteratureExplainerResult({
+        parent: 42,
+        bundleReader: {
+          async readText(entryPath: string) {
+            if (entryPath === "result/result.json") {
+              return JSON.stringify({
+                note_path: "result/note.buffer-null.md",
+              });
+            }
+            if (entryPath === "result/note.buffer-null.md") {
+              return "# Buffer Null\n\nfallback path";
+            }
+            throw new Error(`missing bundle entry: ${entryPath}`);
+          },
+        },
+        runtime: {
+          hostApiVersion: 2,
+          Buffer: null,
+          btoa: runtimeBtoa,
+          hostApi: {
+            items: {
+              resolve(value: unknown) {
+                return {
+                  id: Number(value),
+                };
+              },
+            },
+            parents: {
+              async addNote(_parent: unknown, args: { content: string }) {
+                capturedContent = args.content;
+                return {
+                  id: 9001,
+                };
+              },
+            },
+          },
+        },
+      })) as {
+        notes?: Array<{ id: number }>;
+        parent_item_id?: number;
+      };
+
+      (globalThis as typeof globalThis & { Buffer?: unknown }).Buffer = originalBuffer;
+      assert.lengthOf(applied.notes || [], 1);
+      assert.equal(applied.parent_item_id, 42);
+      assert.equal((applied.notes || [])[0]?.id, 9001);
+      const payload = parsePayloadData(capturedContent);
+      assert.isOk(payload);
+      assert.equal(payload?.path, "result/note.buffer-null.md");
+      assert.equal(payload?.content, "# Buffer Null\n\nfallback path");
+    } finally {
+      (globalThis as typeof globalThis & { Buffer?: unknown }).Buffer = originalBuffer;
+    }
+  });
+
+  it("creates a conversation note from backend-shaped result/result.json payload", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Literature Explainer Backend-Shaped Result Parent" },
+    });
+    const notePath = "artifacts/note.3dcbb6ddcea81cb8.md";
+    const markdown = "# Backend Result\n\n- Evidence-backed note\n";
+
+    const workflow = await getWorkflow();
+    const notesBefore = parent.getNotes().length;
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: {
+        async readText(entryPath: string) {
+          if (entryPath === "result/result.json") {
+            return JSON.stringify({
+              status: "success",
+              data: {
+                note_path: notePath,
+                provenance: {
+                  generated_at: "2026-04-05T08:05:58Z",
+                  input_hash: "sha256:3dcbb6ddcea81cb8",
+                  model: "pymupdf4llm",
+                },
+                warnings: [],
+                error: null,
+              },
+              artifacts: [notePath],
+              error: null,
+            });
+          }
+          if (entryPath === notePath) {
+            return markdown;
+          }
+          throw new Error(`missing bundle entry: ${entryPath}`);
+        },
+      },
+    })) as {
+      notes?: Zotero.Item[];
+      requested_note_path?: string;
+      note_path?: string;
+      parent_item_id?: number;
+      created_note_id?: number;
+    };
+
+    await writeZoteroDebugSnapshot("zs-literature-explainer-debug.json", {
+      stage: "after-executeApplyResult",
+      applied,
+      parentId: parent.id,
+      parentNoteIds: parent.getNotes(),
+      notesBefore,
+    });
+    if ((applied.notes || []).length !== 1) {
+      throw new Error(
+        `expected exactly one created note; actual=${(applied.notes || []).length}; applied=${JSON.stringify(applied)}`,
+      );
+    }
+    if (applied.requested_note_path !== notePath) {
+      throw new Error(
+        `requested_note_path mismatch; expected=${notePath}; actual=${String(applied.requested_note_path || "")}`,
+      );
+    }
+    if (applied.note_path !== notePath) {
+      throw new Error(
+        `note_path mismatch; expected=${notePath}; actual=${String(applied.note_path || "")}`,
+      );
+    }
+    if (applied.parent_item_id !== parent.id) {
+      throw new Error(
+        `parent_item_id mismatch; expected=${parent.id}; actual=${String(applied.parent_item_id || "")}`,
+      );
+    }
+    if (applied.created_note_id !== (applied.notes || [])[0]?.id) {
+      throw new Error(
+        `created_note_id mismatch; created=${String(applied.created_note_id || "")}; noteId=${String((applied.notes || [])[0]?.id || "")}`,
+      );
+    }
+    const note = Zotero.Items.get((applied.notes || [])[0].id)!;
+    if (parent.getNotes().length !== notesBefore + 1) {
+      throw new Error(
+        `parent note count mismatch; before=${notesBefore}; after=${parent.getNotes().length}; parentNotes=${JSON.stringify(parent.getNotes())}`,
+      );
+    }
+    if (Number(note.parentID || 0) !== parent.id) {
+      throw new Error(
+        `note parent mismatch; expected=${parent.id}; actual=${String(note.parentID || "")}`,
+      );
+    }
+    const payload = parsePayloadData(note.getNote());
+    await writeZoteroDebugSnapshot("zs-literature-explainer-debug.json", {
+      stage: "after-read-note",
+      noteId: note.id,
+      parentId: parent.id,
+      parentNoteIds: parent.getNotes(),
+      requestedNotePath: applied.requested_note_path,
+      resolvedNotePath: applied.note_path,
+      payload,
+      noteHtml: note.getNote(),
+    });
+    if (!payload) {
+      throw new Error(
+        `conversation payload missing after Zotero save; noteId=${note.id}; parentNoteIds=${JSON.stringify(parent.getNotes())}; noteHtml=${note.getNote()}`,
+      );
+    }
+    if (payload.path !== notePath) {
+      throw new Error(
+        `conversation payload path mismatch; expected=${notePath}; actual=${String(payload.path || "")}; noteId=${note.id}; noteHtml=${note.getNote()}`,
+      );
+    }
+    if (payload.content !== markdown) {
+      throw new Error(
+        `conversation payload content mismatch; expectedLength=${markdown.length}; actualLength=${String(payload.content || "").length}; noteId=${note.id}; noteHtml=${note.getNote()}`,
+      );
+    }
+  });
+
+  it("keeps oversized markdown payload fully inlined while still creating the parent note", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Literature Explainer Oversized Payload Parent" },
+    });
+    const notePath = "artifacts/note.large.md";
+    const markdown = `${"# Oversized Note\n\n"}${"Long paragraph.\n".repeat(2500)}`;
+
+    const workflow = await getWorkflow();
+    const notesBefore = parent.getNotes().length;
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: {
+        async readText(entryPath: string) {
+          if (entryPath === "result/result.json") {
+            return JSON.stringify({
+              status: "success",
+              data: {
+                note_path: notePath,
+              },
+            });
+          }
+          if (entryPath === notePath) {
+            return markdown;
+          }
+          throw new Error(`missing bundle entry: ${entryPath}`);
+        },
+      },
+    })) as {
+      notes?: Zotero.Item[];
+    };
+
+    assert.lengthOf(applied.notes || [], 1);
+    assert.equal(parent.getNotes().length, notesBefore + 1);
+
+    const note = Zotero.Items.get((applied.notes || [])[0].id)!;
+    const payload = parsePayloadData(note.getNote()) as
+      | {
+          path?: string;
+          format?: string;
+          content?: string;
+        }
+      | null;
+    assert.isOk(payload);
+    assert.equal(payload?.path, notePath);
+    assert.equal(payload?.format, "markdown");
+    assert.equal(payload?.content, markdown);
+    assert.include(note.getNote(), "<h1>Oversized Note</h1>");
   });
 
   it("maps absolute note_path to bundle entry suffix and creates note", async function () {

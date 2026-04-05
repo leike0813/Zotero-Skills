@@ -13,6 +13,7 @@ import {
   encodeBase64Utf8,
   workflowsPath,
 } from "./workflow-test-utils";
+import { isZoteroRuntime } from "../zotero/workflow-test-utils";
 
 type ReferenceEntry = {
   id?: string;
@@ -219,7 +220,9 @@ function installEditorOpenMock(
   };
 }
 
-describe("workflow: reference-note-editor", function () {
+const describeEditorSuite = isZoteroRuntime() ? describe.skip : describe;
+
+describeEditorSuite("workflow: reference-note-editor", function () {
   this.timeout(30000);
 
   it("accepts same legal inputs as reference-matching (direct note + parent expansion)", async function () {

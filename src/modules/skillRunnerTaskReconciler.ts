@@ -1634,6 +1634,28 @@ export class SkillRunnerTaskReconciler {
     }
     let bundlePath = "";
     try {
+      appendRuntimeLog({
+        level: "info",
+        scope: "job",
+        workflowId: context.workflowId,
+        backendId: context.backendId,
+        backendType: context.backendType,
+        providerId: context.providerId,
+        runId: context.runId,
+        jobId: context.jobId,
+        requestId: context.requestId,
+        component: "skillrunner-reconciler",
+        operation: "deferred-apply-start",
+        phase: "terminal",
+        stage: "deferred-apply-start",
+        message: "deferred terminal applyResult started",
+        details: {
+          executionMode: context.executionMode,
+          fetchType: context.fetchType,
+          source,
+          targetParentID,
+        },
+      });
       const runResult: Record<string, unknown> = {
         status: "succeeded",
         requestId: context.requestId,
@@ -1641,6 +1663,26 @@ export class SkillRunnerTaskReconciler {
       };
       let bundleReader = createUnavailableBundleReader(context.requestId);
       if (context.fetchType === "bundle") {
+        appendRuntimeLog({
+          level: "info",
+          scope: "job",
+          workflowId: context.workflowId,
+          backendId: context.backendId,
+          backendType: context.backendType,
+          providerId: context.providerId,
+          runId: context.runId,
+          jobId: context.jobId,
+          requestId: context.requestId,
+          component: "skillrunner-reconciler",
+          operation: "deferred-bundle-fetch-start",
+          phase: "terminal",
+          stage: "deferred-bundle-fetch-start",
+          message: "deferred bundle fetch started",
+          details: {
+            source,
+            targetParentID,
+          },
+        });
         const bundleBytes = await client.fetchRunBundle({
           requestId: context.requestId,
         });
@@ -1648,6 +1690,26 @@ export class SkillRunnerTaskReconciler {
         bundlePath = buildTempBundlePath(context.requestId);
         await writeBytes(bundlePath, bundleBytes);
         bundleReader = new ZipBundleReader(bundlePath);
+        appendRuntimeLog({
+          level: "info",
+          scope: "job",
+          workflowId: context.workflowId,
+          backendId: context.backendId,
+          backendType: context.backendType,
+          providerId: context.providerId,
+          runId: context.runId,
+          jobId: context.jobId,
+          requestId: context.requestId,
+          component: "skillrunner-reconciler",
+          operation: "deferred-bundle-fetch-succeeded",
+          phase: "terminal",
+          stage: "deferred-bundle-fetch-succeeded",
+          message: "deferred bundle fetch succeeded",
+          details: {
+            source,
+            targetParentID,
+          },
+        });
       } else {
         runResult.resultJson = await client.fetchRunResult({
           requestId: context.requestId,
@@ -1677,6 +1739,7 @@ export class SkillRunnerTaskReconciler {
         message: "reconciler executed terminal applyResult for recoverable request",
         details: {
           executionMode: context.executionMode,
+          fetchType: context.fetchType,
           source,
           targetParentID,
         },
@@ -1697,6 +1760,7 @@ export class SkillRunnerTaskReconciler {
         stage: "deferred-apply-succeeded",
         message: "deferred applyResult succeeded",
         details: {
+          fetchType: context.fetchType,
           source,
           targetParentID,
         },

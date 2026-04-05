@@ -29,6 +29,10 @@ export type WorkflowInputsSpec = {
   };
 };
 
+export type WorkflowTriggerSpec = {
+  requiresSelection?: boolean;
+};
+
 export type WorkflowExecutionSpec = {
   mode?: "auto" | "sync" | "async";
   skillrunner_mode?: "auto" | "interactive";
@@ -78,6 +82,7 @@ export type WorkflowManifest = {
   version?: string;
   parameters?: Record<string, WorkflowParameterSchema>;
   inputs?: WorkflowInputsSpec;
+  trigger?: WorkflowTriggerSpec;
   execution?: WorkflowExecutionSpec;
   result?: WorkflowResultSpec;
   request?: WorkflowRequestSpec;
@@ -181,6 +186,20 @@ export type WorkflowHostApi = {
     exists: (path: string) => Promise<boolean>;
     makeDirectory: (path: string) => Promise<void>;
     getTempDirectoryPath: () => string;
+    pickDirectory: (args?: {
+      title?: string;
+      directory?: string;
+    }) => Promise<string | null>;
+    pickFile: (args?: {
+      title?: string;
+      directory?: string;
+      filters?: [string, string][];
+    }) => Promise<string | null>;
+    pickFiles: (args?: {
+      title?: string;
+      directory?: string;
+      filters?: [string, string][];
+    }) => Promise<string[] | null>;
   };
 };
 
@@ -194,6 +213,8 @@ export type WorkflowRuntimeContext = {
   debugMode?: boolean;
   workflowId?: string;
   packageId?: string;
+  workflowRootDir?: string;
+  packageRootDir?: string;
   workflowSourceKind?: "builtin" | "user" | "";
   hookName?: "filterInputs" | "buildRequest" | "applyResult" | "";
   fetch?: typeof globalThis.fetch | null;
@@ -217,7 +238,7 @@ export type BuildRequestHook = (args: {
 }) => unknown | Promise<unknown>;
 
 export type ApplyResultHook = (args: {
-  parent: Zotero.Item | number | string;
+  parent: Zotero.Item | number | string | null;
   bundleReader: {
     readText: (entryPath: string) => Promise<string>;
     getExtractedDir?: () => Promise<string>;

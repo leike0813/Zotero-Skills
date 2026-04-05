@@ -1,0 +1,63 @@
+{
+  "id": "literature-explainer",
+  "label": "Literature Explainer",
+  "provider": "skillrunner",
+  "version": "0.1.0",
+  "inputs": {
+    "unit": "attachment",
+    "accepts": {
+      "mime": ["text/markdown", "text/x-markdown", "text/plain", "application/pdf"]
+    },
+    "per_parent": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "request": {
+    "kind": "skillrunner.job.v1",
+    "create": {
+      "skill_id": "literature-explainer"
+    },
+    "input": {
+      "upload": {
+        "files": [
+          { "key": "source_path", "from": "selected.source" }
+        ]
+      }
+    }
+  },
+  "parameters": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "enum": [
+        "zh-CN",
+        "en-US",
+        "ja-JP",
+        "ko-KR",
+        "de-DE",
+        "fr-FR",
+        "es-ES",
+        "ru-RU"
+      ],
+      "allowCustom": true,
+      "default": "zh-CN"
+    }
+  },
+  "execution": {
+    "mode": "auto",
+    "skillrunner_mode": "interactive",
+    "poll_interval_ms": 2000,
+    "timeout_ms": 1200000
+  },
+  "result": {
+    "fetch": { "type": "bundle" },
+    "expects": {
+      "result_json": "result/result.json"
+    }
+  },
+  "hooks": {
+    "filterInputs": "hooks/filterInputs.mjs",
+    "applyResult": "hooks/applyResult.mjs"
+  }
+}

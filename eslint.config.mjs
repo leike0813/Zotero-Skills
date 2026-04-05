@@ -3,6 +3,25 @@
 import zotero from "@zotero-plugin/eslint-config";
 
 export default zotero({
+  ignores: [
+    // Generated/bundled files
+    "addon/locale/**",
+
+    // Openspec artifacts (proposals, designs, specs, tasks)
+    "openspec/changes/**",
+    "openspec/specs/**",
+
+    // Documentation (keep README.md checked)
+    "doc/**",
+    "**/*.md",
+    "!README.md",
+
+    // Artifacts
+    "artifact/**",
+
+    // Test fixtures
+    "test/fixtures/**",
+  ],
   overrides: [
     {
       files: ["**/*.ts"],

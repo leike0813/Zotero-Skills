@@ -39,6 +39,24 @@ export type SkillRunnerManagementPending = {
   [key: string]: unknown;
 };
 
+export type SkillRunnerManagementAuthSession = {
+  request_id: string;
+  auth_session_id?: string;
+  status?: string;
+  phase?: string;
+  provider_id?: string;
+  engine?: string;
+  prompt?: string;
+  challenge_kind?: string;
+  available_methods?: string[];
+  accepts_chat_input?: boolean;
+  input_kind?: string | null;
+  auth_url?: string;
+  user_code?: string;
+  last_error?: string;
+  [key: string]: unknown;
+};
+
 export type SkillRunnerManagementChatHistoryPayload = {
   request_id: string;
   count: number;
@@ -538,6 +556,21 @@ export class SkillRunnerManagementClient {
       throw new Error("management pending response must be object");
     }
     return body as SkillRunnerManagementPending;
+  }
+
+  async getAuthSession(args: { requestId: string }) {
+    const requestId = String(args.requestId || "").trim();
+    if (!requestId) {
+      throw new Error("requestId is required");
+    }
+    const body = await this.requestWithAuthRetry({
+      method: "GET",
+      path: `/v1/jobs/${encodeURIComponent(requestId)}/auth/session`,
+    });
+    if (!isObject(body)) {
+      throw new Error("management auth session response must be object");
+    }
+    return body as SkillRunnerManagementAuthSession;
   }
 
   async submitReply(args: {

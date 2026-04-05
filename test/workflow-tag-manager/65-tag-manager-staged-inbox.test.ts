@@ -257,6 +257,21 @@ function listTags(item: Zotero.Item) {
     );
 }
 
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 3000,
+  intervalMs = 20,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.isTrue(predicate(), "condition did not converge before timeout");
+}
+
 describe("workflow: tag-manager staged inbox", function () {
   let restoreHostApi: (() => void) | null = null;
 
@@ -327,7 +342,14 @@ describe("workflow: tag-manager staged inbox", function () {
     const joinBtn = findNodeByRoleAndRow(harness.root, "staged-accept-btn", 0);
     assert.isOk(joinBtn);
     joinBtn!.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitForCondition(
+      () =>
+        loadStagedEntries().length === 0 &&
+        loadControlledEntries()
+          .map((entry) => entry.tag)
+          .sort()
+          .join("|") === "field:CE/UG|topic:existing",
+    );
 
     const controlledTags = loadControlledEntries()
       .map((entry) => entry.tag)
@@ -357,7 +379,11 @@ describe("workflow: tag-manager staged inbox", function () {
     const joinBtn = findNodeByRoleAndRow(harness.root, "staged-accept-btn", 0);
     assert.isOk(joinBtn);
     joinBtn!.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitForCondition(
+      () =>
+        loadStagedEntries().length === 0 &&
+        listTags(parent).join("|") === "topic:bound-local",
+    );
 
     assert.deepEqual(loadStagedEntries().map((entry) => entry.tag), []);
     assert.deepEqual(listTags(parent), ["topic:bound-local"]);

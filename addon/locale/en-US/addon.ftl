@@ -313,6 +313,7 @@ backend-manager-error-bearer-required = Row { $row }: bearer token is required
 backend-manager-error-timeout-invalid = Row { $row }: timeout must be a positive number
 backend-display-local-skillrunner = Local Backend
 task-dashboard-backend-unavailable-tag = Unavailable
+task-dashboard-skillrunner-backend-unavailable = Unavailable
 skillrunner-local-runtime-toast-up = Local backend started.
 skillrunner-local-runtime-toast-down = Local backend stopped.
 skillrunner-local-runtime-toast-abnormal-stop = Local backend stopped unexpectedly.

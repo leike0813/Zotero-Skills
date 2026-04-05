@@ -166,6 +166,86 @@ Primary implementation: `src/modules/workflowEditorHost.ts`.
 - Renderer `serialize()` return value is passed back as `result` when saved.
 - If hook treats cancel as failure (for example by throwing), the corresponding job is marked failed.
 
+## Host API File Operations
+
+`runtime.hostApi.file` provides file system operations:
+
+### Single File Selection
+
+`pickFile(args?): Promise<string | null>`
+- Opens native file picker for single file selection.
+- Returns absolute path on success, `null` if user cancels.
+- `args.title`: dialog title (optional)
+- `args.directory`: starting directory (optional)
+- `args.filters`: file type filters as `[name, pattern][]` (optional)
+
+### Multi-File Selection (v0.3.0+)
+
+`pickFiles(args?): Promise<string[] | null>`
+- Opens native file picker with multi-select enabled.
+- Returns array of absolute paths in user selection order, `null` if user cancels.
+- Same `args` signature as `pickFile`.
+- Example:
+  ```js
+  const paths = await runtime.hostApi.file.pickFiles({
+    title: 'Select Markdown Files',
+    filters: [['Markdown', '*.md']]
+  });
+  if (paths) {
+    for (const p of paths) {
+      // process each file
+    }
+  }
+  ```
+
+### Directory Selection
+
+`pickDirectory(args?): Promise<string | null>`
+- Opens native directory picker.
+- Returns absolute path on success, `null` if user cancels.
+
+### File I/O
+
+`readText(path): Promise<string>`
+- Reads text file content.
+
+`writeText(path, content): Promise<void>`
+- Writes text content to file.
+
+`exists(path): Promise<boolean>`
+- Checks if file or directory exists.
+
+`makeDirectory(path): Promise<void>`
+- Creates directory (including parents).
+
+`getTempDirectoryPath(): string`
+- Returns plugin-scoped temporary directory path.
+
+## Runtime Context Fields
+
+Hook receives `runtime` object with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `helpers` | `HookHelpers` | Utility functions (documented above) |
+| `hostApi` | `WorkflowHostApi` | Host API for file/dialog/notification access |
+| `hostApiVersion` | `number` | API version number |
+| `handlers` | `Handlers` | Data operation handlers |
+| `zotero` | `typeof Zotero` | Zotero global object |
+| `debugMode` | `boolean \| undefined` | Debug mode flag |
+| `workflowId` | `string \| undefined` | Current workflow ID |
+| `packageId` | `string \| undefined` | Package ID (workflow packages only) |
+| `workflowRootDir` | `string \| undefined` | Workflow root directory path |
+| `packageRootDir` | `string \| undefined` | Package root directory path (workflow packages only) |
+| `workflowSourceKind` | `”builtin” \| “user” \| “”` | Source location type |
+| `hookName` | `”filterInputs” \| “buildRequest” \| “applyResult” \| “”` | Current hook name |
+| `fetch` | `typeof fetch \| null` | Fetch API (if available) |
+| `Buffer` | `typeof Buffer \| null` | Node Buffer (if available) |
+| `btoa` | `typeof btoa \| null` | Base64 encode (if available) |
+| `atob` | `typeof atob \| null` | Base64 decode (if available) |
+| `TextEncoder` | `typeof TextEncoder \| null` | Text encoder (if available) |
+| `TextDecoder` | `typeof TextDecoder \| null` | Text decoder (if available) |
+
 ## Practical Examples
 
 ### Example 1: Attachment Filtering

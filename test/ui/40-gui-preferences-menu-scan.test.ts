@@ -7,7 +7,10 @@ import {
   resetManagedLocalRuntimeStateChangeListenersForTests,
 } from "../../src/modules/skillRunnerLocalRuntimeManager";
 import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
-import { ensureWorkflowMenuForWindow } from "../../src/modules/workflowMenu";
+import {
+  ensureWorkflowMenuForWindow,
+  rebuildWorkflowActionPopup,
+} from "../../src/modules/workflowMenu";
 import {
   getEffectiveWorkflowDir,
   getLoadedWorkflowEntries,
@@ -197,12 +200,25 @@ function makeLoadedWorkflow(id: string, label: string): LoadedWorkflow {
   };
 }
 
-function makePassThroughWorkflow(id: string, label: string): LoadedWorkflow {
+function makePassThroughWorkflow(
+  id: string,
+  label: string,
+  options?: {
+    requiresSelection?: boolean;
+  },
+): LoadedWorkflow {
   return {
     manifest: {
       id,
       label,
       provider: "pass-through",
+      ...(options?.requiresSelection === false
+        ? {
+            trigger: {
+              requiresSelection: false,
+            },
+          }
+        : {}),
       hooks: {
         applyResult: "hooks/applyResult.js",
       },
@@ -222,6 +238,9 @@ function makeDebugOnlyWorkflow(id: string, label: string): LoadedWorkflow {
       label,
       provider: "pass-through",
       debug_only: true,
+      trigger: {
+        requiresSelection: false,
+      },
       hooks: {
         applyResult: "hooks/applyResult.js",
       },
@@ -1343,7 +1362,10 @@ describe("gui: workflow context menu", function () {
       `${config.addonRef}-workflows-popup`,
     ) as FakeXULElement;
     popup.dispatch("popupshowing");
-    await flushTasks();
+    for (let i = 0; i < 20 && popup.children.length < 4; i++) {
+      await flushTasks();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
     assert.lengthOf(popup.children, 4);
     assertMenuLabel(
@@ -1361,6 +1383,58 @@ describe("gui: workflow context menu", function () {
     assert.match(
       popup.children[3].getAttribute("label") || "",
       /^Workflow B \((no selection|未选择条目)\)$/,
+    );
+  });
+
+  it("keeps workflow with trigger.requiresSelection=false enabled when no items are selected", async function () {
+    setWorkflowState([
+      makeLoadedWorkflow("workflow-a", "Workflow A"),
+      makePassThroughWorkflow("tag-manager", "Tag Manager", {
+        requiresSelection: false,
+      }),
+    ]);
+    const win = createMainWindow([]);
+    ensureWorkflowMenuForWindow(win);
+
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    await rebuildWorkflowActionPopup(win, popup as unknown as XULElement, {
+      includeTaskManagerItem: true,
+    });
+
+    assert.lengthOf(popup.children, 4);
+    assert.equal(popup.children[2].getAttribute("disabled"), "true");
+    assert.match(
+      popup.children[2].getAttribute("label") || "",
+      /^Workflow A \((no selection|未选择条目)\)$/,
+    );
+    assert.isNull(popup.children[3].getAttribute("disabled"));
+    assert.equal(popup.children[3].getAttribute("label"), "Tag Manager");
+  });
+
+  it("keeps pass-through workflow disabled without explicit trigger.requiresSelection=false when no items are selected", async function () {
+    setWorkflowState([
+      makePassThroughWorkflow(
+        "reference-matching",
+        "Reference Matching",
+      ),
+    ]);
+    const win = createMainWindow([]);
+    ensureWorkflowMenuForWindow(win);
+
+    const popup = win.document.getElementById(
+      `${config.addonRef}-workflows-popup`,
+    ) as FakeXULElement;
+    await rebuildWorkflowActionPopup(win, popup as unknown as XULElement, {
+      includeTaskManagerItem: true,
+    });
+
+    assert.lengthOf(popup.children, 3);
+    assert.equal(popup.children[2].getAttribute("disabled"), "true");
+    assert.match(
+      popup.children[2].getAttribute("label") || "",
+      /^Reference Matching \((no selection|未选择条目)\)$/,
     );
   });
 

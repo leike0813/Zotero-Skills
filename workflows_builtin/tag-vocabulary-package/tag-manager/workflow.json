@@ -29,6 +29,9 @@
       "default": ""
     }
   },
+  "trigger": {
+    "requiresSelection": false
+  },
   "execution": {
     "feedback": {
       "showNotifications": false

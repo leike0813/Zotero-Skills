@@ -34,6 +34,7 @@ export type ProviderRuntimeOptionSchemaEntry = {
   description?: string;
   default?: unknown;
   enum?: string[];
+  disabled?: boolean;
 };
 
 export type ProviderRuntimeOptionSchema = Record<

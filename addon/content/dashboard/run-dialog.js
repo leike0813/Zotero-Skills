@@ -4,6 +4,8 @@
     workspace: null,
     workspaceLabels: null,
     chatModel: null,
+    chatDisplayMode: "plain",
+    markdownParser: undefined,
     renderedChatOrder: [],
     renderedChatKeys: new Set(),
     promptSig: "",
@@ -21,6 +23,8 @@
   const cancelBtnEl = document.getElementById("cancel-run-btn");
 
   const chatEl = document.getElementById("chat-panel");
+  const chatModePlainEl = document.getElementById("chat-mode-plain");
+  const chatModeBubbleEl = document.getElementById("chat-mode-bubble");
   const thinkingCardEl = document.getElementById("thinking-card");
   const thinkingTitleEl = document.getElementById("thinking-title");
   const thinkingDescEl = document.getElementById("thinking-desc");
@@ -105,6 +109,101 @@
 
   function safeText(v) {
     return typeof v === "string" ? v : "";
+  }
+
+  function escapeHtml(value) {
+    return safeText(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function createCompatibleThinkingChatModel(initialMode) {
+    const core = window.SkillRunnerThinkingChatCore;
+    if (!core || typeof core.createThinkingChatModel !== "function") {
+      return null;
+    }
+    const model = core.createThinkingChatModel(initialMode);
+    if (model && typeof model.setDisplayMode === "function") {
+      model.setDisplayMode(initialMode);
+    }
+    if (!model || typeof model.getEntries !== "function") {
+      return null;
+    }
+    const hasGetDisplayMode = typeof model.getDisplayMode === "function";
+    if (!hasGetDisplayMode) {
+      model.getDisplayMode = function () {
+        return safeText(initialMode).trim().toLowerCase() === "bubble" ? "bubble" : "plain";
+      };
+    }
+    return model;
+  }
+
+  function ensureMarkdownParser() {
+    if (state.markdownParser !== undefined) {
+      return state.markdownParser;
+    }
+    if (!window.markdownit || typeof window.markdownit !== "function") {
+      console.warn("markdown-it not loaded, falling back to plain text rendering");
+      state.markdownParser = null;
+      return null;
+    }
+    const mdParser = window.markdownit({
+      html: false,
+      xhtmlOut: false,
+      breaks: true,
+      langPrefix: "language-",
+      linkify: false,
+      typographer: false,
+      quotes: "\"\"''",
+      highlight: null,
+    });
+    if (window.texmath && window.katex) {
+      mdParser.use(window.texmath, {
+        engine: window.katex,
+        delimiters: "dollars",
+        katexOptions: {
+          throwOnError: false,
+          output: "htmlAndMathML",
+          displayMode: false,
+        },
+      });
+    }
+    state.markdownParser = mdParser;
+    return mdParser;
+  }
+
+  function renderMarkdown(textValue) {
+    const markdownText = safeText(textValue);
+    const mdParser = ensureMarkdownParser();
+    if (!mdParser || typeof markdownText !== "string") {
+      return escapeHtml(markdownText);
+    }
+    try {
+      return mdParser.render(markdownText).trimEnd();
+    } catch (error) {
+      console.warn("Markdown render error, falling back to plain text:", error);
+      return escapeHtml(markdownText);
+    }
+  }
+
+  function setChatDisplayMode(mode) {
+    state.chatDisplayMode = safeText(mode).trim().toLowerCase() === "bubble" ? "bubble" : "plain";
+    if (state.chatModel && typeof state.chatModel.setDisplayMode === "function") {
+      state.chatModel.setDisplayMode(state.chatDisplayMode);
+    }
+    chatEl.classList.toggle("plain-mode", state.chatDisplayMode === "plain");
+    chatEl.classList.toggle("bubble-mode", state.chatDisplayMode === "bubble");
+    if (chatModePlainEl) {
+      chatModePlainEl.classList.toggle("active", state.chatDisplayMode === "plain");
+      chatModePlainEl.setAttribute("aria-pressed", state.chatDisplayMode === "plain" ? "true" : "false");
+    }
+    if (chatModeBubbleEl) {
+      chatModeBubbleEl.classList.toggle("active", state.chatDisplayMode === "bubble");
+      chatModeBubbleEl.setAttribute("aria-pressed", state.chatDisplayMode === "bubble" ? "true" : "false");
+    }
   }
 
   function text(v) {
@@ -320,12 +419,8 @@
 
   function ensureChatModel() {
     if (state.chatModel) return;
-    if (
-      window.SkillRunnerThinkingChatCore &&
-      typeof window.SkillRunnerThinkingChatCore.createThinkingChatModel === "function"
-    ) {
-      state.chatModel = window.SkillRunnerThinkingChatCore.createThinkingChatModel();
-    }
+    state.chatModel = createCompatibleThinkingChatModel(state.chatDisplayMode);
+    setChatDisplayMode(state.chatDisplayMode);
   }
 
   function chatRoleClass(role) {
@@ -356,11 +451,20 @@
       role: normalizedRole,
       kind: safeText(raw.kind),
       text: textBody,
+      attempt: Number(raw.attempt || 1),
+      correlation:
+        raw.correlation && typeof raw.correlation === "object"
+          ? raw.correlation
+          : {},
     };
   }
 
   function chatEventKey(event) {
-    return `chat:${Number(event.seq || 0)}:${safeText(event.role)}:${safeText(event.kind)}:${safeText(event.text)}`;
+    const correlation =
+      event && event.correlation && typeof event.correlation === "object"
+        ? event.correlation
+        : {};
+    return `chat:${Number(event.seq || 0)}:${safeText(event.role)}:${safeText(event.kind)}:${safeText(event.text)}:${Number(event.attempt || 1)}:${safeText(correlation.message_id)}:${safeText(correlation.replaces_message_id)}`;
   }
 
   function renderChatEmpty() {
@@ -380,6 +484,156 @@
     chatEl.textContent = "";
   }
 
+  function appendRenderedMarkdown(container, textValue) {
+    container.innerHTML = renderMarkdown(textValue);
+  }
+
+  function renderMessageEntry(entry, mode) {
+    const event = entry.event && typeof entry.event === "object" ? entry.event : {};
+    const role = safeText(event.role).trim() || "assistant";
+    const messageText = safeText(event.text).trim();
+    if (!messageText) return null;
+    if (mode === "plain") {
+      const row = document.createElement("div");
+      row.className = "chat-plain-entry " + chatRoleClass(role);
+      const roleEl = document.createElement("span");
+      roleEl.className = "chat-plain-role";
+      roleEl.textContent = chatRoleText(role);
+      const body = document.createElement("div");
+      body.className = "chat-plain-body";
+      body.innerHTML = renderMarkdown(messageText);
+      row.appendChild(roleEl);
+      row.appendChild(body);
+      return row;
+    }
+    const row = document.createElement("div");
+    row.className = "chat-row " + chatRoleClass(role);
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble " + chatRoleClass(role);
+    const roleEl = document.createElement("span");
+    roleEl.className = "chat-role";
+    roleEl.textContent = chatRoleText(role);
+    const body = document.createElement("div");
+    body.className = "chat-bubble-body";
+    body.innerHTML = renderMarkdown(messageText);
+    bubble.appendChild(roleEl);
+    bubble.appendChild(body);
+    row.appendChild(bubble);
+    return row;
+  }
+
+  function renderThinkingEntry(entry, mode) {
+    const items = Array.isArray(entry.items) ? entry.items : [];
+    if (!items.length) return null;
+    const latest = items[items.length - 1];
+    const toggle = function () {
+      state.chatModel.toggleThinking(entry.id);
+      renderChatModel({ preserveScroll: true });
+    };
+    if (mode === "plain") {
+      const row = document.createElement("div");
+      row.className = "chat-plain-process";
+      const header = document.createElement("div");
+      header.className = "chat-plain-process-header";
+      header.setAttribute("role", "button");
+      header.setAttribute("tabindex", "0");
+      const title = document.createElement("span");
+      title.className = "chat-plain-role";
+      title.textContent = safeText(labels().roleThinking) || "Thinking";
+      const arrow = document.createElement("span");
+      arrow.className = "thinking-arrow";
+      arrow.textContent = entry.collapsed ? "◀" : "▼";
+      header.appendChild(title);
+      header.appendChild(arrow);
+      header.addEventListener("click", toggle);
+      header.addEventListener("keydown", function (evt) {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          toggle();
+        }
+      });
+      row.appendChild(header);
+      if (entry.collapsed) {
+        const latestLine = document.createElement("div");
+        latestLine.className = "chat-plain-process-latest";
+        latestLine.textContent = `${processTypeLabel(latest.processType)}: ${safeText(latest.text || latest.summary)}`;
+        row.appendChild(latestLine);
+      } else {
+        const list = document.createElement("div");
+        list.className = "chat-plain-process-list";
+        items.forEach(function (item) {
+          const itemEl = document.createElement("div");
+          itemEl.className = "chat-plain-process-item";
+          const meta = document.createElement("div");
+          meta.className = "thinking-item-meta";
+          meta.textContent = processTypeLabel(item.processType);
+          const txt = document.createElement("div");
+          txt.className = "thinking-item-text";
+          appendRenderedMarkdown(txt, safeText(item.text || item.summary));
+          itemEl.appendChild(meta);
+          itemEl.appendChild(txt);
+          list.appendChild(itemEl);
+        });
+        row.appendChild(list);
+      }
+      return row;
+    }
+
+    const row = document.createElement("div");
+    row.className = "chat-row agent";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble agent thinking-bubble";
+    bubble.setAttribute("role", "button");
+    bubble.setAttribute("tabindex", "0");
+    const roleEl = document.createElement("span");
+    roleEl.className = "chat-role";
+    roleEl.textContent = safeText(labels().roleThinking) || "Thinking";
+    bubble.appendChild(roleEl);
+    const header = document.createElement("div");
+    header.className = "thinking-header";
+    const title = document.createElement("span");
+    title.className = "thinking-header-title";
+    title.textContent = processTypeLabel(latest.processType);
+    const arrow = document.createElement("span");
+    arrow.className = "thinking-arrow";
+    arrow.textContent = entry.collapsed ? "◀" : "▼";
+    header.appendChild(title);
+    header.appendChild(arrow);
+    bubble.appendChild(header);
+    bubble.addEventListener("click", toggle);
+    bubble.addEventListener("keydown", function (evt) {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        toggle();
+      }
+    });
+    if (entry.collapsed) {
+      const latestLine = document.createElement("div");
+      latestLine.className = "thinking-latest";
+      latestLine.textContent = `${processTypeLabel(latest.processType)}: ${safeText(latest.text || latest.summary)}`;
+      bubble.appendChild(latestLine);
+    } else {
+      const list = document.createElement("div");
+      list.className = "thinking-list";
+      items.forEach(function (item) {
+        const itemEl = document.createElement("div");
+        itemEl.className = "thinking-item";
+        const meta = document.createElement("div");
+        meta.className = "thinking-item-meta";
+        meta.textContent = processTypeLabel(item.processType);
+        const txt = document.createElement("div");
+        txt.className = "thinking-item-text";
+        appendRenderedMarkdown(txt, safeText(item.text || item.summary));
+        itemEl.appendChild(meta);
+        itemEl.appendChild(txt);
+        list.appendChild(itemEl);
+      });
+      bubble.appendChild(list);
+    }
+    row.appendChild(bubble);
+    return row;
+  }
+
   function renderChatModel(options) {
     const opts = options || {};
     const shouldStick = opts.forceScroll === true || (opts.preserveScroll !== true && nearBottom(chatEl));
@@ -388,90 +642,26 @@
     chatEl.textContent = "";
     if (!state.chatModel) return;
 
+    const mode = typeof state.chatModel.getDisplayMode === "function"
+      ? state.chatModel.getDisplayMode()
+      : state.chatDisplayMode;
+    setChatDisplayMode(mode);
+
     const entries = state.chatModel.getEntries();
     entries.forEach(function (entry) {
       if (!entry || typeof entry !== "object") return;
       if (entry.type === "message") {
-        const event = entry.event && typeof entry.event === "object" ? entry.event : {};
-        const role = safeText(event.role).trim() || "assistant";
-        const messageText = safeText(event.text).trim();
-        if (!messageText) return;
-        const row = document.createElement("div");
-        row.className = "chat-row " + chatRoleClass(role);
-        const bubble = document.createElement("div");
-        bubble.className = "chat-bubble " + chatRoleClass(role);
-        const roleEl = document.createElement("span");
-        roleEl.className = "chat-role";
-        roleEl.textContent = chatRoleText(role);
-        const content = document.createElement("div");
-        content.textContent = messageText;
-        bubble.appendChild(roleEl);
-        bubble.appendChild(content);
-        row.appendChild(bubble);
-        chatEl.appendChild(row);
+        const node = renderMessageEntry(entry, mode);
+        if (node) {
+          chatEl.appendChild(node);
+        }
         return;
       }
       if (entry.type !== "thinking") return;
-      const items = Array.isArray(entry.items) ? entry.items : [];
-      if (!items.length) return;
-      const latest = items[items.length - 1];
-      const row = document.createElement("div");
-      row.className = "chat-row agent";
-      const bubble = document.createElement("div");
-      bubble.className = "chat-bubble agent thinking-bubble";
-      bubble.setAttribute("role", "button");
-      bubble.setAttribute("tabindex", "0");
-      const roleEl = document.createElement("span");
-      roleEl.className = "chat-role";
-      roleEl.textContent = safeText(labels().roleThinking) || "Thinking";
-      bubble.appendChild(roleEl);
-      const header = document.createElement("div");
-      header.className = "thinking-header";
-      const title = document.createElement("span");
-      title.className = "thinking-header-title";
-      title.textContent = processTypeLabel(latest.processType);
-      const arrow = document.createElement("span");
-      arrow.className = "thinking-arrow";
-      arrow.textContent = entry.collapsed ? "◀" : "▼";
-      header.appendChild(title);
-      header.appendChild(arrow);
-      bubble.appendChild(header);
-      const toggle = function () {
-        state.chatModel.toggleThinking(entry.id);
-        renderChatModel({ preserveScroll: true });
-      };
-      bubble.addEventListener("click", toggle);
-      bubble.addEventListener("keydown", function (evt) {
-        if (evt.key === "Enter" || evt.key === " ") {
-          evt.preventDefault();
-          toggle();
-        }
-      });
-      if (entry.collapsed) {
-        const latestLine = document.createElement("div");
-        latestLine.className = "thinking-latest";
-        latestLine.textContent = `${processTypeLabel(latest.processType)}: ${safeText(latest.text || latest.summary)}`;
-        bubble.appendChild(latestLine);
-      } else {
-        const list = document.createElement("div");
-        list.className = "thinking-list";
-        items.forEach(function (item) {
-          const itemEl = document.createElement("div");
-          itemEl.className = "thinking-item";
-          const meta = document.createElement("div");
-          meta.className = "thinking-item-meta";
-          meta.textContent = processTypeLabel(item.processType);
-          const txt = document.createElement("div");
-          txt.className = "thinking-item-text";
-          txt.textContent = safeText(item.text || item.summary);
-          itemEl.appendChild(meta);
-          itemEl.appendChild(txt);
-          list.appendChild(itemEl);
-        });
-        bubble.appendChild(list);
+      const node = renderThinkingEntry(entry, mode);
+      if (node) {
+        chatEl.appendChild(node);
       }
-      row.appendChild(bubble);
-      chatEl.appendChild(row);
     });
 
     if (shouldStick) {
@@ -498,19 +688,10 @@
     if (chatEl.childElementCount === 1 && chatEl.firstElementChild?.classList.contains("muted")) {
       chatEl.textContent = "";
     }
-    const row = document.createElement("div");
-    row.className = "chat-row " + chatRoleClass(event.role);
-    const bubble = document.createElement("div");
-    bubble.className = "chat-bubble " + chatRoleClass(event.role);
-    const roleEl = document.createElement("span");
-    roleEl.className = "chat-role";
-    roleEl.textContent = chatRoleText(event.role);
-    const content = document.createElement("div");
-    content.textContent = event.text;
-    bubble.appendChild(roleEl);
-    bubble.appendChild(content);
-    row.appendChild(bubble);
-    chatEl.appendChild(row);
+    const node = renderMessageEntry({ event }, state.chatDisplayMode);
+    if (node) {
+      chatEl.appendChild(node);
+    }
     if (opts.deferScroll !== true) {
       chatEl.scrollTop = chatEl.scrollHeight;
     }
@@ -1066,7 +1247,7 @@
         mode: "auth",
         authSessionId,
         submission: {
-          kind: safeText(authInputKindEl.value).trim() || "authorization_code",
+          kind: safeText(authInputKindEl.value).trim() || "auth_code_or_url",
           value: textValue,
         },
       });
@@ -1143,6 +1324,18 @@
     submitReply();
   });
   authImportSubmitEl.addEventListener("click", submitAuthImport);
+  if (chatModePlainEl) {
+    chatModePlainEl.addEventListener("click", function () {
+      setChatDisplayMode("plain");
+      renderChatModel({ preserveScroll: true });
+    });
+  }
+  if (chatModeBubbleEl) {
+    chatModeBubbleEl.addEventListener("click", function () {
+      setChatDisplayMode("bubble");
+      renderChatModel({ preserveScroll: true });
+    });
+  }
 
   window.addEventListener("message", function (event) {
     const data = event.data;
@@ -1154,5 +1347,6 @@
 
   setReplyEnabled(false);
   setReplyComposerVisible(true);
+  setChatDisplayMode("plain");
   sendAction("ready", {});
 })();

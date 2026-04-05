@@ -20,6 +20,16 @@
     return correlation && typeof correlation === "object" ? correlation : {};
   }
 
+  function messageIdOf(event) {
+    const messageId = correlationOf(event).message_id;
+    return normalizeText(messageId) || null;
+  }
+
+  function replacesMessageIdOf(event) {
+    const replaceId = correlationOf(event).replaces_message_id;
+    return normalizeText(replaceId) || null;
+  }
+
   function processTypeOf(event) {
     const correlation = correlationOf(event);
     const fromCorrelation = normalizeText(correlation.process_type);
@@ -29,150 +39,195 @@
       const classification = normalizeText(correlation.classification);
       return classification || "reasoning";
     }
+    if (kind === "assistant_message") {
+      return "assistant_message";
+    }
     return "reasoning";
   }
 
-  function createThinkingChatModel() {
-    const entries = [];
-    const thinkingById = new Map();
-    let activeThinkingId = null;
-    let nextThinkingId = 1;
+  function isAssistantProcess(event) {
+    return normalizeText(event && event.role) === "assistant" && normalizeText(event && event.kind) === "assistant_process";
+  }
 
-    function createThinkingEntry(attempt) {
-      const id = `thinking-${nextThinkingId}`;
-      nextThinkingId += 1;
-      const entry = {
-        type: "thinking",
-        id,
-        attempt,
-        collapsed: true,
-        items: [],
-      };
-      entries.push(entry);
-      thinkingById.set(id, entry);
-      activeThinkingId = id;
-      return entry;
-    }
+  function isAssistantIntermediate(event) {
+    return normalizeText(event && event.role) === "assistant" && normalizeText(event && event.kind) === "assistant_message";
+  }
 
-    function removeThinkingEntry(entry) {
-      const idx = entries.indexOf(entry);
-      if (idx >= 0) {
-        entries.splice(idx, 1);
-      }
-      if (activeThinkingId === entry.id) {
-        activeThinkingId = null;
-      }
-      thinkingById.delete(entry.id);
-    }
+  function isAssistantFinal(event) {
+    return normalizeText(event && event.role) === "assistant" && normalizeText(event && event.kind) === "assistant_final";
+  }
 
-    function toProcessItem(event) {
-      const correlation = correlationOf(event);
-      const text = normalizeText(event && event.text);
-      const summary = normalizeText(correlation.summary) || text;
-      return {
-        seq: toPositiveInt(event && event.seq, 0),
-        attempt: toPositiveInt(event && event.attempt, 1),
-        processType: processTypeOf(event),
-        text: text || summary,
-        summary: summary || text,
-        messageId: normalizeText(correlation.message_id) || null,
-        normalizedText: normalizeText(text || summary),
-        details:
-          correlation.details && typeof correlation.details === "object"
-            ? correlation.details
-            : null,
-        rawRef:
-          correlation.raw_ref && typeof correlation.raw_ref === "object"
-            ? correlation.raw_ref
-            : null,
-        sourceEvent: event,
-      };
-    }
+  function buildProcessItem(atom) {
+    return {
+      seq: toPositiveInt(atom.event && atom.event.seq, 0),
+      attempt: atom.attempt,
+      processType: atom.processType,
+      itemKind: atom.atomKind === "intermediate" ? "assistant_message" : "assistant_process",
+      text: atom.text || atom.summary,
+      summary: atom.summary || atom.text,
+      messageId: atom.messageId,
+      normalizedText: atom.normalizedText,
+      replacesMessageId: atom.replacesMessageId,
+      details: atom.details,
+      rawRef: atom.rawRef,
+      sourceEvent: atom.event,
+    };
+  }
 
-    function appendProcess(event) {
-      const attempt = toPositiveInt(event && event.attempt, 1);
-      let entry = activeThinkingId ? thinkingById.get(activeThinkingId) || null : null;
-      if (!entry || entry.attempt !== attempt) {
-        entry = createThinkingEntry(attempt);
-      }
-      entry.items.push(toProcessItem(event));
-    }
+  function buildCanonicalAtom(event) {
+    const correlation = correlationOf(event);
+    const text = normalizeText(event && event.text);
+    const summary = normalizeText(correlation.summary) || text;
+    const atomKind = isAssistantProcess(event)
+      ? "process"
+      : isAssistantIntermediate(event)
+        ? "intermediate"
+        : isAssistantFinal(event)
+          ? "final"
+          : "message";
+    return {
+      event,
+      atomKind,
+      role: normalizeText(event && event.role) || "assistant",
+      attempt: toPositiveInt(event && event.attempt, 1),
+      text: text || summary,
+      summary: summary || text,
+      normalizedText: normalizeText(text || summary),
+      messageId: messageIdOf(event),
+      replacesMessageId: replacesMessageIdOf(event),
+      processType: processTypeOf(event),
+      details: correlation.details && typeof correlation.details === "object" ? correlation.details : null,
+      rawRef: correlation.raw_ref && typeof correlation.raw_ref === "object" ? correlation.raw_ref : null,
+    };
+  }
 
-    function dedupeThinkingByFinal(event) {
-      const attempt = toPositiveInt(event && event.attempt, 1);
-      const correlation = correlationOf(event);
-      const finalMessageId = normalizeText(correlation.message_id);
-      const normalizedFinalText = normalizeText(event && event.text);
+  function sameMessageChain(left, right) {
+    const leftId = left && typeof left === "object" ? normalizeText(left.messageId) : "";
+    const leftReplaceId = left && typeof left === "object" ? normalizeText(left.replacesMessageId) : "";
+    const leftText = left && typeof left === "object" ? normalizeText(left.normalizedText) : "";
+    const rightId = right && typeof right === "object" ? normalizeText(right.messageId) : "";
+    const rightReplaceId = right && typeof right === "object" ? normalizeText(right.replacesMessageId) : "";
+    const rightText = right && typeof right === "object" ? normalizeText(right.normalizedText) : "";
 
-      for (const entry of [...entries]) {
-        if (entry.type !== "thinking") continue;
-        if (entry.attempt !== attempt) continue;
-        entry.items = entry.items.filter((item) => {
-          if (finalMessageId && item.messageId) {
-            return item.messageId !== finalMessageId;
+    if (leftId && rightId && leftId === rightId) return true;
+    if (leftId && rightReplaceId && leftId === rightReplaceId) return true;
+    if (leftReplaceId && rightId && leftReplaceId === rightId) return true;
+    if (leftReplaceId && rightReplaceId && leftReplaceId === rightReplaceId) return true;
+    return !leftId && !leftReplaceId && !rightId && !rightReplaceId && !!leftText && leftText === rightText;
+  }
+
+  function createThinkingChatModel(initialDisplayMode = "plain") {
+    const sourceEvents = [];
+    const thinkingCollapseState = new Map();
+    let displayMode = normalizeText(initialDisplayMode) === "bubble" ? "bubble" : "plain";
+
+    function buildCanonicalAtoms() {
+      const atoms = [];
+      for (const event of sourceEvents) {
+        if (!event || typeof event !== "object") continue;
+        const atom = buildCanonicalAtom(event);
+        if (atom.atomKind === "final") {
+          for (let index = atoms.length - 1; index >= 0; index -= 1) {
+            const existing = atoms[index];
+            if (!existing || existing.attempt !== atom.attempt) continue;
+            if (existing.atomKind !== "intermediate") continue;
+            if (sameMessageChain(existing, atom)) {
+              atoms.splice(index, 1);
+            }
           }
-          if (!finalMessageId && normalizedFinalText) {
-            return item.normalizedText !== normalizedFinalText;
+          if (atoms.some((existing) => existing.atomKind === "final" && existing.attempt === atom.attempt && sameMessageChain(existing, atom))) {
+            continue;
           }
-          return true;
-        });
-        if (!entry.items.length) {
-          removeThinkingEntry(entry);
         }
+        atoms.push(atom);
       }
+      return atoms;
     }
 
-    function appendMessage(event) {
-      activeThinkingId = null;
-      entries.push({
-        type: "message",
-        event,
-      });
+    function buildEntries() {
+      const atoms = buildCanonicalAtoms();
+      const entries = [];
+      const attemptThinkingCounts = new Map();
+      let activeThinking = null;
+
+      function createThinkingEntry(attempt) {
+        const nextCount = (attemptThinkingCounts.get(attempt) || 0) + 1;
+        attemptThinkingCounts.set(attempt, nextCount);
+        const id = `thinking-${attempt}-${nextCount}`;
+        const entry = {
+          type: "thinking",
+          id,
+          attempt,
+          collapsed: thinkingCollapseState.has(id) ? thinkingCollapseState.get(id) === true : true,
+          items: [],
+        };
+        entries.push(entry);
+        activeThinking = entry;
+        return entry;
+      }
+
+      function appendThinkingAtom(atom) {
+        let entry = activeThinking;
+        if (!entry || entry.attempt !== atom.attempt) {
+          entry = createThinkingEntry(atom.attempt);
+        }
+        entry.items.push(buildProcessItem(atom));
+      }
+
+      function appendMessageAtom(atom) {
+        activeThinking = null;
+        entries.push({
+          type: "message",
+          event: atom.event,
+          messageId: atom.messageId,
+          replacesMessageId: atom.replacesMessageId,
+          normalizedText: atom.normalizedText,
+          atomKind: atom.atomKind,
+        });
+      }
+
+      for (const atom of atoms) {
+        const shouldGoToThinking = atom.atomKind === "process" || (displayMode === "bubble" && atom.atomKind === "intermediate");
+        if (shouldGoToThinking) {
+          appendThinkingAtom(atom);
+          continue;
+        }
+        appendMessageAtom(atom);
+      }
+
+      return entries;
     }
 
-    function isAssistantProcess(event) {
-      return (
-        normalizeText(event && event.role) === "assistant" &&
-        normalizeText(event && event.kind) === "assistant_process"
-      );
+    function toggleThinking(id) {
+      const current = thinkingCollapseState.has(id) ? thinkingCollapseState.get(id) === true : true;
+      thinkingCollapseState.set(id, !current);
+      return true;
     }
 
-    function isAssistantFinal(event) {
-      return (
-        normalizeText(event && event.role) === "assistant" &&
-        normalizeText(event && event.kind) === "assistant_final"
-      );
+    function setDisplayMode(mode) {
+      displayMode = normalizeText(mode) === "bubble" ? "bubble" : "plain";
+      return displayMode;
+    }
+
+    function getDisplayMode() {
+      return displayMode;
     }
 
     function consume(event) {
       if (!event || typeof event !== "object") return false;
-      if (isAssistantProcess(event)) {
-        appendProcess(event);
-        return true;
-      }
-      if (isAssistantFinal(event)) {
-        dedupeThinkingByFinal(event);
-        appendMessage(event);
-        return true;
-      }
-      appendMessage(event);
-      return true;
-    }
-
-    function toggleThinking(id) {
-      const entry = thinkingById.get(id);
-      if (!entry) return false;
-      entry.collapsed = !entry.collapsed;
+      sourceEvents.push(event);
       return true;
     }
 
     function getEntries() {
-      return entries;
+      return buildEntries();
     }
 
     return {
       consume,
       toggleThinking,
+      setDisplayMode,
+      getDisplayMode,
       getEntries,
     };
   }

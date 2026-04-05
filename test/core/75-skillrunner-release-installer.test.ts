@@ -64,7 +64,7 @@ describe("skillrunner release installer", function () {
     };
     const artifactBytes = new TextEncoder().encode("abc");
     const checksumBytes = new TextEncoder().encode(
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.4.5.tar.gz\n",
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.5.1.tar.gz\n",
     );
     (globalThis as { fetch?: unknown }).fetch = async (input: unknown) => {
       const url = String(input || "");
@@ -76,7 +76,7 @@ describe("skillrunner release installer", function () {
 
     const commands: Array<{ command: string; args: string[] }> = [];
     const result = await installSkillRunnerRelease({
-      version: "v0.4.5",
+      version: "v0.5.1",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       repo: "leike0813/Skill-Runner",
       runCommand: async (args) => {
@@ -105,7 +105,7 @@ describe("skillrunner release installer", function () {
 
     assert.isTrue(result.ok);
     assert.equal(result.stage, "deploy-release-install");
-    assert.include(result.installDir || "", "v0.4.5");
+    assert.include(result.installDir || "", "v0.5.1");
     assert.equal(commands.length, 1);
     assert.equal(commands[0].command, "tar");
     assert.include(commands[0].args.join(" "), "-xzf");
@@ -125,7 +125,7 @@ describe("skillrunner release installer", function () {
     };
     const artifactBytes = new TextEncoder().encode("abc");
     const checksumBytes = new TextEncoder().encode(
-      "deadbeef8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.4.5.tar.gz\n",
+      "deadbeef8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.5.1.tar.gz\n",
     );
     (globalThis as { fetch?: unknown }).fetch = async (input: unknown) => {
       const url = String(input || "");
@@ -137,7 +137,7 @@ describe("skillrunner release installer", function () {
 
     let tarCalled = false;
     const result = await installSkillRunnerRelease({
-      version: "v0.4.5",
+      version: "v0.5.1",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       repo: "leike0813/Skill-Runner",
       runCommand: async () => {
@@ -169,7 +169,7 @@ describe("skillrunner release installer", function () {
     };
     const artifactBytes = new TextEncoder().encode("abc");
     const checksumBytes = new TextEncoder().encode(
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.4.5.tar.gz\n",
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  skill-runner-v0.5.1.tar.gz\n",
     );
     (globalThis as { fetch?: unknown }).fetch = async (input: unknown) => {
       const url = String(input || "");
@@ -180,7 +180,7 @@ describe("skillrunner release installer", function () {
     };
 
     const result = await installSkillRunnerRelease({
-      version: "v0.4.5",
+      version: "v0.5.1",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       repo: "leike0813/Skill-Runner",
       runCommand: async (args) => ({

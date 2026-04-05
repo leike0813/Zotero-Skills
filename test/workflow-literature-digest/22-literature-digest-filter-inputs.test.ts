@@ -264,7 +264,7 @@ describe("literature-digest filterInputs", function () {
 
   it("ignores selected markdown attachments when their parent is selected", async function () {
     const filterInputs = await getFilterHook();
-    const context = {
+    const context = withSyntheticParentIds({
       selectionType: "mixed",
       items: {
         parents: [
@@ -314,7 +314,7 @@ describe("literature-digest filterInputs", function () {
       },
       warnings: [],
       sampledAt: "2026-02-09T00:00:00.000Z",
-    };
+    });
 
     const filtered = filterInputs({
       selectionContext: context,

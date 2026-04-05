@@ -8,6 +8,7 @@ import { resolveAddonRef } from "../utils/runtimeBridge";
 import { isWindowAlive } from "../utils/window";
 import {
   type SkillRunnerManagementChatHistoryPayload,
+  type SkillRunnerManagementAuthSession,
   type SkillRunnerManagementPending,
   type SkillRunnerManagementSseFrame,
 } from "../providers/skillrunner/managementClient";
@@ -41,6 +42,7 @@ import {
 } from "./skillRunnerBackendHealthRegistry";
 import {
   ensureSkillRunnerSessionSync,
+  stopSessionSync,
   subscribeSkillRunnerSessionState,
 } from "./skillRunnerSessionSyncManager";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
@@ -48,6 +50,7 @@ import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 export type RunDialogMessageRole = "assistant" | "user" | "system";
 export type RunDialogMessageKind =
   | "assistant_process"
+  | "assistant_message"
   | "assistant_final"
   | "interaction_reply"
   | "auth_submission"
@@ -60,6 +63,10 @@ export type SkillRunnerConversationEntry = {
   role: RunDialogMessageRole;
   kind: RunDialogMessageKind;
   text: string;
+  attempt?: number;
+  messageId?: string;
+  replacesMessageId?: string;
+  processType?: string;
   raw: unknown;
 };
 
@@ -149,6 +156,8 @@ type RunDialogSnapshot = {
     role: RunDialogMessageRole;
     kind: RunDialogMessageKind;
     text: string;
+    attempt?: number;
+    correlation?: Record<string, unknown>;
   }>;
   labels: {
     requestId: string;
@@ -237,6 +246,8 @@ type RunDialogEntry = {
   unsubscribeSessionState?: () => void;
   session: RunSessionState;
 };
+
+const WAITING_AUTH_OBSERVER_INTERVAL_MS = 1500;
 
 type RunWorkspaceTaskItem = {
   key: string;
@@ -367,6 +378,17 @@ function normalizeStringArray(value: unknown) {
   return out;
 }
 
+function normalizeAuthInputKind(value: unknown) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized === "authorization_code") {
+    return "auth_code_or_url";
+  }
+  return normalized;
+}
+
 export function normalizeRunDialogChoiceOptions(value: unknown) {
   if (!Array.isArray(value)) {
     return [] as RunDialogChoiceOption[];
@@ -463,6 +485,38 @@ export function shouldClearRunDialogPendingForStatus(status: unknown) {
   return !isWaiting(normalized);
 }
 
+export function isRunDialogWaitingAuthActivePhase(phase: unknown) {
+  const normalized = String(phase || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "method_selection" || normalized === "challenge_active";
+}
+
+export function hasRunDialogWaitingAuthExited(args: {
+  pending?: SkillRunnerManagementPending | null;
+  authSession?: SkillRunnerManagementAuthSession | null;
+}) {
+  const pendingOwner = String(args.pending?.pending_owner || "")
+    .trim()
+    .toLowerCase();
+  if (pendingOwner && pendingOwner !== "waiting_auth" && !pendingOwner.startsWith("waiting_auth.")) {
+    return true;
+  }
+  const pendingStatusRaw = String(args.pending?.status || "").trim();
+  if (pendingStatusRaw && normalizeStatus(pendingStatusRaw, "running") !== "waiting_auth") {
+    return true;
+  }
+  const authStatusRaw = String(args.authSession?.status || "").trim();
+  if (authStatusRaw && normalizeStatus(authStatusRaw, "running") !== "waiting_auth") {
+    return true;
+  }
+  const authPhase = String(args.authSession?.phase || "").trim();
+  if (authPhase && !isRunDialogWaitingAuthActivePhase(authPhase)) {
+    return true;
+  }
+  return false;
+}
+
 function isTerminalStatus(status: string) {
   return isTerminal(status);
 }
@@ -537,6 +591,7 @@ export function normalizeRunDialogMessageKind(value: unknown): RunDialogMessageK
     .toLowerCase();
   if (
     kind === "assistant_process" ||
+    kind === "assistant_message" ||
     kind === "assistant_final" ||
     kind === "interaction_reply" ||
     kind === "auth_submission" ||
@@ -587,6 +642,22 @@ export function toRunDialogConversationEntry(args: {
     role,
     kind,
     text,
+    attempt: Number.isFinite(Number(args.event.attempt))
+      ? normalizeAttempt(args.event.attempt, 1)
+      : undefined,
+    messageId: normalizeDisplayText(
+      isObject(args.event.correlation) ? args.event.correlation.message_id : "",
+    ) || undefined,
+    replacesMessageId: normalizeDisplayText(
+      isObject(args.event.correlation)
+        ? args.event.correlation.replaces_message_id
+        : "",
+    ) || undefined,
+    processType: normalizeDisplayText(
+      isObject(args.event.correlation)
+        ? args.event.correlation.process_type || args.event.correlation.classification
+        : "",
+    ) || undefined,
     raw: args.event,
   };
 }
@@ -614,10 +685,19 @@ function entryCorrelation(entry: SkillRunnerConversationEntry) {
 }
 
 function entryMessageId(entry: SkillRunnerConversationEntry) {
-  return normalizeDisplayText(entryCorrelation(entry).message_id);
+  return normalizeDisplayText(entry.messageId || entryCorrelation(entry).message_id);
+}
+
+function entryReplacesMessageId(entry: SkillRunnerConversationEntry) {
+  return normalizeDisplayText(
+    entry.replacesMessageId || entryCorrelation(entry).replaces_message_id,
+  );
 }
 
 function entryAttempt(entry: SkillRunnerConversationEntry) {
+  if (typeof entry.attempt === "number" && Number.isFinite(entry.attempt)) {
+    return normalizeAttempt(entry.attempt, 1);
+  }
   if (!isObject(entry.raw)) {
     return 1;
   }
@@ -628,39 +708,52 @@ function isAssistantProcessEntry(entry: SkillRunnerConversationEntry) {
   return entry.role === "assistant" && entry.kind === "assistant_process";
 }
 
+function isAssistantIntermediateEntry(entry: SkillRunnerConversationEntry) {
+  return entry.role === "assistant" && entry.kind === "assistant_message";
+}
+
 function isAssistantFinalEntry(entry: SkillRunnerConversationEntry) {
   return entry.role === "assistant" && entry.kind === "assistant_final";
 }
 
-function removePromotedProcessEntry(
+function removePromotedIntermediateEntry(
   output: SkillRunnerConversationEntry[],
   finalEntry: SkillRunnerConversationEntry,
 ) {
   const finalAttempt = entryAttempt(finalEntry);
   const finalMessageId = entryMessageId(finalEntry);
+  const replacesMessageId = entryReplacesMessageId(finalEntry);
   const finalText = normalizeDisplayText(finalEntry.text);
+  let fallbackMatchIndex = -1;
   for (let index = output.length - 1; index >= 0; index -= 1) {
     const candidate = output[index];
-    if (!isAssistantProcessEntry(candidate)) {
+    if (!isAssistantProcessEntry(candidate) && !isAssistantIntermediateEntry(candidate)) {
       continue;
     }
     if (entryAttempt(candidate) !== finalAttempt) {
       continue;
     }
-    if (finalMessageId) {
-      if (entryMessageId(candidate) !== finalMessageId) {
-        continue;
-      }
-    } else {
-      if (!finalText) {
-        continue;
-      }
-      if (normalizeDisplayText(candidate.text) !== finalText) {
-        continue;
-      }
+    const candidateMessageId = entryMessageId(candidate);
+    if (replacesMessageId && candidateMessageId === replacesMessageId) {
+      output.splice(index, 1);
+      return;
     }
-    output.splice(index, 1);
-    return;
+    if (!replacesMessageId && finalMessageId && candidateMessageId === finalMessageId) {
+      output.splice(index, 1);
+      return;
+    }
+    if (
+      !replacesMessageId &&
+      !finalMessageId &&
+      finalText &&
+      normalizeDisplayText(candidate.text) === finalText &&
+      fallbackMatchIndex < 0
+    ) {
+      fallbackMatchIndex = index;
+    }
+  }
+  if (fallbackMatchIndex >= 0) {
+    output.splice(fallbackMatchIndex, 1);
   }
 }
 
@@ -673,7 +766,7 @@ export function buildRunDialogDisplayMessages(
       continue;
     }
     if (isAssistantFinalEntry(entry)) {
-      removePromotedProcessEntry(output, entry);
+      removePromotedIntermediateEntry(output, entry);
     }
     output.push(entry);
   }
@@ -747,11 +840,16 @@ export function normalizeRunDialogPendingState(
       engine: String(authPayload.engine || "").trim() || undefined,
       prompt: String(authPayload.prompt || "").trim() || undefined,
       challengeKind:
-        String(authPayload.challenge_kind || "").trim() || undefined,
-      availableMethods: normalizeStringArray(authPayload.available_methods),
+        normalizeAuthInputKind(authPayload.challenge_kind) || undefined,
+      availableMethods: normalizeStringArray(authPayload.available_methods).map(
+        (entry) => normalizeAuthInputKind(entry) || entry,
+      ),
       askUser,
-      acceptsChatInput: authPayload.accepts_chat_input === true ? true : undefined,
-      inputKind: String(authPayload.input_kind || "").trim() || undefined,
+      acceptsChatInput:
+        typeof authPayload.accepts_chat_input === "boolean"
+          ? authPayload.accepts_chat_input
+          : undefined,
+      inputKind: normalizeAuthInputKind(authPayload.input_kind) || undefined,
       authUrl: String(authPayload.auth_url || "").trim() || undefined,
       userCode: String(authPayload.user_code || "").trim() || undefined,
       lastError: String(authPayload.last_error || "").trim() || undefined,
@@ -764,6 +862,39 @@ export function normalizeRunDialogPendingState(
     pendingInteraction,
     pendingAuth,
   };
+}
+
+function mergePendingAuthWithSession(args: {
+  pendingAuth?: RunDialogPendingAuth;
+  authSession?: SkillRunnerManagementAuthSession;
+}) {
+  const authSession = args.authSession;
+  if (!authSession || !isObject(authSession)) {
+    return args.pendingAuth;
+  }
+  const sessionPending = normalizeRunDialogPendingState({
+    request_id: String(authSession.request_id || "").trim(),
+    status: "waiting_auth",
+    pending_owner: "waiting_auth.challenge_active",
+    pending_auth: authSession,
+  }).pendingAuth;
+  if (!sessionPending) {
+    return args.pendingAuth;
+  }
+  const current = args.pendingAuth || ({} as RunDialogPendingAuth);
+  return {
+    ...current,
+    ...sessionPending,
+    availableMethods:
+      sessionPending.availableMethods.length > 0
+        ? sessionPending.availableMethods
+        : current.availableMethods || [],
+    uiHints:
+      sessionPending.uiHints && Object.keys(sessionPending.uiHints).length > 0
+        ? sessionPending.uiHints
+        : current.uiHints || {},
+    askUser: sessionPending.askUser || current.askUser,
+  } as RunDialogPendingAuth;
 }
 
 function mergeHistoryEventsIntoSession(args: {
@@ -992,6 +1123,19 @@ function syncSessionStateFromLedger(entry: RunDialogEntry) {
   if (fromStores.error) {
     entry.session.error = fromStores.error;
   }
+}
+
+async function restartRunDialogEntrySessionSyncAfterWaitingExit(
+  entry: Pick<RunDialogEntry, "backend" | "requestId">,
+) {
+  stopSessionSync({
+    backendId: entry.backend.id,
+    requestId: entry.requestId,
+  });
+  ensureSkillRunnerSessionSync({
+    backend: entry.backend,
+    requestId: entry.requestId,
+  });
 }
 
 async function buildRunWorkspaceModel() {
@@ -1295,6 +1439,12 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
       role: entryItem.role,
       kind: entryItem.kind,
       text: entryItem.text,
+      attempt: entryAttempt(entryItem),
+      correlation: isObject(entryItem.raw)
+        ? (isObject(entryItem.raw.correlation)
+            ? (entryItem.raw.correlation as Record<string, unknown>)
+            : {})
+        : {},
     })),
     labels: {
       requestId: localize("task-dashboard-run-request-id", "Request ID"),
@@ -1554,6 +1704,9 @@ async function startRunObserver(entry: RunDialogEntry) {
   let stopped = false;
   let refreshChain: Promise<void> = Promise.resolve();
   let chatRetryDelayMs = 800;
+  let waitingAuthObserverTimer: ReturnType<typeof setInterval> | undefined;
+  let waitingAuthObserverInFlight = false;
+  let restartingSessionSync = false;
   const client = buildSkillRunnerManagementClient({
     backend: entry.backend,
     alertWindow: entry.dialog.window,
@@ -1596,13 +1749,36 @@ async function startRunObserver(entry: RunDialogEntry) {
     const normalizedStatus = normalizeStatus(entry.session.status, "running");
     if (!isWaiting(normalizedStatus)) {
       clearPendingState();
-      return;
+      return {
+        waitingAuthExited: false,
+      };
     }
+    let waitingAuthExited = false;
     try {
       const pending = (await client.getPending({
         requestId: entry.requestId,
       })) as SkillRunnerManagementPending;
       const normalizedPending = normalizeRunDialogPendingState(pending);
+      let authSession: SkillRunnerManagementAuthSession | undefined;
+      if (normalizedStatus === "waiting_auth") {
+        try {
+          authSession = await client.getAuthSession({
+            requestId: entry.requestId,
+          });
+        } catch {
+          authSession = undefined;
+        }
+      }
+      if (normalizedStatus === "waiting_auth") {
+        waitingAuthExited = hasRunDialogWaitingAuthExited({
+          pending,
+          authSession,
+        });
+      }
+      normalizedPending.pendingAuth = mergePendingAuthWithSession({
+        pendingAuth: normalizedPending.pendingAuth,
+        authSession,
+      });
       const incomingInteraction = normalizedPending.pendingInteraction;
       const incomingAuth = normalizedPending.pendingAuth;
       const hasMeaningfulInteraction =
@@ -1622,6 +1798,11 @@ async function startRunObserver(entry: RunDialogEntry) {
         (!!String(incomingAuth.phase || "").trim() ||
           !!String(incomingAuth.authSessionId || "").trim() ||
           !!String(incomingAuth.providerId || "").trim() ||
+          typeof incomingAuth.acceptsChatInput === "boolean" ||
+          !!String(incomingAuth.inputKind || "").trim() ||
+          !!String(incomingAuth.authUrl || "").trim() ||
+          !!String(incomingAuth.userCode || "").trim() ||
+          !!String(incomingAuth.lastError || "").trim() ||
           !!String(incomingAuth.prompt || "").trim() ||
           (Array.isArray(incomingAuth.availableMethods) &&
             incomingAuth.availableMethods.length > 0) ||
@@ -1644,6 +1825,89 @@ async function startRunObserver(entry: RunDialogEntry) {
       entry.session.pendingOwner = entry.session.pendingOwner || normalizedStatus;
       entry.session.error = compactError(error);
     }
+    return {
+      waitingAuthExited,
+    };
+  };
+
+  const stopWaitingAuthObserver = () => {
+    if (waitingAuthObserverTimer) {
+      clearInterval(waitingAuthObserverTimer);
+      waitingAuthObserverTimer = undefined;
+    }
+    waitingAuthObserverInFlight = false;
+  };
+
+  const restartSessionSyncAfterWaitingExit = async () => {
+    if (stopped || restartingSessionSync) {
+      return;
+    }
+    restartingSessionSync = true;
+    try {
+      await restartRunDialogEntrySessionSyncAfterWaitingExit(entry);
+      await syncPendingState();
+      await syncHistory();
+    } catch (error) {
+      entry.session.error = compactError(error);
+    } finally {
+      restartingSessionSync = false;
+      if (!stopped) {
+        pushSnapshot("run-dialog:snapshot");
+      }
+    }
+  };
+
+  const syncWaitingAuthObserver = () => {
+    if (stopped) {
+      stopWaitingAuthObserver();
+      return;
+    }
+    if (normalizeStatus(entry.session.status, "running") !== "waiting_auth") {
+      stopWaitingAuthObserver();
+      return;
+    }
+    if (waitingAuthObserverTimer) {
+      return;
+    }
+    waitingAuthObserverTimer = setInterval(() => {
+      if (stopped || waitingAuthObserverInFlight) {
+        return;
+      }
+      waitingAuthObserverInFlight = true;
+      refreshChain = refreshChain.then(
+        async () => {
+          try {
+            if (stopped) {
+              return;
+            }
+            if (normalizeStatus(entry.session.status, "running") !== "waiting_auth") {
+              stopWaitingAuthObserver();
+              return;
+            }
+            const result = await syncPendingState();
+            await syncHistory();
+            if (result.waitingAuthExited) {
+              stopWaitingAuthObserver();
+              await restartSessionSyncAfterWaitingExit();
+              return;
+            }
+            pushSnapshot("run-dialog:snapshot");
+          } catch (error) {
+            entry.session.error = compactError(error);
+            pushSnapshot("run-dialog:snapshot");
+          } finally {
+            waitingAuthObserverInFlight = false;
+          }
+        },
+        async () => {
+          waitingAuthObserverInFlight = false;
+        },
+      );
+    }, WAITING_AUTH_OBSERVER_INTERVAL_MS);
+    const timerLike = waitingAuthObserverTimer as unknown as { unref?: () => void };
+    if (typeof timerLike.unref === "function") {
+      timerLike.unref();
+    }
   };
 
   const refreshRunState = async () => {
@@ -1663,6 +1927,7 @@ async function startRunObserver(entry: RunDialogEntry) {
     } finally {
       if (!stopped) {
         entry.session.loading = false;
+        syncWaitingAuthObserver();
         pushSnapshot("run-dialog:snapshot");
       }
     }
@@ -1712,6 +1977,7 @@ async function startRunObserver(entry: RunDialogEntry) {
           clearPendingState();
           entry.session.error = undefined;
         }
+        syncWaitingAuthObserver();
         pushSnapshot("run-dialog:snapshot");
       });
     },
@@ -1738,10 +2004,28 @@ async function startRunObserver(entry: RunDialogEntry) {
     }
     const event = frame.data as Record<string, unknown>;
     if (shouldRefreshRunDialogStateFromChatEvent(event)) {
-      ensureSkillRunnerSessionSync({
-        backend: entry.backend,
-        requestId: entry.requestId,
-      });
+      const eventType = String(event.type || event.kind || event.event || "")
+        .trim()
+        .toLowerCase();
+      if (
+        eventType.startsWith("auth.") &&
+        normalizeStatus(entry.session.status, "running") === "waiting_auth"
+      ) {
+        stopWaitingAuthObserver();
+        refreshChain = refreshChain.then(
+          async () => {
+            await restartSessionSyncAfterWaitingExit();
+          },
+          async () => {
+            await restartSessionSyncAfterWaitingExit();
+          },
+        );
+      } else {
+        ensureSkillRunnerSessionSync({
+          backend: entry.backend,
+          requestId: entry.requestId,
+        });
+      }
     }
     const conversationEntry = toRunDialogConversationEntry({
       event,
@@ -1803,6 +2087,7 @@ async function startRunObserver(entry: RunDialogEntry) {
   void runLoop();
   return () => {
     stopped = true;
+    stopWaitingAuthObserver();
     entry.unsubscribeSessionState?.();
     entry.unsubscribeSessionState = undefined;
     entry.refreshState = undefined;
@@ -1890,9 +2175,9 @@ async function handleRunDialogActionForEntry(
             ...(submission
               ? { submission }
               : replyText
-                ? {
+              ? {
                     submission: {
-                      kind: replyKind,
+                      kind: normalizeAuthInputKind(replyKind) || "auth_code_or_url",
                       value: replyText,
                     },
                   }
@@ -1914,10 +2199,7 @@ async function handleRunDialogActionForEntry(
         );
       }
       if (submitted && entry.refreshDisplay) {
-        ensureSkillRunnerSessionSync({
-          backend: entry.backend,
-          requestId: entry.requestId,
-        });
+        await restartRunDialogEntrySessionSyncAfterWaitingExit(entry);
         await entry.refreshDisplay();
       } else {
         pushSnapshot("run-dialog:snapshot");
@@ -2046,10 +2328,7 @@ async function handleRunDialogActionForEntry(
       );
     }
     if (imported && entry.refreshDisplay) {
-      ensureSkillRunnerSessionSync({
-        backend: entry.backend,
-        requestId: entry.requestId,
-      });
+      await restartRunDialogEntrySessionSyncAfterWaitingExit(entry);
       await entry.refreshDisplay();
     } else {
       pushSnapshot("run-dialog:snapshot");

@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="doc/README-zhCN.md">简体中文</a> ·
-  <a href="doc/README-frFR.md">Français</a> ·
-  <a href="doc/README-jaJP.md">日本語</a>
+  <a href="README-zhCN.md">简体中文</a> ·
+  <a href="README-frFR.md">Français</a> ·
+  <a href="README-jaJP.md">日本語</a>
 </p>
 
 ---
@@ -42,7 +42,7 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 | **Backend Manager**   | GUI for configuring multiple backend profiles per provider type                                        |
 | **Task Dashboard**    | Real-time job monitoring, SkillRunner chat interaction, runtime logs                                   |
 | **Workflow Settings** | Per-workflow persistent & one-shot parameter overrides                                                 |
-| **Workflow Editor**   | Host-based renderer for structured data editing (e.g. reference notes)                                 |
+| **Note Editor**   | Host-based renderer for structured data editing (e.g. reference notes)                                     |
 | **Log Viewer**        | Filterable runtime logs with NDJSON export for diagnostics                                             |
 
 ## 💡 Engine Recommendations
@@ -59,29 +59,62 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 - **Cons**: Speed can be inconsistent. DeepSeek API integration is usable but V3.2 model performance significantly lags behind; using "reasoner" tier helps but may require patience. Third-party Antigravity quota support exists but carries account ban risk.
 - **Verdict**: Best free/low-cost option if you have access to qualifying API keys or compatible subscriptions.
 
+### Qwen Code (Best Free Tier for High-Volume Usage)
+
+- **Pros**: Official OAuth login grants **1,000 free daily calls** to Qwen3.6-Plus — one of the most generous free tiers available. Excellent performance on literature tasks.
+- **Cons**: Requires Alibaba Cloud account for OAuth authentication.
+- **Verdict**: **Top recommendation for free-tier users** who need high-volume quota without paying.
+
 ### Gemini-CLI
 
 - **Pros**: Free tier available.
-- **Cons**: Slow startup, poor experience for interactive tasks, frequent model availability issues recently. After Google further restricted Pro subscription quotas, cost-performance is generally poor.
-- **Verdict**: Gemini-3-Flash is a decent choice for simple tasks only.
+- **Cons**: Slow startup, poor experience for interactive tasks. **Google has significantly reduced Pro subscription quotas**, making the cost-performance ratio generally poor.
+- **Verdict**: Gemini-3-Flash remains a decent choice for simple tasks only.
 
-### iFlow-CLI
+### iFlow-CLI (Deprecated)
 
-- **Pros**: Completely free.
+- **Notice**: **iFlow-CLI will be discontinued on April 17, 2026.** No longer recommended for new deployments.
+- **Pros**: Completely free (while service lasts).
 - **Cons**: Poor skill understanding, execution, and structured output stability. Interactive mode tasks often fail to complete reliably.
-- **Verdict**: Free but not production-ready — expectations should be managed accordingly.
+- **Verdict**: Service sunsetting — migrate to alternative engines.
+
+### Claude Code
+
+- **Note**: Official Claude Code integration (official authentication + official models) has not been tested by the author — simply put, **no Anthropic subscription purchased**. Let's just say Anthropic is perhaps *too* "legally compliant" for certain regions 🤷.
+- **Workaround**: This project provides convenient configuration entry points for third-party providers. Users with their own API keys or alternative provider access can configure accordingly.
+- **BTW**: Using such an expensive subscription for this project feels a bit like overkill — official subscription recommended for **generous donors only**.
+- **Verdict**: If you already have Claude access via other means, it works well — but the barrier to entry is higher than other options.
 
 ## 📋 Built-in Workflows
 
+### Literature Workbench Package
+
+A unified package for literature processing workflows:
+
 | Workflow                  | Provider       | Description                                                                      |
 | ------------------------- | -------------- | -------------------------------------------------------------------------------- |
-| **Literature Digest**     | `skillrunner`  | Generate digest/reference notes from markdown or PDF context                     |
+| **Literature Digest**     | `skillrunner`  | Generate digest, references, and citation analysis notes from markdown or PDF    |
 | **Literature Explainer**  | `skillrunner`  | Interactive conversation-based literature interpretation with conversation notes |
-| **Reference Matching**    | `pass-through` | Match references to citekeys, rewrite structured payloads                        |
+| **Export Notes**          | `pass-through` | Export custom notes (markdown/HTML) and literature-digest generated artifacts    |
+| **Import Notes**          | `pass-through` | Import markdown files as custom notes; supports multi-file selection             |
+| **Reference Matching**    | `pass-through` | Match references to Better BibTeX citekeys, rewrite structured payloads          |
 | **Reference Note Editor** | `pass-through` | Edit structured reference entries in a dedicated form dialog                     |
-| **MinerU**                | `generic-http` | Parse PDFs, materialize markdown/assets, attach to parent items                  |
-| **Tag Manager**           | `pass-through` | Controlled vocabulary CRUD, facet filtering, YAML import/export                  |
-| **Tag Regulator**         | `skillrunner`  | Normalize tags via Skill-Runner, import suggested tags                           |
+
+### Tag Vocabulary Package
+
+Controlled vocabulary management workflows:
+
+| Workflow           | Provider       | Description                                                              |
+| ------------------ | -------------- | ------------------------------------------------------------------------ |
+| **Tag Manager**    | `pass-through` | Controlled vocabulary CRUD, facet filtering, GitHub sync (subscribe/publish) |
+| **Tag Regulator**  | `skillrunner`  | Normalize tags via LLM suggestions, import regulated tags to items       |
+
+### Other Workflows
+
+| Workflow             | Provider       | Description                                                  |
+| -------------------- | -------------- | ------------------------------------------------------------ |
+| **MinerU**           | `generic-http` | Parse PDFs, materialize markdown/assets, attach to parent items |
+| **Workflow Debug Probe** | `pass-through` | Diagnostic workflow for troubleshooting runtime issues (Only visible in debug mode) |
 
 ## 📥 Installation
 

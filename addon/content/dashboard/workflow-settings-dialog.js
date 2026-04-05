@@ -142,6 +142,7 @@
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = currentValue === true;
+      checkbox.disabled = args.entry.disabled === true;
       checkbox.addEventListener("change", function () {
         args.values[args.entry.key] = checkbox.checked;
         args.onChange({
@@ -172,6 +173,11 @@
           changedKey: args.entry.key,
         });
       });
+      if (args.entry.disabled === true) {
+        customSelect.element.classList.add("disabled");
+        customSelect.element.style.pointerEvents = "none";
+        customSelect.element.style.opacity = "0.7";
+      }
       registerFieldCollector(function () {
         args.values[args.entry.key] = selectedValue;
         return true;
@@ -203,6 +209,7 @@
       }
     }
     control.className = "field-control";
+    control.disabled = args.entry.disabled === true;
     if (args.entry.type === "number") {
       control.classList.add("numeric");
     }

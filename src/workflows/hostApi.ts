@@ -6,6 +6,11 @@ import {
 } from "../modules/workflowEditorHost";
 import { appendRuntimeLog } from "../modules/runtimeLogManager";
 import { showWorkflowToast } from "../modules/workflowExecution/feedbackSeam";
+import {
+  resolveRuntimeAddon,
+  resolveRuntimeToolkit,
+  resolveRuntimeZotero,
+} from "../utils/runtimeBridge";
 import type { WorkflowHostApi } from "./types";
 
 export const WORKFLOW_HOST_API_VERSION = 2;
@@ -18,10 +23,7 @@ const dynamicImport: DynamicImport = new Function(
 ) as DynamicImport;
 
 function resolveHostAddonConfig() {
-  const addonConfig =
-    typeof addon !== "undefined" && addon?.data?.config
-      ? addon.data.config
-      : null;
+  const addonConfig = resolveRuntimeAddon()?.data?.config || null;
   return {
     addonName: String(addonConfig?.addonName || "Zotero Skills").trim(),
     addonRef: String(addonConfig?.addonRef || "").trim(),
@@ -30,25 +32,37 @@ function resolveHostAddonConfig() {
   };
 }
 
+function resolveHostZotero() {
+  const runtimeZotero =
+    resolveRuntimeZotero() ||
+    (typeof Zotero !== "undefined" ? Zotero : undefined);
+  if (!runtimeZotero) {
+    throw new Error("Zotero runtime is unavailable in workflow host api");
+  }
+  return runtimeZotero;
+}
+
 function resolveHostItem(ref: Zotero.Item | number | string) {
+  const zotero = resolveHostZotero();
   if (ref && typeof ref === "object") {
     return ref;
   }
   if (typeof ref === "number") {
-    return Zotero.Items.get(ref) || null;
+    return zotero.Items.get(ref) || null;
   }
   const key = String(ref || "").trim();
   if (!key) {
     return null;
   }
-  return Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, key) || null;
+  return zotero.Items.getByLibraryAndKey(zotero.Libraries.userLibraryID, key) || null;
 }
 
 async function scanAllRegularItems() {
+  const zotero = resolveHostZotero();
   const results: Zotero.Item[] = [];
   let misses = 0;
   for (let id = 1; id <= 50000; id += 1) {
-    const item = Zotero.Items.get(id);
+    const item = zotero.Items.get(id);
     if (!item) {
       misses += 1;
       if (misses >= 200) {
@@ -134,6 +148,157 @@ async function makeDirectory(path: string) {
   await fs.mkdir(path, { recursive: true });
 }
 
+type ToolkitFilePickerCtor = new (
+  title: string,
+  mode: string,
+  filters: [string, string][],
+  suggestion: string,
+  window: Window | undefined,
+  filterMask?: string,
+  directory?: string,
+) => {
+  open: () => Promise<unknown> | unknown;
+};
+
+function resolveToolkitFilePicker() {
+  const toolkit = resolveRuntimeToolkit() as
+    | {
+        FilePicker?: ToolkitFilePickerCtor;
+      }
+    | undefined;
+  return typeof toolkit?.FilePicker === "function" ? toolkit.FilePicker : null;
+}
+
+function resolveFilePickerParentWindow() {
+  const runtimeAddon = resolveRuntimeAddon() as
+    | {
+        data?: {
+          dialog?: { window?: Window };
+          prefs?: { window?: Window };
+        };
+      }
+    | undefined;
+  const runtimeZotero = resolveRuntimeZotero() as
+    | {
+        getMainWindow?: () => Window | null | undefined;
+      }
+    | undefined;
+  return (
+    runtimeAddon?.data?.dialog?.window ||
+    runtimeAddon?.data?.prefs?.window ||
+    runtimeZotero?.getMainWindow?.() ||
+    undefined
+  );
+}
+
+async function openToolkitFilePicker(args: {
+  title?: string;
+  mode: "folder" | "file" | "files";
+  filters?: [string, string][];
+  directory?: string;
+}): Promise<string | string[] | null> {
+  const FilePicker = resolveToolkitFilePicker();
+  if (!FilePicker) {
+    return null;
+  }
+  const selected = await new FilePicker(
+    String(args.title || "").trim(),
+    args.mode,
+    Array.isArray(args.filters) ? args.filters : [],
+    "",
+    resolveFilePickerParentWindow(),
+    undefined,
+    String(args.directory || "").trim() || undefined,
+  ).open();
+  if (args.mode === "files") {
+    if (Array.isArray(selected)) {
+      const normalized = selected
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean);
+      return normalized.length > 0 ? normalized : null;
+    }
+    if (typeof selected === "string" && selected.trim()) {
+      return [selected.trim()];
+    }
+    return null;
+  }
+  return typeof selected === "string" && selected.trim() ? selected.trim() : null;
+}
+
+async function openNativeMultiFilePicker(args: {
+  title?: string;
+  filters?: [string, string][];
+  directory?: string;
+}) {
+  const runtime = globalThis as typeof globalThis & {
+    ChromeUtils?: {
+      importESModule?: (specifier: string) => {
+        FilePicker?: new () => {
+          init: (parentWindow: Window | undefined, title: string, mode: number) => void;
+          appendFilter: (title: string, filter: string) => void;
+          displayDirectory?: string;
+          modeOpenMultiple: number;
+          returnCancel: number;
+          show: () => Promise<number>;
+          files?: string[];
+        };
+      };
+    };
+  };
+  if (typeof runtime.ChromeUtils?.importESModule !== "function") {
+    return {
+      supported: false,
+      selected: null,
+    };
+  }
+  try {
+    const pickerModule = runtime.ChromeUtils.importESModule(
+      "chrome://zotero/content/modules/filePicker.mjs",
+    );
+    const Picker = pickerModule?.FilePicker;
+    if (typeof Picker !== "function") {
+      return {
+        supported: false,
+        selected: null,
+      };
+    }
+    const picker = new Picker();
+    picker.init(
+      resolveFilePickerParentWindow(),
+      String(args.title || "").trim(),
+      picker.modeOpenMultiple,
+    );
+    if (String(args.directory || "").trim()) {
+      picker.displayDirectory = String(args.directory || "").trim();
+    }
+    for (const filter of Array.isArray(args.filters) ? args.filters : []) {
+      if (!Array.isArray(filter) || filter.length < 2) {
+        continue;
+      }
+      picker.appendFilter(String(filter[0] || "").trim(), String(filter[1] || "").trim());
+    }
+    const result = await picker.show();
+    if (result === picker.returnCancel) {
+      return {
+        supported: true,
+        selected: null,
+      };
+    }
+    const files = Array.isArray(picker.files)
+      ? picker.files.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+      : [];
+    return {
+      supported: true,
+      selected: files.length > 0 ? files : null,
+    };
+  } catch {
+    return {
+      supported: false,
+      selected: null,
+    };
+  }
+}
+
 let cachedHostApi: WorkflowHostApi | null = null;
 
 export function createWorkflowHostApi(): WorkflowHostApi {
@@ -157,12 +322,18 @@ export function createWorkflowHostApi(): WorkflowHostApi {
         return item;
       },
       getByLibraryAndKey(libraryID, key) {
-        return Zotero.Items.getByLibraryAndKey(libraryID, String(key || "").trim()) || null;
+        return (
+          resolveHostZotero().Items.getByLibraryAndKey(
+            libraryID,
+            String(key || "").trim(),
+          ) || null
+        );
       },
       async getAll() {
-        if (typeof (Zotero.Items as any).getAll === "function") {
+        const zotero = resolveHostZotero();
+        if (typeof (zotero.Items as any).getAll === "function") {
           try {
-            const loaded = await (Zotero.Items as any).getAll();
+            const loaded = await (zotero.Items as any).getAll();
             if (Array.isArray(loaded)) {
               return loaded;
             }
@@ -175,13 +346,17 @@ export function createWorkflowHostApi(): WorkflowHostApi {
     },
     prefs: {
       get(key, global = true) {
-        return Zotero.Prefs.get(String(key || "").trim(), Boolean(global));
+        return resolveHostZotero().Prefs.get(String(key || "").trim(), Boolean(global));
       },
       set(key, value, global = true) {
-        Zotero.Prefs.set(String(key || "").trim(), value as any, Boolean(global));
+        resolveHostZotero().Prefs.set(
+          String(key || "").trim(),
+          value as any,
+          Boolean(global),
+        );
       },
       clear(key, global = true) {
-        Zotero.Prefs.clear(String(key || "").trim(), Boolean(global));
+        resolveHostZotero().Prefs.clear(String(key || "").trim(), Boolean(global));
       },
     },
     parents: handlers.parent,
@@ -208,15 +383,46 @@ export function createWorkflowHostApi(): WorkflowHostApi {
     },
     file: {
       pathToFile(path: string) {
-        return Zotero.File.pathToFile(path);
+        return resolveHostZotero().File.pathToFile(path);
       },
       readText,
       writeText,
       exists: pathExists,
       makeDirectory,
       getTempDirectoryPath() {
-        const tempDir = Zotero.getTempDirectory?.();
+        const tempDir = resolveHostZotero().getTempDirectory?.();
         return String(tempDir?.path || "").trim();
+      },
+      async pickDirectory(args) {
+        return openToolkitFilePicker({
+          title: args?.title,
+          mode: "folder",
+          directory: args?.directory,
+        }) as Promise<string | null>;
+      },
+      async pickFile(args) {
+        return openToolkitFilePicker({
+          title: args?.title,
+          mode: "file",
+          filters: args?.filters,
+          directory: args?.directory,
+        }) as Promise<string | null>;
+      },
+      async pickFiles(args) {
+        const nativePickerResult = await openNativeMultiFilePicker({
+          title: args?.title,
+          filters: args?.filters,
+          directory: args?.directory,
+        });
+        if (nativePickerResult.supported) {
+          return nativePickerResult.selected;
+        }
+        return openToolkitFilePicker({
+          title: args?.title,
+          mode: "files",
+          filters: args?.filters,
+          directory: args?.directory,
+        }) as Promise<string[] | null>;
       },
     },
   };

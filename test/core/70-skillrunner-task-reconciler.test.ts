@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { handlers } from "../../src/handlers";
 import type { JobRecord } from "../../src/jobQueue/manager";
+import { buildSelectionContext } from "../../src/modules/selectionContext";
 import {
   reconcileSkillRunnerBackendTaskLedgerOnce,
   setSkillRunnerBackendReconcileFailureToastEmitterForTests,
@@ -35,6 +36,14 @@ import {
   upsertPluginTaskContextEntry,
 } from "../../src/modules/pluginStateStore";
 import { getPref, setPref } from "../../src/utils/prefs";
+import { loadWorkflowManifests } from "../../src/workflows/loader";
+import { executeBuildRequests } from "../../src/workflows/runtime";
+import {
+  joinPath,
+  mkTempDir,
+  workflowsPath,
+  writeUtf8,
+} from "../workflow-literature-explainer/workflow-test-utils";
 
 const TEST_SKILLRUNNER_BACKEND_ID = "remote-skillrunner";
 const TEST_SKILLRUNNER_BASE_URL = "http://127.0.0.1:8031";
@@ -48,6 +57,142 @@ function createJsonResponse(payload: unknown, status = 200): Response {
     text: async () => text,
     arrayBuffer: async () => new TextEncoder().encode(text).buffer,
   } as unknown as Response;
+}
+
+function createBinaryResponse(payload: Uint8Array, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "ERROR",
+    text: async () => "",
+    arrayBuffer: async () =>
+      payload.buffer.slice(
+        payload.byteOffset,
+        payload.byteOffset + payload.byteLength,
+      ),
+  } as unknown as Response;
+}
+
+function concatBytes(chunks: Uint8Array[]) {
+  const size = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function writeUint16LE(value: number, out: number[]) {
+  out.push(value & 0xff, (value >> 8) & 0xff);
+}
+
+function writeUint32LE(value: number, out: number[]) {
+  out.push(
+    value & 0xff,
+    (value >> 8) & 0xff,
+    (value >> 16) & 0xff,
+    (value >> 24) & 0xff,
+  );
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Uint8Array) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function utf8Bytes(input: string) {
+  return new TextEncoder().encode(input);
+}
+
+async function getLiteratureExplainerWorkflow() {
+  const loaded = await loadWorkflowManifests(workflowsPath());
+  const workflow = loaded.workflows.find(
+    (entry) => entry.manifest.id === "literature-explainer",
+  );
+  assert.isOk(
+    workflow,
+    `workflow literature-explainer not found; loaded=${loaded.workflows.map((entry) => entry.manifest.id).join(",")}`,
+  );
+  return workflow!;
+}
+
+function createZipFromNamedFiles(entries: Array<{ name: string; data: Uint8Array }>) {
+  const ZIP_UTF8_FILENAME_FLAG = 0x0800;
+  const localChunks: Uint8Array[] = [];
+  const centralChunks: Uint8Array[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const nameBytes = utf8Bytes(entry.name);
+    const crc = crc32(entry.data);
+    const localHeader: number[] = [];
+    writeUint32LE(0x04034b50, localHeader);
+    writeUint16LE(20, localHeader);
+    writeUint16LE(ZIP_UTF8_FILENAME_FLAG, localHeader);
+    writeUint16LE(0, localHeader);
+    writeUint16LE(0, localHeader);
+    writeUint16LE(0, localHeader);
+    writeUint32LE(crc, localHeader);
+    writeUint32LE(entry.data.length, localHeader);
+    writeUint32LE(entry.data.length, localHeader);
+    writeUint16LE(nameBytes.length, localHeader);
+    writeUint16LE(0, localHeader);
+    const localBlock = concatBytes([
+      new Uint8Array(localHeader),
+      nameBytes,
+      entry.data,
+    ]);
+    localChunks.push(localBlock);
+
+    const centralHeader: number[] = [];
+    writeUint32LE(0x02014b50, centralHeader);
+    writeUint16LE(20, centralHeader);
+    writeUint16LE(20, centralHeader);
+    writeUint16LE(ZIP_UTF8_FILENAME_FLAG, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint32LE(crc, centralHeader);
+    writeUint32LE(entry.data.length, centralHeader);
+    writeUint32LE(entry.data.length, centralHeader);
+    writeUint16LE(nameBytes.length, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint16LE(0, centralHeader);
+    writeUint32LE(0, centralHeader);
+    writeUint32LE(offset, centralHeader);
+    centralChunks.push(concatBytes([new Uint8Array(centralHeader), nameBytes]));
+    offset += localBlock.length;
+  }
+  const localData = concatBytes(localChunks);
+  const centralData = concatBytes(centralChunks);
+  const eocd: number[] = [];
+  writeUint32LE(0x06054b50, eocd);
+  writeUint16LE(0, eocd);
+  writeUint16LE(0, eocd);
+  writeUint16LE(entries.length, eocd);
+  writeUint16LE(entries.length, eocd);
+  writeUint32LE(centralData.length, eocd);
+  writeUint32LE(localData.length, eocd);
+  writeUint16LE(0, eocd);
+  return concatBytes([localData, centralData, new Uint8Array(eocd)]);
 }
 
 function isListRunsProbeUrl(url: string) {
@@ -448,6 +593,250 @@ describe("skillrunner task reconciler", function () {
       state?: string;
     };
     assert.equal(payload.state, "waiting_user");
+  });
+
+  it("applies interactive bundle success to the parent note using backend-shaped result bundle", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Interactive Bundle Apply Parent" },
+    });
+    const notePath = "artifacts/note.3dcbb6ddcea81cb8.md";
+    const markdown = "# Interactive Bundle Note\n\n- Created from reconciler bundle apply\n";
+    const bundleBytes = createZipFromNamedFiles([
+      {
+        name: "result/result.json",
+        data: utf8Bytes(
+          JSON.stringify({
+            status: "success",
+            data: {
+              note_path: notePath,
+              provenance: {
+                generated_at: "2026-04-05T08:05:58Z",
+                input_hash: "sha256:3dcbb6ddcea81cb8",
+                model: "pymupdf4llm",
+              },
+              warnings: [],
+              error: null,
+            },
+            artifacts: [notePath],
+            error: null,
+          }),
+        ),
+      },
+      {
+        name: notePath,
+        data: utf8Bytes(markdown),
+      },
+    ]);
+
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-bundle-note")) {
+        return createJsonResponse({
+          request_id: "req-bundle-note",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-bundle-note/bundle")) {
+        return createBinaryResponse(bundleBytes);
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: parent.id,
+        runtime_options: {
+          execution_mode: "interactive",
+        },
+        fetch_type: "bundle",
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-bundle-note",
+        requestId: "req-bundle-note",
+        state: "running",
+        fetchType: "bundle",
+        targetParentID: parent.id,
+      }),
+    });
+
+    await reconciler.reconcilePending();
+
+    const noteIds = parent.getNotes();
+    assert.lengthOf(noteIds, 1);
+    const note = Zotero.Items.get(noteIds[0])!;
+    assert.equal(note.parentItemID, parent.id);
+    assert.match(note.getNote(), /data-zs-note-kind="conversation-note"/);
+    assert.match(note.getNote(), /data-zs-payload="conversation-note-markdown"/);
+    assert.include(note.getNote(), "Interactive Bundle Note");
+
+    const persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+    assert.lengthOf(persisted, 0);
+
+    const applyLog = listRuntimeLogs({
+      requestId: "req-bundle-note",
+      operation: "reconcile-owned-terminal-apply",
+      order: "asc",
+    })[0] as { details?: Record<string, unknown> } | undefined;
+    assert.isOk(applyLog);
+    assert.equal(String(applyLog?.details?.fetchType || ""), "bundle");
+    assert.equal(Number(applyLog?.details?.targetParentID || 0), parent.id);
+    assert.isAtLeast(
+      listRuntimeLogs({
+        requestId: "req-bundle-note",
+        operation: "deferred-bundle-fetch-succeeded",
+        order: "asc",
+      }).length,
+      1,
+    );
+  });
+
+  it("applies interactive bundle success for a real literature-explainer built request", async function () {
+    const parent = await handlers.item.create({
+      itemType: "journalArticle",
+      fields: { title: "Interactive Bundle Real Request Parent" },
+    });
+    const sourceDir = await mkTempDir("zotero-skills-literature-explainer-reconcile");
+    const mdPath = joinPath(sourceDir, "paper.md");
+    await writeUtf8(mdPath, "# Real Request Source");
+    const attachment = await handlers.attachment.createFromPath({
+      parent,
+      path: mdPath,
+      title: "paper.md",
+      mimeType: "text/markdown",
+    });
+    const selectionContext = await buildSelectionContext([attachment]);
+    const workflow = await getLiteratureExplainerWorkflow();
+    const requests = (await executeBuildRequests({
+      workflow,
+      selectionContext,
+      executionOptions: {
+        providerOptions: {
+          engine: "gemini",
+        },
+      },
+    })) as Array<{
+      kind: string;
+      skill_id?: string;
+      targetParentID?: number;
+      taskName?: string;
+      runtime_options?: {
+        execution_mode?: string;
+      };
+      fetch_type?: string;
+    }>;
+
+    assert.lengthOf(requests, 1);
+    const request = requests[0];
+    assert.equal(request.kind, "skillrunner.job.v1");
+    assert.equal(request.skill_id, "literature-explainer");
+    assert.equal(request.targetParentID, parent.id);
+    assert.equal(request.taskName, "paper.md");
+    assert.equal(request.runtime_options?.execution_mode, "interactive");
+
+    const notePath = "artifacts/note.real-request.md";
+    const markdown =
+      "# Real Request Bundle Note\n\n- Created from a real executeBuildRequests payload\n";
+    const bundleBytes = createZipFromNamedFiles([
+      {
+        name: "result/result.json",
+        data: utf8Bytes(
+          JSON.stringify({
+            status: "success",
+            data: {
+              note_path: notePath,
+              warnings: [],
+              error: null,
+            },
+            artifacts: [notePath],
+            error: null,
+          }),
+        ),
+      },
+      {
+        name: notePath,
+        data: utf8Bytes(markdown),
+      },
+    ]);
+
+    (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
+      if (isListRunsProbeUrl(url)) {
+        return createJsonResponse({
+          data: [],
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-real-built-bundle")) {
+        return createJsonResponse({
+          request_id: "req-real-built-bundle",
+          status: "succeeded",
+        });
+      }
+      if (url.endsWith("/v1/jobs/req-real-built-bundle/bundle")) {
+        return createBinaryResponse(bundleBytes);
+      }
+      return createJsonResponse({ error: "unexpected route" }, 404);
+    };
+
+    const reconciler = new SkillRunnerTaskReconciler();
+    reconciler.registerFromJob({
+      workflowId: workflow.manifest.id,
+      workflowLabel: workflow.manifest.label || workflow.manifest.id,
+      requestKind: request.kind,
+      request: {
+        ...request,
+        fetch_type: "bundle",
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: makeDeferredJob({
+        id: "job-real-built-bundle",
+        requestId: "req-real-built-bundle",
+        state: "running",
+        fetchType: "bundle",
+        targetParentID: parent.id,
+      }),
+    });
+
+    const noteCountBefore = parent.getNotes().length;
+    await reconciler.reconcilePending();
+
+    const noteIds = parent.getNotes();
+    assert.equal(noteIds.length, noteCountBefore + 1);
+    const note = Zotero.Items.get(noteIds[noteIds.length - 1])!;
+    assert.equal(Number(note.parentItemID || 0), parent.id);
+    assert.match(note.getNote(), /data-zs-note-kind="conversation-note"/);
+    assert.include(note.getNote(), "Real Request Bundle Note");
+
+    const applyLog = listRuntimeLogs({
+      requestId: "req-real-built-bundle",
+      operation: "reconcile-owned-terminal-apply",
+      order: "asc",
+    })[0] as { details?: Record<string, unknown> } | undefined;
+    assert.isOk(applyLog);
+    assert.equal(Number(applyLog?.details?.targetParentID || 0), parent.id);
   });
 
   it("retries deferred apply after transient result fetch failure and then clears context", async function () {

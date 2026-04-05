@@ -115,6 +115,8 @@ describe("workflow settings execution", function () {
     assert.equal(context.workflowParams.language, "en-US");
     assert.equal(context.providerOptions.engine, "gemini");
     assert.equal(context.providerOptions.model, "gemini-2.5-flash");
+    assert.equal(context.providerOptions.provider_id, "google");
+    assert.equal(context.providerOptions.effort, "default");
     assert.equal(context.providerOptions.no_cache, true);
 
     const parent = await handlers.item.create({
@@ -187,6 +189,8 @@ describe("workflow settings execution", function () {
     assert.equal(overridden.workflowParams.language, "en-US");
     assert.equal(overridden.providerOptions.engine, "gemini");
     assert.equal(overridden.providerOptions.model, "gemini-2.5-flash");
+    assert.equal(overridden.providerOptions.provider_id, "google");
+    assert.equal(overridden.providerOptions.effort, "default");
     assert.equal(overridden.providerOptions.no_cache, true);
 
     const persisted = await resolveWorkflowExecutionContext({ workflow: workflow! });
@@ -194,6 +198,8 @@ describe("workflow settings execution", function () {
     assert.equal(persisted.workflowParams.language, "zh-CN");
     assert.equal(persisted.providerOptions.engine, "gemini");
     assert.equal(persisted.providerOptions.model, "");
+    assert.equal(persisted.providerOptions.provider_id, "google");
+    assert.equal(persisted.providerOptions.effort, "default");
     assert.equal(persisted.providerOptions.no_cache, false);
   });
 
@@ -279,7 +285,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.hard_timeout_seconds, 1200);
   });
 
-  it("normalizes opencode model_provider + model into provider/model payload", async function () {
+  it("normalizes opencode provider_id + model into separate execution fields", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -289,10 +295,12 @@ describe("workflow settings execution", function () {
         opencode: [
           {
             id: "openai/gpt-5",
+            provider_id: "openai",
             provider: "openai",
             model: "gpt-5",
             display_name: "OpenAI GPT-5",
             deprecated: false,
+            supported_effort: ["default", "low", "medium", "high"],
           },
         ],
       },
@@ -302,8 +310,9 @@ describe("workflow settings execution", function () {
       backendId: "skillrunner-alt",
       providerOptions: {
         engine: "opencode",
-        model_provider: "openai",
+        provider_id: "openai",
         model: "gpt-5",
+        effort: "high",
         no_cache: false,
       },
     });
@@ -318,8 +327,9 @@ describe("workflow settings execution", function () {
       workflow: workflow!,
     });
     assert.equal(context.providerOptions.engine, "opencode");
-    assert.equal(context.providerOptions.model_provider, "openai");
-    assert.equal(context.providerOptions.model, "openai/gpt-5");
+    assert.equal(context.providerOptions.provider_id, "openai");
+    assert.equal(context.providerOptions.model, "gpt-5");
+    assert.equal(context.providerOptions.effort, "high");
   });
 
   it("maps persisted opencode canonical model id to provider model name in settings descriptor", async function () {
@@ -332,6 +342,7 @@ describe("workflow settings execution", function () {
         opencode: [
           {
             id: "minimax-m2.5",
+            provider_id: "alibaba-coding-plan-cn",
             provider: "alibaba-coding-plan-cn",
             model: "minimax-m2.5",
             display_name: "MiniMax M2.5",
@@ -339,6 +350,7 @@ describe("workflow settings execution", function () {
           },
           {
             id: "qwen-plus-latest",
+            provider_id: "alibaba-coding-plan-cn",
             provider: "alibaba-coding-plan-cn",
             model: "qwen-3.5-plus",
             display_name: "Qwen 3.5 Plus",
@@ -352,7 +364,7 @@ describe("workflow settings execution", function () {
       backendId: "skillrunner-alt",
       providerOptions: {
         engine: "opencode",
-        model_provider: "alibaba-coding-plan-cn",
+        provider_id: "alibaba-coding-plan-cn",
         model: "qwen-3.5-plus",
       },
     });
@@ -372,13 +384,14 @@ describe("workflow settings execution", function () {
 
     assert.equal(descriptor.providerOptions.engine, "opencode");
     assert.equal(
-      descriptor.providerOptions.model_provider,
+      descriptor.providerOptions.provider_id,
       "alibaba-coding-plan-cn",
     );
     assert.equal(descriptor.providerOptions.model, "qwen-3.5-plus");
+    assert.equal(descriptor.providerOptions.effort, "default");
   });
 
-  it("keeps legacy opencode provider/model string compatible", async function () {
+  it("keeps legacy opencode provider/model@effort string compatible", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -388,8 +401,10 @@ describe("workflow settings execution", function () {
         opencode: [
           {
             id: "openai/gpt-5",
+            provider_id: "openai",
             display_name: "OpenAI GPT-5",
             deprecated: false,
+            supported_effort: ["default", "low", "medium", "high"],
           },
         ],
       },
@@ -397,10 +412,125 @@ describe("workflow settings execution", function () {
 
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-alt",
+        providerOptions: {
+          engine: "opencode",
+          model: "openai/gpt-5@high",
+          no_cache: false,
+        },
+      });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const context = await resolveWorkflowExecutionContext({
+      workflow: workflow!,
+    });
+    assert.equal(context.providerOptions.engine, "opencode");
+    assert.equal(context.providerOptions.provider_id, "openai");
+    assert.equal(context.providerOptions.model, "gpt-5");
+    assert.equal(context.providerOptions.effort, "high");
+  });
+
+  it("shows provider-scoped qwen settings using provider_id + model", async function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-alt",
+      baseUrl: "http://127.0.0.1:18030",
+      updatedAt: "2026-04-05T00:00:00.000Z",
+      engines: ["qwen"],
+      modelsByEngine: {
+        qwen: [
+          {
+            id: "dashscope/qwen-max",
+            provider_id: "dashscope",
+            provider: "dashscope",
+            model: "qwen-max",
+            display_name: "Qwen Max",
+            supported_effort: ["default"],
+          },
+          {
+            id: "coding-plan/qwen-plus",
+            provider_id: "coding-plan",
+            provider: "coding-plan",
+            model: "qwen-plus",
+            display_name: "Qwen Plus",
+            supported_effort: ["default", "low", "medium", "high"],
+          },
+        ],
+      },
+    });
+
+    updateWorkflowSettings("literature-explainer", {
+      backendId: "skillrunner-alt",
       providerOptions: {
-        engine: "opencode",
-        model: "openai/gpt-5",
-        no_cache: false,
+        engine: "qwen",
+        provider_id: "dashscope",
+        model: "qwen-max",
+        effort: "default",
+      },
+    });
+
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-explainer",
+    );
+    assert.isOk(workflow);
+
+    const registry = await loadBackendsRegistry();
+    assert.isUndefined(registry.fatalError);
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      candidateBackends: registry.backends,
+    });
+
+    assert.equal(descriptor.providerOptions.engine, "qwen");
+    assert.equal(descriptor.providerOptions.provider_id, "dashscope");
+    assert.equal(descriptor.providerOptions.model, "qwen-max");
+    assert.equal(descriptor.providerOptions.effort, "default");
+    assert.includeMembers(
+      descriptor.providerSchemaEntries.map((entry) => entry.key),
+      ["provider_id", "model", "effort"],
+    );
+  });
+
+  it("hides provider_id for non provider-scoped engines but keeps canonical provider internally", async function () {
+    const loaded = await loadWorkflowManifests(workflowsPath());
+    const workflow = loaded.workflows.find(
+      (entry) => entry.manifest.id === "literature-digest",
+    );
+    assert.isOk(workflow);
+
+    const registry = await loadBackendsRegistry();
+    assert.isUndefined(registry.fatalError);
+    const descriptor = await buildWorkflowSettingsUiDescriptor({
+      workflow: workflow!,
+      draft: {
+        backendId: "skillrunner-primary",
+        providerOptions: {
+          engine: "gemini",
+          provider_id: "google",
+          model: "gemini-2.5-pro",
+        },
+      },
+      candidateBackends: registry.backends,
+    });
+
+    assert.notInclude(
+      descriptor.providerSchemaEntries.map((entry) => entry.key),
+      "provider_id",
+    );
+    assert.equal(descriptor.providerOptions.provider_id, "google");
+    assert.equal(descriptor.providerOptions.effort, "default");
+  });
+
+  it("normalizes legacy model@effort for single-provider engines", async function () {
+    updateWorkflowSettings("literature-digest", {
+      backendId: "skillrunner-primary",
+      providerOptions: {
+        engine: "codex",
+        model: "gpt-5.2@high",
       },
     });
 
@@ -413,9 +543,10 @@ describe("workflow settings execution", function () {
     const context = await resolveWorkflowExecutionContext({
       workflow: workflow!,
     });
-    assert.equal(context.providerOptions.engine, "opencode");
-    assert.equal(context.providerOptions.model_provider, "openai");
-    assert.equal(context.providerOptions.model, "openai/gpt-5");
+    assert.equal(context.providerOptions.engine, "codex");
+    assert.equal(context.providerOptions.provider_id, "openai");
+    assert.equal(context.providerOptions.model, "gpt-5.2");
+    assert.equal(context.providerOptions.effort, "high");
   });
 
   it("returns persisted snapshot when settings page opens", async function () {

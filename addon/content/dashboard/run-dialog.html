@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Run Details</title>
     <link rel="stylesheet" href="./run-dialog.css" />
+    <link rel="stylesheet" href="./vendor/katex/katex.min.css" />
   </head>
   <body>
     <div id="run-root" class="workspace-root">
@@ -33,6 +34,14 @@
         </section>
 
         <section class="card conversation-card">
+          <div class="header-row chat-view-header">
+            <div class="section-title">Conversation</div>
+            <div class="chat-view-toggle">
+              <span class="muted">View</span>
+              <button id="chat-mode-plain" class="btn" type="button" aria-pressed="true">Plain</button>
+              <button id="chat-mode-bubble" class="btn" type="button" aria-pressed="false">Bubble</button>
+            </div>
+          </div>
           <div id="chat-panel" class="chat-panel"></div>
 
           <div id="thinking-card" class="thinking-card hidden" role="status" aria-live="polite">
@@ -103,8 +112,10 @@
         </section>
       </main>
     </div>
-
-    <script src="./chat_thinking_core.js"></script>
+    <script src="./vendor/katex/katex.min.js"></script>
+    <script src="./vendor/markdown-it/markdown-it.min.js"></script>
+    <script src="./vendor/markdown-it-texmath/texmath.min.js"></script>
+    <script src="./chat_thinking_core.js?v=20260405a"></script>
     <script src="./run-dialog.js"></script>
   </body>
 </html>

@@ -236,15 +236,16 @@ export function encodeRuntimeBase64Utf8(text, runtime) {
 }
 
 export function decodeRuntimeBase64Utf8(text, runtime) {
+  const normalized = String(text || "").replace(/\s+/g, "");
   const BufferCtor = resolveRuntimeBuffer(runtime);
   if (BufferCtor) {
-    return BufferCtor.from(String(text || ""), "base64").toString("utf8");
+    return BufferCtor.from(normalized, "base64").toString("utf8");
   }
   const atobImpl = resolveRuntimeAtob(runtime);
   if (!atobImpl) {
     throw createHostContractError(runtime, "runtime base64 decoder is unavailable");
   }
-  return decodeURIComponent(escape(atobImpl(String(text || ""))));
+  return decodeURIComponent(escape(atobImpl(normalized)));
 }
 
 export function appendWorkflowRuntimeLog(args) {

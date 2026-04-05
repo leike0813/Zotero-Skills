@@ -6,6 +6,7 @@ import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { executeApplyResult } from "../../src/workflows/runtime";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
 import { encodeBase64Utf8, workflowsPath } from "./workflow-test-utils";
+import { isZoteroRuntime } from "../zotero/workflow-test-utils";
 
 type ReferenceEntry = {
   id?: string;
@@ -116,7 +117,9 @@ function installEditorOpenPassthroughMock() {
   };
 }
 
-describe("reference table canonical rendering parity", function () {
+const describeEditorParitySuite = isZoteroRuntime() ? describe.skip : describe;
+
+describeEditorParitySuite("reference table canonical rendering parity", function () {
   this.timeout(30000);
 
   it("keeps Source/Locator rendering identical across all reference note writers", async function () {

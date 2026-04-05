@@ -3,6 +3,7 @@ type RuntimeAddonLike = {
     config?: {
       addonName?: string;
       addonRef?: string;
+      prefsPrefix?: string;
     };
     ztoolkit?: Record<string, unknown>;
   };
@@ -18,10 +19,33 @@ type RuntimeGlobalLike = typeof globalThis & {
   console?: typeof globalThis.console | null;
 };
 
+type RuntimeWindowLike = Partial<
+  Pick<
+    Window,
+    | "fetch"
+    | "btoa"
+    | "atob"
+    | "TextEncoder"
+    | "TextDecoder"
+    | "FileReader"
+    | "navigator"
+    | "console"
+  >
+>;
+
 type RuntimeBridgeOverride = {
   addon?: RuntimeAddonLike | undefined;
   zotero?: RuntimeZoteroLike | undefined;
   ztoolkit?: Record<string, unknown> | undefined;
+  fetch?: typeof globalThis.fetch | undefined;
+  Buffer?: typeof globalThis.Buffer | null | undefined;
+  btoa?: typeof globalThis.btoa | null | undefined;
+  atob?: typeof globalThis.atob | null | undefined;
+  TextEncoder?: typeof globalThis.TextEncoder | null | undefined;
+  TextDecoder?: typeof globalThis.TextDecoder | null | undefined;
+  FileReader?: typeof globalThis.FileReader | null | undefined;
+  navigator?: typeof globalThis.navigator | null | undefined;
+  console?: typeof globalThis.console | null | undefined;
 };
 
 type RuntimeHostCapabilities = {
@@ -52,9 +76,129 @@ type RuntimeZoteroResolution = {
 };
 
 let runtimeBridgeOverride: RuntimeBridgeOverride | null = null;
+const EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY = "__zsRuntimeBridgeOverride";
 
 function resolveRuntimeGlobal() {
   return globalThis as RuntimeGlobalLike;
+}
+
+function readWindowFromGlobalVar() {
+  const runtimeWindow = (
+    globalThis as typeof globalThis & {
+      window?: Window;
+    }
+  ).window;
+  if (!runtimeWindow) {
+    return undefined;
+  }
+  return runtimeWindow as RuntimeWindowLike;
+}
+
+function resolveRuntimeWindow() {
+  const runtimeGlobal = resolveRuntimeGlobal();
+  const runtimeAddon = resolveRuntimeAddon();
+  const runtimeZotero = resolveRuntimeZotero();
+  const globalWindow = readWindowFromGlobalVar();
+  const hiddenDomWindow = (
+    runtimeGlobal as typeof globalThis & {
+      Services?: {
+        appShell?: {
+          hiddenDOMWindow?: Window;
+        };
+      };
+    }
+  ).Services?.appShell?.hiddenDOMWindow;
+  return (
+    (runtimeAddon?.data as
+      | {
+          dialog?: { window?: Window };
+          prefs?: { window?: Window };
+        }
+      | undefined)?.dialog?.window ||
+    (runtimeAddon?.data as
+      | {
+          dialog?: { window?: Window };
+          prefs?: { window?: Window };
+        }
+      | undefined)?.prefs?.window ||
+    globalWindow ||
+    runtimeZotero?.getMainWindow?.() ||
+    hiddenDomWindow ||
+    undefined
+  ) as RuntimeWindowLike | undefined;
+}
+
+function readExternalRuntimeBridgeOverride() {
+  const runtimeGlobal = resolveRuntimeGlobal() as RuntimeGlobalLike & {
+    [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+  };
+  const runtimeWindow = resolveRuntimeWindow() as
+    | (RuntimeWindowLike & {
+        [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+      })
+    | undefined;
+  return (
+    runtimeGlobal[EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY] ||
+    runtimeWindow?.[EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY] ||
+    null
+  );
+}
+
+function clearExternalRuntimeBridgeOverrideSlots() {
+  const runtimeGlobal = resolveRuntimeGlobal() as RuntimeGlobalLike & {
+    [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+    Services?: {
+      appShell?: {
+        hiddenDOMWindow?: Window;
+      };
+    };
+  };
+  const runtimeAddonWindows = resolveRuntimeAddon()?.data as
+    | {
+        dialog?: { window?: Window };
+        prefs?: { window?: Window };
+      }
+    | undefined;
+  const targets = [
+    runtimeGlobal,
+    readWindowFromGlobalVar() as
+      | (RuntimeWindowLike & {
+          [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+        })
+      | undefined,
+    runtimeAddonWindows?.dialog?.window as
+      | (Window & {
+          [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+        })
+      | undefined,
+    runtimeAddonWindows?.prefs?.window as
+      | (Window & {
+          [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+        })
+      | undefined,
+    resolveRuntimeZotero()?.getMainWindow?.() as
+      | (Window & {
+          [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+        })
+      | undefined,
+    runtimeGlobal.Services?.appShell?.hiddenDOMWindow as
+      | (Window & {
+          [EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY]?: RuntimeBridgeOverride;
+        })
+      | undefined,
+  ];
+  const seen = new Set<unknown>();
+  for (const target of targets) {
+    if (!target || typeof target !== "object" || seen.has(target)) {
+      continue;
+    }
+    seen.add(target);
+    try {
+      delete target[EXTERNAL_RUNTIME_BRIDGE_OVERRIDE_KEY];
+    } catch {
+      // ignore protected globals in real Zotero runtime
+    }
+  }
 }
 
 function readAddonFromGlobalVar() {
@@ -150,14 +294,18 @@ export function resolveRuntimeZoteroDetails(): RuntimeZoteroResolution {
       zotero: runtimeBridgeOverride.zotero,
     });
   }
-  const fromGlobalVar = readZoteroFromGlobalVar();
+  const fromGlobalThis = resolveRuntimeGlobal().Zotero;
+  const suppressGlobalVarCandidate =
+    !!runtimeBridgeOverride?.zotero && typeof fromGlobalThis === "undefined";
+  const fromGlobalVar = suppressGlobalVarCandidate
+    ? undefined
+    : readZoteroFromGlobalVar();
   if (fromGlobalVar) {
     candidates.push({
       source: "global-var",
       zotero: fromGlobalVar,
     });
   }
-  const fromGlobalThis = resolveRuntimeGlobal().Zotero;
   if (fromGlobalThis) {
     candidates.push({
       source: "global-this",
@@ -203,42 +351,106 @@ export function resolveRuntimeZotero() {
 }
 
 export function resolveRuntimeConsole() {
-  return readConsoleFromGlobalVar() || resolveRuntimeGlobal().console || undefined;
+  const externalOverride = readExternalRuntimeBridgeOverride();
+  const activeOverride = runtimeBridgeOverride || externalOverride;
+  if (activeOverride && "console" in activeOverride) {
+    return activeOverride.console || undefined;
+  }
+  return (
+    readConsoleFromGlobalVar() ||
+    resolveRuntimeGlobal().console ||
+    resolveRuntimeWindow()?.console ||
+    undefined
+  );
 }
 
 export function resolveRuntimeHostCapabilities(): RuntimeHostCapabilities {
   const runtimeGlobal = resolveRuntimeGlobal();
+  const runtimeWindow = resolveRuntimeWindow();
+  const externalOverride = readExternalRuntimeBridgeOverride();
+  const override = runtimeBridgeOverride || externalOverride;
+  const fetchImpl =
+    typeof override?.fetch === "function"
+      ? override.fetch
+      : typeof runtimeGlobal.fetch === "function"
+      ? runtimeGlobal.fetch
+      : typeof runtimeWindow?.fetch === "function"
+        ? runtimeWindow.fetch
+        : null;
   const boundFetch =
-    typeof runtimeGlobal.fetch === "function"
-      ? runtimeGlobal.fetch.bind(runtimeGlobal)
+    typeof fetchImpl === "function"
+      ? fetchImpl.bind(
+          fetchImpl === runtimeWindow?.fetch ? runtimeWindow : runtimeGlobal,
+        )
       : null;
+  const btoaImpl =
+    typeof override?.btoa === "function"
+      ? override.btoa
+      : typeof runtimeGlobal.btoa === "function"
+      ? runtimeGlobal.btoa
+      : typeof runtimeWindow?.btoa === "function"
+        ? runtimeWindow.btoa
+        : null;
   const boundBtoa =
-    typeof runtimeGlobal.btoa === "function"
-      ? runtimeGlobal.btoa.bind(runtimeGlobal)
+    typeof btoaImpl === "function"
+      ? btoaImpl.bind(
+          btoaImpl === runtimeWindow?.btoa ? runtimeWindow : runtimeGlobal,
+        )
       : null;
+  const atobImpl =
+    typeof override?.atob === "function"
+      ? override.atob
+      : typeof runtimeGlobal.atob === "function"
+      ? runtimeGlobal.atob
+      : typeof runtimeWindow?.atob === "function"
+        ? runtimeWindow.atob
+        : null;
   const boundAtob =
-    typeof runtimeGlobal.atob === "function"
-      ? runtimeGlobal.atob.bind(runtimeGlobal)
+    typeof atobImpl === "function"
+      ? atobImpl.bind(
+          atobImpl === runtimeWindow?.atob ? runtimeWindow : runtimeGlobal,
+        )
       : null;
   return {
     zotero: resolveRuntimeZotero(),
     addon: resolveRuntimeAddon(),
     fetch: boundFetch,
-    Buffer:
-      (runtimeGlobal.Buffer as typeof globalThis.Buffer | undefined) ?? null,
+    Buffer: override && "Buffer" in override
+      ? (override.Buffer ?? null)
+      :
+      (runtimeGlobal.Buffer as typeof globalThis.Buffer | undefined) ??
+      (runtimeWindow as
+        | {
+            Buffer?: typeof globalThis.Buffer;
+          }
+        | undefined)?.Buffer ??
+      null,
     btoa: boundBtoa,
     atob: boundAtob,
-    TextEncoder:
+    TextEncoder: override && "TextEncoder" in override
+      ? (override.TextEncoder ?? null)
+      :
       (runtimeGlobal.TextEncoder as typeof globalThis.TextEncoder | undefined) ??
+      runtimeWindow?.TextEncoder ??
       null,
-    TextDecoder:
+    TextDecoder: override && "TextDecoder" in override
+      ? (override.TextDecoder ?? null)
+      :
       (runtimeGlobal.TextDecoder as typeof globalThis.TextDecoder | undefined) ??
+      runtimeWindow?.TextDecoder ??
       null,
-    FileReader:
+    FileReader: override && "FileReader" in override
+      ? (override.FileReader ?? null)
+      :
       (runtimeGlobal.FileReader as typeof globalThis.FileReader | undefined) ??
+      runtimeWindow?.FileReader ??
       null,
-    navigator:
-      (runtimeGlobal.navigator as typeof globalThis.navigator | undefined) ?? null,
+    navigator: override && "navigator" in override
+      ? (override.navigator ?? null)
+      :
+      (runtimeGlobal.navigator as typeof globalThis.navigator | undefined) ??
+      runtimeWindow?.navigator ??
+      null,
     console: resolveRuntimeConsole(),
   };
 }
@@ -301,4 +513,5 @@ export function installRuntimeBridgeOverrideForTests(
 
 export function resetRuntimeBridgeOverrideForTests() {
   runtimeBridgeOverride = null;
+  clearExternalRuntimeBridgeOverrideSlots();
 }

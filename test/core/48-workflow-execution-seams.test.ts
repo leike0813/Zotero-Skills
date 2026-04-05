@@ -404,12 +404,46 @@ describe("workflow execution seams", function () {
     );
 
     assert.lengthOf(toasts, 3);
-    assert.isTrue(toasts.some((entry) => /started\. jobs=2/i.test(entry)));
-    assert.isTrue(toasts.some((entry) => /job 1\/2 succeeded/i.test(entry)));
-    assert.isTrue(toasts.some((entry) => /job 2\/2 failed/i.test(entry)));
+    assert.include(
+      toasts,
+      formatter.startToast({
+        workflowLabel: "Seam Feedback",
+        totalJobs: 2,
+      }),
+    );
+    assert.include(
+      toasts,
+      formatter.jobToastSuccess({
+        workflowLabel: "Seam Feedback",
+        taskLabel: "task-a",
+        index: 1,
+        total: 2,
+      }),
+    );
+    assert.include(
+      toasts,
+      formatter.jobToastFailed({
+        workflowLabel: "Seam Feedback",
+        taskLabel: "task-b",
+        index: 2,
+        total: 2,
+        reason: "failed",
+      }),
+    );
     assert.lengthOf(alerts, 1);
-    assert.include(alerts[0], "succeeded=1");
-    assert.include(alerts[0], "failed=1");
+    assert.equal(
+      alerts[0],
+      formatter.summary({
+        workflowLabel: "Seam Feedback",
+        succeeded: 1,
+        failed: 1,
+        skipped: 0,
+      }) +
+        "\n" +
+        formatter.failureReasonsTitle +
+        "\n" +
+        "1. job-1: failed",
+    );
   });
 
   it("uses full-parallel queue concurrency for backend-backed providers", function () {

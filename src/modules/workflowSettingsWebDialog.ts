@@ -44,6 +44,7 @@ type WorkflowSettingsDialogSnapshot = {
       enumValues?: string[];
       allowCustom?: boolean;
       defaultValue?: unknown;
+      disabled?: boolean;
     }>;
     providerSchemaEntries: Array<{
       key: string;
@@ -53,6 +54,7 @@ type WorkflowSettingsDialogSnapshot = {
       enumValues?: string[];
       allowCustom?: boolean;
       defaultValue?: unknown;
+      disabled?: boolean;
     }>;
     workflowParams: Record<string, unknown>;
     providerOptions: Record<string, unknown>;
@@ -163,7 +165,11 @@ function isStructuralDraftChange(args: { changedSection: string; changedKey: str
   }
   if (
     args.changedSection === "providerOptions" &&
-    (args.changedKey === "engine" || args.changedKey === "model_provider")
+    (
+      args.changedKey === "engine" ||
+      args.changedKey === "provider_id" ||
+      args.changedKey === "model"
+    )
   ) {
     return true;
   }
@@ -299,6 +305,10 @@ export async function openWorkflowSettingsWebDialog(args: {
       candidateBackends: args.candidateBackends,
       autoSelectFallbackProfile: true,
     });
+    draft = {
+      ...draft,
+      providerOptions: { ...descriptor.providerOptions },
+    };
     const draftBackendId = String(draft.backendId || "").trim();
     if (!draftBackendId) {
       if (descriptor.selectedProfile) {

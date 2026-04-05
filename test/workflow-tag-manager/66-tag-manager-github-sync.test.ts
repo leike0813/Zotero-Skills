@@ -2,30 +2,27 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
+import { resetRuntimeBridgeOverrideForTests } from "../../src/utils/runtimeBridge";
 import { __tagManagerTestOnly } from "../../workflows_builtin/tag-vocabulary-package/tag-manager/hooks/applyResult.mjs";
 import {
+  installWorkflowFetchMockAcrossRuntimes,
   installTagVocabularyHostApiGlobals,
   installTagVocabularySyncCapture,
 } from "../workflow-tag-vocabulary/hostApiTestUtils";
+import { encodeBase64Utf8, isZoteroRuntime } from "../zotero/workflow-test-utils";
 
-type RuntimeWithFetch = typeof globalThis & {
-  fetch?: (input: string, init?: Record<string, unknown>) => Promise<{
+function installFetchMock(
+  mockFetch: (
+    input: string,
+    init?: Record<string, unknown>,
+  ) => Promise<{
     ok: boolean;
     status: number;
     statusText?: string;
     json: () => Promise<unknown>;
-  }>;
-};
-
-function installFetchMock(
-  mockFetch: NonNullable<RuntimeWithFetch["fetch"]>,
+  }>,
 ) {
-  const runtime = globalThis as RuntimeWithFetch;
-  const prevFetch = runtime.fetch;
-  runtime.fetch = mockFetch;
-  return () => {
-    runtime.fetch = prevFetch;
-  };
+  return installWorkflowFetchMockAcrossRuntimes(mockFetch);
 }
 
 function installSyncBridgeMock(
@@ -48,10 +45,15 @@ function listTags(item: Zotero.Item) {
 }
 
 function toBase64(text: string) {
-  return Buffer.from(text, "utf8").toString("base64");
+  return encodeBase64Utf8(text);
+}
+
+function withBase64LineBreaks(text: string) {
+  return text.replace(/(.{24})/g, "$1\n");
 }
 
 describe("workflow: tag-manager github sync", function () {
+  const itNodeOnly = isZoteroRuntime() ? it.skip : it;
   const ACTIVE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyJson`;
   const LOCAL_PREF_KEY = `${config.prefsPrefix}.tagVocabularyLocalCommittedJson`;
   const REMOTE_PREF_KEY = `${config.prefsPrefix}.tagVocabularyRemoteCommittedJson`;
@@ -63,19 +65,21 @@ describe("workflow: tag-manager github sync", function () {
     Zotero.Prefs.clear(LOCAL_PREF_KEY, true);
     Zotero.Prefs.clear(REMOTE_PREF_KEY, true);
     Zotero.Prefs.clear(STAGED_PREF_KEY, true);
+    resetRuntimeBridgeOverrideForTests();
     restoreHostApi = installTagVocabularyHostApiGlobals();
   });
 
   afterEach(function () {
     restoreHostApi?.();
     restoreHostApi = null;
+    resetRuntimeBridgeOverrideForTests();
     Zotero.Prefs.clear(ACTIVE_PREF_KEY, true);
     Zotero.Prefs.clear(LOCAL_PREF_KEY, true);
     Zotero.Prefs.clear(REMOTE_PREF_KEY, true);
     Zotero.Prefs.clear(STAGED_PREF_KEY, true);
   });
 
-  it("commits staged entries in one subscription-mode publish transaction", async function () {
+  itNodeOnly("commits staged entries in one subscription-mode publish transaction", async function () {
     const requests: Array<{ url: string; method: string; body: string }> = [];
     const logs: Array<Record<string, unknown>> = [];
     const toasts: Array<{ text?: string; type?: string }> = [];
@@ -312,7 +316,7 @@ describe("workflow: tag-manager github sync", function () {
     );
   });
 
-  it("retries once on GitHub contents conflict and preserves remote abbrevs", async function () {
+  itNodeOnly("retries once on GitHub contents conflict and preserves remote abbrevs", async function () {
     const requests: Array<{ url: string; method: string; body: string }> = [];
     const logs: Array<Record<string, unknown>> = [];
     let putCount = 0;
@@ -394,6 +398,88 @@ describe("workflow: tag-manager github sync", function () {
         payload.tags.map((entry: { tag: string }) => entry.tag),
         ["topic:conflict-safe"],
       );
+    } finally {
+      restoreFetch();
+      restoreBridge();
+    }
+  });
+
+  itNodeOnly("accepts GitHub contents payload content with line breaks during publish baseline fetch", async function () {
+    const requests: Array<{ url: string; method: string; body: string }> = [];
+    const restoreBridge = installSyncBridgeMock([]);
+    const restoreFetch = installFetchMock(async (input, init) => {
+      const url = String(input || "");
+      const method = String(init?.method || "GET").toUpperCase();
+      const body = String(init?.body || "");
+      requests.push({ url, method, body });
+      if (method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sha: "sha-line-breaks-1",
+            content: withBase64LineBreaks(
+              toBase64(
+                JSON.stringify({
+                  version: "1.0.0",
+                  updated_at: "2026-04-02T00:00:00.000Z",
+                  facets: ["topic"],
+                  tags: [
+                    {
+                      tag: "topic:remote-existing",
+                      facet: "topic",
+                      source: "remote",
+                      note: "existing",
+                      deprecated: false,
+                    },
+                  ],
+                  abbrevs: { llm: "LLM" },
+                  tag_count: 1,
+                }),
+              ),
+            ),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      };
+    });
+
+    try {
+      const published = await __tagManagerTestOnly.publishRemoteVocabulary({
+        workflowId: "tag-manager",
+        config: {
+          githubOwner: "demo-owner",
+          githubRepo: "Zotero_TagVocab",
+          filePath: "tags/tags.json",
+          githubToken: "secret-token",
+        },
+        entries: [
+          {
+            tag: "topic:line-break-safe",
+            facet: "topic",
+            source: "manual",
+            note: "local",
+            deprecated: false,
+          },
+        ],
+      });
+
+      assert.deepEqual(published.abbrevs, { llm: "LLM" });
+      const putRequest = requests.find((entry) => entry.method === "PUT");
+      assert.isOk(putRequest);
+      const payload = JSON.parse(String(putRequest?.body || "{}"));
+      const decoded = JSON.parse(
+        Buffer.from(String(payload.content || ""), "base64").toString("utf8"),
+      );
+      assert.deepEqual(
+        decoded.tags.map((entry: { tag: string }) => entry.tag),
+        ["topic:line-break-safe"],
+      );
+      assert.deepEqual(decoded.abbrevs, { llm: "LLM" });
     } finally {
       restoreFetch();
       restoreBridge();

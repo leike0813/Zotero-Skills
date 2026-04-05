@@ -26,6 +26,7 @@ import {
   attachWorkflowHookFailureMeta,
   summarizeWorkflowExecutionError,
 } from "./errorMeta";
+import { canWorkflowRunWithoutSelection } from "./triggerPolicy";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -281,6 +282,8 @@ function createRuntimeContext(
         : isDebugModeEnabled(),
     workflowId: String(override?.workflowId || "").trim() || undefined,
     packageId: String(override?.packageId || "").trim() || undefined,
+    workflowRootDir: String(override?.workflowRootDir || "").trim() || undefined,
+    packageRootDir: String(override?.packageRootDir || "").trim() || undefined,
     workflowSourceKind:
       override?.workflowSourceKind === "builtin" ||
       override?.workflowSourceKind === "user"
@@ -380,6 +383,8 @@ function createHookRuntimeContext(args: {
     debugMode: args.runtime.debugMode === true,
     workflowId: args.workflow.manifest.id,
     packageId: args.workflow.packageId || "",
+    workflowRootDir: args.workflow.rootDir || "",
+    packageRootDir: args.workflow.packageRootDir || "",
     workflowSourceKind: args.workflow.workflowSourceKind || "",
     hookName: args.hookName,
   } satisfies WorkflowRuntimeContext;
@@ -822,14 +827,17 @@ async function resolveSelectionContexts(args: {
   selectionContext: unknown;
   runtime: WorkflowRuntimeContext;
 }): Promise<ResolvedSelectionContexts> {
+  const allowsEmptySelection = canWorkflowRunWithoutSelection(
+    args.workflow.manifest,
+  );
   const isPassThroughWorkflow =
     String(args.workflow.manifest.provider || "").trim() ===
     PASS_THROUGH_BACKEND_TYPE;
   if (isPassThroughWorkflow && !args.workflow.manifest.inputs?.unit) {
-    const passThroughTotalBeforeHook = estimatePassThroughTotalUnits(
-      copySelection(args.selectionContext),
-    );
-    let scopedSelection = copySelection(args.selectionContext);
+    const originalSelection = copySelection(args.selectionContext);
+    const totalUnitsBeforeHook = estimatePassThroughTotalUnits(originalSelection);
+    const startedWithoutSelection = !hasAnySelectionItems(originalSelection);
+    let scopedSelection = originalSelection;
     if (args.workflow.hooks.filterInputs) {
       const filtered = await runWorkflowHookWithDiagnostics({
         workflow: args.workflow,
@@ -849,20 +857,66 @@ async function resolveSelectionContexts(args: {
     if (!scopedSelection || typeof scopedSelection !== "object") {
       return {
         contexts: [],
-        totalUnits: passThroughTotalBeforeHook,
+        totalUnits: totalUnitsBeforeHook,
       };
     }
     if (!hasAnySelectionItems(scopedSelection)) {
+      if (startedWithoutSelection && allowsEmptySelection) {
+        return {
+          contexts: [scopedSelection],
+          totalUnits: totalUnitsBeforeHook,
+        };
+      }
       return {
         contexts: [],
-        totalUnits: passThroughTotalBeforeHook,
+        totalUnits: totalUnitsBeforeHook,
       };
     }
     const contexts = splitPassThroughSelectionUnits(scopedSelection);
     return {
       contexts,
-      totalUnits: Math.max(passThroughTotalBeforeHook, contexts.length),
+      totalUnits: Math.max(totalUnitsBeforeHook, contexts.length),
     };
+  }
+
+  if (allowsEmptySelection) {
+    const originalSelection = copySelection(args.selectionContext);
+    const startedWithoutSelection = !hasAnySelectionItems(originalSelection);
+    let scopedSelection = originalSelection;
+    if (args.workflow.hooks.filterInputs) {
+      const filtered = await runWorkflowHookWithDiagnostics({
+        workflow: args.workflow,
+        runtime: args.runtime,
+        hookName: "filterInputs",
+        component: "workflow-runtime",
+        operation: "filter-inputs",
+        work: (hookRuntime) =>
+          args.workflow.hooks.filterInputs!({
+            selectionContext: scopedSelection,
+            manifest: args.workflow.manifest,
+            runtime: hookRuntime,
+          }),
+      });
+      scopedSelection = copySelection(filtered);
+    }
+    if (!scopedSelection || typeof scopedSelection !== "object") {
+      return {
+        contexts: [],
+        totalUnits: 1,
+      };
+    }
+    if (!hasAnySelectionItems(scopedSelection)) {
+      if (startedWithoutSelection) {
+        return {
+          contexts: [scopedSelection],
+          totalUnits: 1,
+        };
+      }
+      return {
+        contexts: [],
+        totalUnits: 1,
+      };
+    }
   }
 
   const unit = args.workflow.manifest.inputs?.unit || "attachment";
@@ -998,7 +1052,7 @@ export async function executeBuildRequests(args: {
 
 export async function executeApplyResult(args: {
   workflow: LoadedWorkflow;
-  parent: Zotero.Item | number | string;
+  parent: Zotero.Item | number | string | null;
   bundleReader: {
     readText: (entryPath: string) => Promise<string>;
     getExtractedDir?: () => Promise<string>;

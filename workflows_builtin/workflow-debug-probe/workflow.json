@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "provider": "pass-through",
   "debug_only": true,
+  "trigger": {
+    "requiresSelection": false
+  },
   "execution": {
     "feedback": {
       "showNotifications": false

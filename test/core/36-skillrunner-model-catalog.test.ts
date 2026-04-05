@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import {
   getDefaultSkillRunnerEngine,
+  getSkillRunnerCanonicalProviderId,
+  isSkillRunnerProviderScopedEngine,
   listSkillRunnerEngines,
+  listSkillRunnerModelEffortOptions,
   listSkillRunnerModelOptions,
   listSkillRunnerModelOptionsForProvider,
   listSkillRunnerModelProviders,
@@ -41,7 +44,7 @@ describe("skillrunner model catalog", function () {
     const geminiModels = listSkillRunnerModelOptions("gemini").map(
       (entry) => entry.value,
     );
-    assert.include(geminiModels, "gemini-2.5-pro");
+    assert.include(geminiModels, "gemini-3.1-pro-preview");
     assert.notInclude(geminiModels, "gpt-4");
   });
 
@@ -57,6 +60,7 @@ describe("skillrunner model catalog", function () {
     const provider = resolveProviderById("skillrunner");
     const schema = provider.getRuntimeOptionSchema?.() || {};
     assert.includeMembers(schema.engine?.enum || [], ["codex", "gemini", "iflow"]);
+    assert.equal(schema.effort?.default, "default");
 
     const modelEnum = provider.getRuntimeOptionEnumValues?.({
       key: "model",
@@ -65,10 +69,22 @@ describe("skillrunner model catalog", function () {
     assert.include(modelEnum || [], "gemini-2.5-pro");
 
     const modelProviderEnum = provider.getRuntimeOptionEnumValues?.({
-      key: "model_provider",
+      key: "provider_id",
       options: { engine: "gemini" },
     });
-    assert.deepEqual(modelProviderEnum || [], ["google"]);
+    assert.deepEqual(modelProviderEnum || [], []);
+
+    const effortEnum = provider.getRuntimeOptionEnumValues?.({
+      key: "effort",
+      options: { engine: "codex", model: "gpt-5.2" },
+    });
+    assert.deepEqual(effortEnum || [], [
+      "default",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
   });
 
   it("prefers backend-scoped model cache when available", function () {
@@ -82,11 +98,13 @@ describe("skillrunner model catalog", function () {
           {
             id: "openai/gpt-5",
             display_name: "OpenAI GPT-5",
+            provider_id: "openai",
             provider: "openai",
             model: "gpt-5",
             deprecated: false,
           },
           {
+            provider_id: "anthropic",
             provider: "anthropic",
             model: "claude-sonnet-4",
             display_name: "Claude Sonnet 4",
@@ -150,7 +168,7 @@ describe("skillrunner model catalog", function () {
     assert.notInclude(engines, "opencode");
   });
 
-  it("filters opencode model enum by model_provider in provider hooks", function () {
+  it("filters opencode model enum by provider_id in provider hooks", function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-local",
       baseUrl: "http://127.0.0.1:8030",
@@ -160,6 +178,7 @@ describe("skillrunner model catalog", function () {
         opencode: [
           {
             id: "openai/gpt-5",
+            provider_id: "openai",
             provider: "openai",
             model: "gpt-5",
             display_name: "OpenAI GPT-5",
@@ -167,6 +186,7 @@ describe("skillrunner model catalog", function () {
           },
           {
             id: "anthropic/claude-sonnet-4",
+            provider_id: "anthropic",
             provider: "anthropic",
             model: "claude-sonnet-4",
             display_name: "Claude Sonnet 4",
@@ -178,7 +198,7 @@ describe("skillrunner model catalog", function () {
 
     const provider = resolveProviderById("skillrunner");
     const modelProviderEnum = provider.getRuntimeOptionEnumValues?.({
-      key: "model_provider",
+      key: "provider_id",
       options: { engine: "opencode" },
       backend: {
         id: "skillrunner-local",
@@ -193,7 +213,7 @@ describe("skillrunner model catalog", function () {
       key: "model",
       options: {
         engine: "opencode",
-        model_provider: "openai",
+        provider_id: "openai",
       },
       backend: {
         id: "skillrunner-local",
@@ -203,6 +223,20 @@ describe("skillrunner model catalog", function () {
       },
     });
     assert.deepEqual(modelEnum || [], ["gpt-5"]);
+
+    const emptyProviderModelEnum = provider.getRuntimeOptionEnumValues?.({
+      key: "model",
+      options: {
+        engine: "opencode",
+      },
+      backend: {
+        id: "skillrunner-local",
+        type: "skillrunner",
+        baseUrl: "http://127.0.0.1:8030",
+        auth: { kind: "none" },
+      },
+    });
+    assert.deepEqual(emptyProviderModelEnum || [], []);
   });
 
   it("normalizes opencode provider-scoped model name to canonical model id", function () {
@@ -215,6 +249,7 @@ describe("skillrunner model catalog", function () {
         opencode: [
           {
             id: "minimax-m2.5",
+            provider_id: "alibaba-coding-plan-cn",
             provider: "alibaba-coding-plan-cn",
             model: "minimax-m2.5",
             display_name: "MiniMax M2.5",
@@ -222,6 +257,7 @@ describe("skillrunner model catalog", function () {
           },
           {
             id: "qwen-plus-latest",
+            provider_id: "alibaba-coding-plan-cn",
             provider: "alibaba-coding-plan-cn",
             model: "qwen-3.5-plus",
             display_name: "Qwen 3.5 Plus",
@@ -235,7 +271,7 @@ describe("skillrunner model catalog", function () {
     const normalized = provider.normalizeRuntimeOptions?.(
       {
         engine: "opencode",
-        model_provider: "alibaba-coding-plan-cn",
+        provider_id: "alibaba-coding-plan-cn",
         model: "qwen-3.5-plus",
       },
       {
@@ -245,7 +281,94 @@ describe("skillrunner model catalog", function () {
         auth: { kind: "none" },
       },
     );
-    assert.equal(normalized?.model_provider, "alibaba-coding-plan-cn");
-    assert.equal(normalized?.model, "qwen-plus-latest");
+    assert.equal(normalized?.provider_id, "alibaba-coding-plan-cn");
+    assert.equal(normalized?.model, "qwen-3.5-plus");
+  });
+
+  it("treats qwen and claude catalogs as provider-scoped when backend cache exposes provider_id", function () {
+    upsertSkillRunnerModelCacheEntry({
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+      updatedAt: "2026-04-05T00:00:00.000Z",
+      engines: ["qwen", "claude"],
+      modelsByEngine: {
+        qwen: [
+          {
+            id: "dashscope/qwen-max",
+            provider_id: "dashscope",
+            provider: "dashscope",
+            model: "qwen-max",
+            display_name: "Qwen Max",
+          },
+          {
+            id: "coding-plan/qwen-plus",
+            provider_id: "coding-plan",
+            provider: "coding-plan",
+            model: "qwen-plus",
+            display_name: "Qwen Plus",
+          },
+        ],
+        claude: [
+          {
+            id: "anthropic/claude-sonnet-4",
+            provider_id: "anthropic",
+            provider: "anthropic",
+            model: "claude-sonnet-4",
+            display_name: "Claude Sonnet 4",
+          },
+          {
+            id: "proxy/claude-sonnet-4",
+            provider_id: "proxy",
+            provider: "proxy",
+            model: "claude-sonnet-4",
+            display_name: "Claude Sonnet 4 Proxy",
+          },
+        ],
+      },
+    });
+
+    const scope = {
+      backendId: "skillrunner-local",
+      baseUrl: "http://127.0.0.1:8030",
+    };
+    assert.isTrue(isSkillRunnerProviderScopedEngine("qwen", scope));
+    assert.isTrue(isSkillRunnerProviderScopedEngine("claude", scope));
+    assert.deepEqual(listSkillRunnerModelProviders("qwen", scope), [
+      "coding-plan",
+      "dashscope",
+    ]);
+    assert.deepEqual(
+      listSkillRunnerModelOptionsForProvider("qwen", "dashscope", scope).map(
+        (entry) => entry.value,
+      ),
+      ["qwen-max"],
+    );
+    assert.deepEqual(listSkillRunnerModelProviders("claude", scope), [
+      "anthropic",
+      "proxy",
+    ]);
+  });
+
+  it("preserves supported_effort metadata and falls back to default for unsupported models", function () {
+    assert.equal(getSkillRunnerCanonicalProviderId("codex"), "openai");
+    assert.equal(getSkillRunnerCanonicalProviderId("gemini"), "google");
+    assert.equal(getSkillRunnerCanonicalProviderId("iflow"), "iflowcn");
+
+    assert.deepEqual(
+      listSkillRunnerModelEffortOptions({
+        engine: "codex",
+        provider: "openai",
+        model: "gpt-5.2",
+      }),
+      ["default", "low", "medium", "high", "xhigh"],
+    );
+    assert.deepEqual(
+      listSkillRunnerModelEffortOptions({
+        engine: "gemini",
+        provider: "google",
+        model: "gemini-2.5-pro",
+      }),
+      ["default"],
+    );
   });
 });

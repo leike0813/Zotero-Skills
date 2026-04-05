@@ -10,6 +10,7 @@ import {
   assertRequestKindSupported,
   assertRequestPayloadContract,
 } from "../providers/requestContracts";
+import { canWorkflowRunWithoutSelection } from "./triggerPolicy";
 import type { WorkflowManifest, WorkflowRequestSpec } from "./types";
 
 type AttachmentLike = {
@@ -156,6 +157,24 @@ function resolveTargetParentID(selectionContext: unknown) {
   throw new Error("Cannot resolve target parent item from selection context");
 }
 
+function resolveOptionalTargetParentID(selectionContext: unknown) {
+  try {
+    return resolveTargetParentID(selectionContext);
+  } catch {
+    return null;
+  }
+}
+
+function resolveDeclarativeTargetParentID(args: {
+  selectionContext: unknown;
+  manifest: WorkflowManifest;
+}) {
+  if (canWorkflowRunWithoutSelection(args.manifest)) {
+    return resolveOptionalTargetParentID(args.selectionContext);
+  }
+  return resolveTargetParentID(args.selectionContext);
+}
+
 function resolveSelectionAttachments(selectionContext: unknown) {
   const selection = selectionContext as SelectionLike;
   return (selection?.items?.attachments || []).filter(Boolean);
@@ -210,7 +229,7 @@ function resolveSingleSourceAttachment(
 function resolveTaskName(args: {
   sourceAttachmentPaths: string[];
   selectionContext: unknown;
-  targetParentID: number;
+  targetParentID: number | null;
 }) {
   if (args.sourceAttachmentPaths.length > 0) {
     return getBaseName(args.sourceAttachmentPaths[0]);
@@ -233,7 +252,10 @@ function resolveTaskName(args: {
   if (String(parentTitle || "").trim()) {
     return String(parentTitle).trim();
   }
-  return `item-${args.targetParentID}`;
+  if (args.targetParentID) {
+    return `item-${args.targetParentID}`;
+  }
+  return "task";
 }
 
 function buildSkillRunnerJobRequest(args: {
@@ -254,6 +276,7 @@ function buildSkillRunnerJobRequest(args: {
     );
   }
   const attachments = resolveSelectionAttachments(args.selectionContext);
+  const targetParentID = resolveDeclarativeTargetParentID(args);
   const declaredFiles = request.input?.upload?.files || [];
   const declaredInput = isObject(request.input) ? request.input : null;
   const inlineInput = declaredInput
@@ -286,7 +309,6 @@ function buildSkillRunnerJobRequest(args: {
     };
   });
 
-  const targetParentID = resolveTargetParentID(args.selectionContext);
   const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
   const taskName = resolveTaskName({
     sourceAttachmentPaths,
@@ -300,7 +322,6 @@ function buildSkillRunnerJobRequest(args: {
   const fetchType = args.manifest.result?.fetch?.type || "bundle";
   const requestPayload: SkillRunnerJobRequestV1 = {
     kind: "skillrunner.job.v1",
-    targetParentID,
     taskName,
     sourceAttachmentPaths,
     skill_id: skillId,
@@ -315,6 +336,9 @@ function buildSkillRunnerJobRequest(args: {
     },
     fetch_type: fetchType === "result" ? "result" : "bundle",
   };
+  if (targetParentID) {
+    requestPayload.targetParentID = targetParentID;
+  }
   return requestPayload;
 }
 
@@ -341,7 +365,7 @@ function buildGenericHttpRequest(args: {
   }
 
   const attachments = resolveSelectionAttachments(args.selectionContext);
-  const targetParentID = resolveTargetParentID(args.selectionContext);
+  const targetParentID = resolveDeclarativeTargetParentID(args);
   const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
   const taskName = resolveTaskName({
     sourceAttachmentPaths,
@@ -351,25 +375,33 @@ function buildGenericHttpRequest(args: {
   const sharedPayload = {
     workflow_id: args.manifest.id,
     workflow_label: args.manifest.label,
-    target_parent_id: targetParentID,
     attachment_paths: sourceAttachmentPaths,
   };
+  const targetParentPayload = targetParentID
+    ? {
+        target_parent_id: targetParentID,
+      }
+    : {};
   const payload =
     isObject(http.json)
       ? {
           ...sharedPayload,
+          ...targetParentPayload,
           ...http.json,
         }
       : typeof http.json === "undefined"
-        ? sharedPayload
+        ? {
+            ...sharedPayload,
+            ...targetParentPayload,
+          }
         : {
             ...sharedPayload,
+            ...targetParentPayload,
             input: http.json,
           };
 
   const requestPayload: GenericHttpRequestV1 = {
     kind: "generic-http.request.v1",
-    targetParentID,
     taskName,
     sourceAttachmentPaths,
     request: {
@@ -383,6 +415,9 @@ function buildGenericHttpRequest(args: {
         ? http.timeout_ms
         : args.manifest.execution?.timeout_ms,
   };
+  if (targetParentID) {
+    requestPayload.targetParentID = targetParentID;
+  }
   return requestPayload;
 }
 
@@ -394,7 +429,7 @@ function buildPassThroughRequest(args: {
   };
 }) {
   const attachments = resolveSelectionAttachments(args.selectionContext);
-  const targetParentID = resolveTargetParentID(args.selectionContext);
+  const targetParentID = resolveOptionalTargetParentID(args.selectionContext);
   const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
   const taskName = resolveTaskName({
     sourceAttachmentPaths,
@@ -408,12 +443,14 @@ function buildPassThroughRequest(args: {
 
   const requestPayload: PassThroughRunRequestV1 = {
     kind: PASS_THROUGH_REQUEST_KIND,
-    targetParentID,
     taskName,
     sourceAttachmentPaths,
     selectionContext: args.selectionContext,
     parameter: workflowParams,
   };
+  if (targetParentID) {
+    requestPayload.targetParentID = targetParentID;
+  }
   return requestPayload;
 }
 
@@ -442,7 +479,7 @@ function buildGenericHttpStepsRequest(args: {
   }
 
   const attachments = resolveSelectionAttachments(args.selectionContext);
-  const targetParentID = resolveTargetParentID(args.selectionContext);
+  const targetParentID = resolveDeclarativeTargetParentID(args);
   const sourceAttachmentPaths = resolveSourceAttachmentPaths(attachments);
   const taskName = resolveTaskName({
     sourceAttachmentPaths,
@@ -459,11 +496,10 @@ function buildGenericHttpStepsRequest(args: {
   );
   const sourceAttachmentPath = sourceAttachmentPaths[0] || "";
 
-  const context = {
+  const context: Record<string, unknown> = {
     ...workflowParams,
     workflow_id: args.manifest.id,
     workflow_label: args.manifest.label,
-    target_parent_id: targetParentID,
     source_attachment_path: sourceAttachmentPath,
     source_attachment_name: sourceAttachmentPath
       ? getBaseName(sourceAttachmentPath)
@@ -475,10 +511,12 @@ function buildGenericHttpStepsRequest(args: {
     source_attachment_item_key: sourceAttachment?.item?.key || "",
     ...(isObject(requestSpec?.context) ? requestSpec?.context || {} : {}),
   };
+  if (targetParentID) {
+    context.target_parent_id = targetParentID;
+  }
 
   const requestPayload: GenericHttpStepsRequestV1 = {
     kind: "generic-http.steps.v1",
-    targetParentID,
     taskName,
     sourceAttachmentPaths,
     context,
@@ -490,6 +528,9 @@ function buildGenericHttpStepsRequest(args: {
         requestSpec?.poll?.timeout_ms || args.manifest.execution?.timeout_ms,
     },
   };
+  if (targetParentID) {
+    requestPayload.targetParentID = targetParentID;
+  }
   return requestPayload;
 }
 

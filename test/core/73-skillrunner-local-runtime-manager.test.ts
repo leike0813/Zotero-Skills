@@ -2452,7 +2452,7 @@ describe("skillrunner local runtime manager", function () {
 
   it("builds manual deploy commands using bridge-equivalent bootstrap and up flow", async function () {
     const commandText = buildManualDeployCommands({
-      version: "v0.4.5",
+      version: "v0.5.1",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       host: "127.0.0.1",
       port: 29813,
@@ -2463,7 +2463,7 @@ describe("skillrunner local runtime manager", function () {
     assert.notInclude(commandText, "skill-runnerctl");
 
     const result = await getLocalRuntimeManualDeployCommands({
-      version: "v0.4.5",
+      version: "v0.5.1",
     });
     assert.isTrue(result.ok);
     assert.equal(result.stage, "manual-deploy-commands");

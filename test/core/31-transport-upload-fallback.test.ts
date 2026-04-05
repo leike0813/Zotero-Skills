@@ -168,6 +168,65 @@ describe("transport: upload fallback without FormData", function () {
     );
   });
 
+  it("sends provider_id, model, and effort as separate fields in create body", async function () {
+    let capturedCreateBody: unknown;
+    const client = new SkillRunnerClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/jobs")) {
+          capturedCreateBody = JSON.parse(String(init?.body || "{}"));
+          return createJsonResponse({ request_id: "req-provider-id" });
+        }
+        if (url.endsWith("/v1/jobs/req-provider-id")) {
+          return createJsonResponse({
+            request_id: "req-provider-id",
+            status: "succeeded",
+          });
+        }
+        if (url.endsWith("/v1/jobs/req-provider-id/result")) {
+          return createJsonResponse({
+            request_id: "req-provider-id",
+            status: "succeeded",
+            data: {},
+          });
+        }
+        return createJsonResponse({ error: "unexpected route" }, 404);
+      },
+    });
+
+    await client.executeSkillRunnerJob(
+      {
+        kind: "skillrunner.job.v1",
+        skill_id: "tag-regulator",
+        input: {
+          source_path: "inputs/source_path/example.md",
+        },
+        fetch_type: "result",
+      },
+      {
+        engine: "opencode",
+        provider_id: "openai",
+        model: "gpt-5",
+        effort: "high",
+      },
+    );
+
+    assert.deepEqual(capturedCreateBody, {
+      skill_id: "tag-regulator",
+      engine: "opencode",
+      provider_id: "openai",
+      model: "gpt-5",
+      effort: "high",
+      input: {
+        source_path: "inputs/source_path/example.md",
+      },
+      parameter: {},
+      runtime_options: {
+        execution_mode: "auto",
+      },
+    });
+  });
+
   it("omits no_cache for interactive execution and keeps interactive options", async function () {
     let capturedCreateBody: unknown;
     const client = new SkillRunnerClient({

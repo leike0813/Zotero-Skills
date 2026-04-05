@@ -274,4 +274,60 @@ describe("declarative request compiler guards", function () {
     assert.isOk(thrown);
     assert.match(String(thrown), /requires request\.steps\[\]/i);
   });
+
+  it("builds generic-http.request.v1 without selection when trigger.requiresSelection is false", function () {
+    const request = compileDeclarativeRequest({
+      kind: "generic-http.request.v1",
+      selectionContext: {
+        items: {
+          attachments: [],
+          parents: [],
+          children: [],
+          notes: [],
+        },
+      },
+      manifest: {
+        id: "generic-http-no-selection",
+        label: "Generic HTTP No Selection",
+        provider: "generic-http",
+        trigger: {
+          requiresSelection: false,
+        },
+        request: {
+          kind: "generic-http.request.v1",
+          http: {
+            method: "POST",
+            path: "/v1/jobs",
+          },
+        },
+        hooks: {
+          applyResult: "hooks/applyResult.js",
+        },
+      } as any,
+    }) as {
+      kind: string;
+      targetParentID?: number;
+      taskName: string;
+      sourceAttachmentPaths: string[];
+      request: {
+        method: string;
+        path: string;
+        json: Record<string, unknown>;
+      };
+    };
+
+    assert.equal(request.kind, "generic-http.request.v1");
+    assert.isUndefined(request.targetParentID);
+    assert.equal(request.taskName, "task");
+    assert.deepEqual(request.sourceAttachmentPaths, []);
+    assert.deepEqual(request.request, {
+      method: "POST",
+      path: "/v1/jobs",
+      json: {
+        workflow_id: "generic-http-no-selection",
+        workflow_label: "Generic HTTP No Selection",
+        attachment_paths: [],
+      },
+    });
+  });
 });

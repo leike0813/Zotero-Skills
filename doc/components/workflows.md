@@ -8,6 +8,8 @@
 
 ## 目录结构
 
+### 单 Workflow 目录（传统格式）
+
 ```text
 workflows/
   <workflow-id>/
@@ -18,6 +20,48 @@ workflows/
       normalizeSettings.js # 可选（workflow 专属设置归一化）
       applyResult.js    # 必需
 ```
+
+### Workflow Package 目录（多 Workflow 包格式）
+
+v0.3.0 新增，允许一个包内声明多个 workflow 并共享代码：
+
+```text
+workflows/
+  <package-id>/
+    workflow-package.json    # 包索引（必需）
+    lib/                     # 共享代码目录
+      runtime.mjs
+      model.mjs
+      ...
+    <workflow-id-1>/
+      workflow.json
+      hooks/
+        ...
+    <workflow-id-2>/
+      workflow.json
+      hooks/
+        ...
+```
+
+**workflow-package.json 格式**：
+
+```json
+{
+  "id": "tag-vocabulary-package",
+  "version": "1.0.0",
+  "workflows": ["tag-manager", "tag-regulator"]
+}
+```
+
+**包内 hook 可使用相对导入**：
+
+```javascript
+// hooks/applyResult.mjs
+import { normalizeTag } from '../lib/model.mjs';
+import { fetchRemote } from '../lib/remote.mjs';
+```
+
+**两种格式并存**：loader 同时支持传统单 workflow 目录和多 workflow 包目录。
 
 ## 内建/用户目录治理（当前实现）
 
@@ -45,7 +89,20 @@ workflows/
 Manifest 契约由以下 schema 唯一定义（SSOT）：
 
 - `src/schemas/workflow.schema.json`
-- 该文件同时用于“作者编写参考”和“loader 运行时结构校验”
+- 该文件同时用于”作者编写参考”和”loader 运行时结构校验”
+
+### workflow-package.json（Workflow Package 索引）
+
+包索引契约由以下 schema 定义：
+
+- `src/schemas/workflow-package.schema.json`
+
+字段：
+- `id`（必需）：包标识符
+- `version`（必需）：版本号
+- `workflows`（必需）：子 workflow ID 数组
+
+### workflow.json（Workflow 声明）
 
 最小合法示例：
 
@@ -132,8 +189,11 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
   - 当前会在执行链注入到请求的 `runtime_options.execution_mode`；
   - 不替代旧字段 `execution.mode`，两者语义并存。
 - `parameters.<key>.allowCustom`（仅 `type=string` 生效）语义：
-  - `true`：`enum` 作为推荐选项，settings UI 提供“推荐下拉 + 可编辑输入”，运行时允许非枚举字符串值；
+  - `true`：`enum` 作为推荐选项，settings UI 提供”推荐下拉 + 可编辑输入”，运行时允许非枚举字符串值；
   - `false` 或缺省：`enum` 作为硬约束，非枚举值会在归一化时回退默认值或被丢弃。
+- `debug_only`（可选，布尔）语义：
+  - `true`：workflow 仅在调试模式下可见（右键菜单不显示）；
+  - `false` 或缺省：正常显示。
 
 ## 已废弃字段（会被视为非法 manifest）
 
@@ -193,6 +253,30 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
 - Hook 加载策略：
   - Node：动态 import，失败回退到文本导出转换
   - Zotero：脚本加载器，失败回退到文本导出转换
+
+### Hook 执行模式
+
+- `precompiled-host-hook`：bundled hook，在宿主环境预编译后执行（v0.3.0 新增，支持包内相对导入）
+- `legacy-text-loader`：传统文本转换加载
+- `node-native-module`：Node 原生 ES 模块
+
+### Runtime Context 字段（Hook 可访问）
+
+Hook 接收的 `runtime` 对象包含：
+
+- `handlers`：通用操作处理器
+- `helpers`：Hook 辅助函数（见 `doc/components/workflow-hook-helpers.md`）
+- `hostApi`：宿主 API（文件操作、通知等）
+- `hostApiVersion`：API 版本号
+- `zotero`：Zotero 全局对象
+- `debugMode`：是否处于调试模式
+- `workflowId`：当前 workflow ID
+- `packageId`：所属包 ID（仅 workflow package）
+- `workflowRootDir`：workflow 根目录绝对路径
+- `packageRootDir`：包根目录绝对路径（仅 workflow package）
+- `workflowSourceKind`：`"builtin" | "user" | ""`
+- `hookName`：当前执行的 hook 名称
+- `fetch` / `Buffer` / `btoa` / `atob` / `TextEncoder` / `TextDecoder` / `FileReader` / `navigator`：浏览器/Node 兼容的全局能力
 
 ## Workflow 设置入口（当前实现）
 
@@ -392,4 +476,41 @@ Manifest 契约由以下 schema 唯一定义（SSOT）：
 
 - 修改 `src/workflows/types.ts` 中 `WorkflowHooksSpec` 或 `WorkflowManifest` 后，同步更新本文件的 manifest 契约章节。
 - 修改 `src/workflows/loader.ts` 的 hook 载入策略或失败语义后，同步更新本文件的运行时兼容/失败语义章节。
-- 修改 `src/workflows/helpers.ts` 中 canonical references 表格渲染逻辑后，同步更新本文件的“Reference 表格列映射”。
+- 修改 `src/workflows/helpers.ts` 中 canonical references 表格渲染逻辑后，同步更新本文件的”Reference 表格列映射”。
+
+## Host API（Hook 可调用）
+
+`runtime.hostApi` 提供以下能力（详见 `src/workflows/types.ts`）：
+
+### 文件操作
+
+- `hostApi.file.pathToFile(path)`：将路径转换为 File 对象
+- `hostApi.file.readText(path)`：读取文本文件
+- `hostApi.file.writeText(path, content)`：写入文本文件
+- `hostApi.file.exists(path)`：检查文件是否存在
+- `hostApi.file.makeDirectory(path)`：创建目录
+- `hostApi.file.getTempDirectoryPath()`：获取临时目录路径
+- `hostApi.file.pickDirectory(args?)`：选择目录（返回路径或 null）
+- `hostApi.file.pickFile(args?)`：选择单个文件（返回路径或 null）
+- `hostApi.file.pickFiles(args?)`：**v0.3.0 新增** 选择多个文件（返回路径数组或 null）
+
+### 其他操作
+
+- `hostApi.items.get/resolve/getByLibraryAndKey/getAll`：条目操作
+- `hostApi.prefs.get/set/clear`：偏好设置操作
+- `hostApi.parents/notes/attachments/tags/collections/command`：Handler 快捷访问
+- `hostApi.editor.openSession/registerRenderer/unregisterRenderer`：编辑器会话
+- `hostApi.notifications.toast`：通知提示
+- `hostApi.logging.appendRuntimeLog`：运行日志
+
+## Workflow Package Schema
+
+包索引 `workflow-package.json` 的唯一契约来源：
+
+- `src/schemas/workflow-package.schema.json`
+
+字段约束：
+
+- `id`（必需）：包标识符，非空字符串
+- `version`（必需）：版本号，非空字符串
+- `workflows`（必需）：子 workflow ID 数组，至少一个元素

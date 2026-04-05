@@ -245,10 +245,32 @@ export async function existsPath(targetPath: string): Promise<boolean> {
   }
 }
 
+export async function listDirNames(dirPath: string): Promise<string[]> {
+  if (isZoteroRuntime()) {
+    const runtime = globalThis as {
+      IOUtils: {
+        getChildren: (path: string) => Promise<string[]>;
+      };
+    };
+    const children = await runtime.IOUtils.getChildren(dirPath);
+    return children
+      .map((entry) => String(entry || "").replace(/\\/g, "/").split("/").pop() || "")
+      .filter(Boolean);
+  }
+  const fs = await dynamicImport("fs/promises");
+  return fs.readdir(dirPath) as Promise<string[]>;
+}
+
 export function encodeBase64Utf8(text: string): string {
   const source = String(text || "");
-  if (typeof Buffer !== "undefined") {
-    return Buffer.from(source, "utf8").toString("base64");
+  const bufferCtor =
+    typeof Buffer !== "undefined" &&
+    Buffer &&
+    typeof Buffer.from === "function"
+      ? Buffer
+      : null;
+  if (bufferCtor) {
+    return bufferCtor.from(source, "utf8").toString("base64");
   }
   if (typeof TextEncoder !== "undefined" && typeof btoa === "function") {
     const bytes = new TextEncoder().encode(source);
@@ -268,8 +290,14 @@ export function encodeBase64Utf8(text: string): string {
 
 export function decodeBase64Utf8(text: string): string {
   const encoded = String(text || "").trim();
-  if (typeof Buffer !== "undefined") {
-    return Buffer.from(encoded, "base64").toString("utf8");
+  const bufferCtor =
+    typeof Buffer !== "undefined" &&
+    Buffer &&
+    typeof Buffer.from === "function"
+      ? Buffer
+      : null;
+  if (bufferCtor) {
+    return bufferCtor.from(encoded, "base64").toString("utf8");
   }
   if (typeof TextDecoder !== "undefined" && typeof atob === "function") {
     const binary = atob(encoded);

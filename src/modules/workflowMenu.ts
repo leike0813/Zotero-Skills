@@ -10,6 +10,7 @@ import { appendRuntimeLog } from "./runtimeLogManager";
 import { alertWindow } from "./workflowExecution/feedbackSeam";
 import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
 import type { LoadedWorkflow } from "../workflows/types";
+import { canWorkflowRunWithoutSelection } from "./workflowSelectionPolicy";
 
 const ROOT_MENU_ID = `${config.addonRef}-workflows-menu`;
 const ROOT_POPUP_ID = `${config.addonRef}-workflows-popup`;
@@ -162,39 +163,35 @@ export async function rebuildWorkflowActionPopup(
   }
 
   const selectedItems = win.ZoteroPane?.getSelectedItems?.() || [];
-  if (selectedItems.length === 0) {
-    for (const workflow of workflows) {
-      appendDisabledItem(
-        win,
-        popup,
-        `${workflow.manifest.label} (${getMenuLabel("menu-workflow-no-selection", "no selection")})`,
-      );
-    }
-    return;
-  }
-
   const selectionContext = await buildSelectionContext(selectedItems);
   for (const workflow of workflows) {
     const menuItem = win.document.createXULElement("menuitem");
     let disabledReason = "";
-    try {
-      const executionContext = await resolveWorkflowExecutionContext({
-        workflow,
-      });
-      resolveProvider({
-        requestKind: executionContext.requestKind,
-        backend: executionContext.backend,
-      });
-      await executeBuildRequests({
-        workflow,
-        selectionContext,
-        executionOptions: {
-          workflowParams: executionContext.workflowParams,
-          providerOptions: executionContext.providerOptions,
-        },
-      });
-    } catch (error) {
-      disabledReason = resolveDisabledReason(error);
+    if (
+      selectedItems.length === 0 &&
+      !canWorkflowRunWithoutSelection(workflow.manifest)
+    ) {
+      disabledReason = getMenuLabel("menu-workflow-no-selection", "no selection");
+    } else {
+      try {
+        const executionContext = await resolveWorkflowExecutionContext({
+          workflow,
+        });
+        resolveProvider({
+          requestKind: executionContext.requestKind,
+          backend: executionContext.backend,
+        });
+        await executeBuildRequests({
+          workflow,
+          selectionContext,
+          executionOptions: {
+            workflowParams: executionContext.workflowParams,
+            providerOptions: executionContext.providerOptions,
+          },
+        });
+      } catch (error) {
+        disabledReason = resolveDisabledReason(error);
+      }
     }
 
     const label = disabledReason

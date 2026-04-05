@@ -339,6 +339,7 @@ function renderSchemaFields(args: {
       checkbox.type = "checkbox";
       checkbox.id = controlId;
       checkbox.checked = coerceBoolean(rawValue, coerceBoolean(defaultValue));
+      checkbox.disabled = entry.disabled === true;
       checkbox.setAttribute("data-zs-option-key", entry.key);
       checkbox.setAttribute("data-zs-option-type", entry.type);
       checkboxWrap.appendChild(checkbox);
@@ -386,6 +387,7 @@ function renderSchemaFields(args: {
         customInput.type = "text";
         customInput.style.width = "320px";
         customInput.value = selectedValue;
+        customInput.disabled = entry.disabled === true;
         customInput.setAttribute("data-zs-option-key", entry.key);
         customInput.setAttribute("data-zs-option-type", entry.type);
         recommendationControl.addEventListener("change", () => {
@@ -412,6 +414,12 @@ function renderSchemaFields(args: {
         control.setAttribute("id", controlId);
         control.setAttribute("data-zs-option-key", entry.key);
         control.setAttribute("data-zs-option-type", entry.type);
+        if (entry.disabled === true) {
+          const disabledControl = control as HTMLElement;
+          disabledControl.setAttribute("aria-disabled", "true");
+          disabledControl.style.opacity = "0.7";
+          disabledControl.style.pointerEvents = "none";
+        }
         applySelectVisualStyle(control, "320px");
         row.appendChild(control);
       }
@@ -429,6 +437,7 @@ function renderSchemaFields(args: {
         input.type = "text";
         input.value = coerceString(rawValue, defaultValue);
       }
+      input.disabled = entry.disabled === true;
       row.appendChild(input);
     }
 
@@ -812,7 +821,7 @@ export async function openWorkflowSettingsDialog(args?: {
           idPrefix: args.idPrefix,
           emptyText: getString("workflow-settings-no-provider-options" as any),
         });
-        const dynamicControls = ["engine", "model_provider"]
+        const dynamicControls = ["engine", "provider_id", "model"]
           .map((key) =>
             args.container.querySelector(
               `[data-zs-option-key="${key}"]`,

@@ -5,5 +5,23 @@ node_modules
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
-test/fixtures/workflow-loader-invalid-json/**
-test/fixtures/selection-context/attachments/**
+
+# Generated/bundled files
+addon/locale
+
+# Openspec artifacts (proposals, designs, specs, tasks)
+openspec/changes
+openspec/specs
+
+# Documentation
+doc
+
+# Test fixtures
+test/fixtures/workflow-loader-invalid-json
+test/fixtures/selection-context/attachments
+
+# Artifacts
+artifact
+
+# History
+.history

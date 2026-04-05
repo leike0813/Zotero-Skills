@@ -5,7 +5,10 @@ import {
   normalizeErrorMessage,
   type WorkflowMessageFormatter,
 } from "../workflowExecuteMessage";
-import { resolveWorkflowExecutionContext } from "../workflowSettings";
+import {
+  resolveWorkflowExecutionContext,
+  resolveWorkflowExecutionOptionsPreview,
+} from "../workflowSettings";
 import { executeBuildRequests } from "../../workflows/runtime";
 import { summarizeWorkflowExecutionError } from "../../workflows/errorMeta";
 import type { LoadedWorkflow } from "../../workflows/types";
@@ -17,6 +20,7 @@ import type {
 import { alertWindow } from "./feedbackSeam";
 import { localizeWorkflowText } from "./messageFormatter";
 import { shouldShowWorkflowNotifications } from "./feedbackPolicy";
+import { canWorkflowRunWithoutSelection } from "../workflowSelectionPolicy";
 
 function isNoValidInputUnitsError(error: unknown) {
   if (
@@ -53,6 +57,7 @@ function resolveSkippedUnitsFromNoValidInputError(error: unknown) {
 type PreparationDeps = {
   appendRuntimeLog: typeof appendRuntimeLog;
   resolveWorkflowExecutionContext: typeof resolveWorkflowExecutionContext;
+  resolveWorkflowExecutionOptionsPreview: typeof resolveWorkflowExecutionOptionsPreview;
   buildSelectionContext: typeof buildSelectionContext;
   executeBuildRequests: typeof executeBuildRequests;
   alertWindow: typeof alertWindow;
@@ -61,6 +66,7 @@ type PreparationDeps = {
 const defaultPreparationDeps: PreparationDeps = {
   appendRuntimeLog,
   resolveWorkflowExecutionContext,
+  resolveWorkflowExecutionOptionsPreview,
   buildSelectionContext,
   executeBuildRequests,
   alertWindow,
@@ -77,7 +83,10 @@ export async function runWorkflowPreparationSeam(args: {
     ...deps,
   };
   const selectedItems = args.win.ZoteroPane?.getSelectedItems?.() || [];
-  if (selectedItems.length === 0) {
+  if (
+    selectedItems.length === 0 &&
+    !canWorkflowRunWithoutSelection(args.workflow.manifest)
+  ) {
     resolved.appendRuntimeLog({
       level: "warn",
       scope: "workflow-trigger",
@@ -107,7 +116,6 @@ export async function runWorkflowPreparationSeam(args: {
 
   let requests: unknown[] = [];
   let skippedByFilter = 0;
-  let executionContext: WorkflowExecutionContext | null = null;
   try {
     resolved.appendRuntimeLog({
       level: "info",
@@ -116,17 +124,37 @@ export async function runWorkflowPreparationSeam(args: {
       stage: "build-requests-start",
       message: "build requests started",
     });
-    executionContext = await resolved.resolveWorkflowExecutionContext({
-      workflow: args.workflow,
-      executionOptionsOverride: args.executionOptionsOverride,
-    });
+    let preview: {
+      providerId?: string;
+      workflowParams?: Record<string, unknown>;
+      providerOptions?: Record<string, unknown>;
+    } = {
+      providerId: "",
+      workflowParams: {},
+      providerOptions: {},
+    };
+    try {
+      preview = resolved.resolveWorkflowExecutionOptionsPreview({
+        workflow: args.workflow,
+        executionOptionsOverride: args.executionOptionsOverride,
+      });
+    } catch (previewError) {
+      resolved.appendRuntimeLog({
+        level: "warn",
+        scope: "workflow-trigger",
+        workflowId: args.workflow.manifest.id,
+        stage: "build-requests-preview-fallback",
+        message: "workflow execution options preview unavailable; using empty preview",
+        error: previewError,
+      });
+    }
     const selectionContext = await resolved.buildSelectionContext(selectedItems);
     const builtRequests = await resolved.executeBuildRequests({
       workflow: args.workflow,
       selectionContext,
       executionOptions: {
-        workflowParams: executionContext.workflowParams,
-        providerOptions: executionContext.providerOptions,
+        workflowParams: preview.workflowParams,
+        providerOptions: preview.providerOptions,
       },
     });
     requests = builtRequests;
@@ -247,6 +275,47 @@ export async function runWorkflowPreparationSeam(args: {
         ),
       );
     }
+    return {
+      status: "halted",
+    };
+  }
+
+  let executionContext: WorkflowExecutionContext | null = null;
+  try {
+    executionContext = await resolved.resolveWorkflowExecutionContext({
+      workflow: args.workflow,
+      executionOptionsOverride: args.executionOptionsOverride,
+    });
+  } catch (error) {
+    const reason = normalizeErrorMessage(error, args.messageFormatter);
+    const errorSummary = summarizeWorkflowExecutionError(error);
+    resolved.appendRuntimeLog({
+      level: "error",
+      scope: "workflow-trigger",
+      workflowId: args.workflow.manifest.id,
+      stage: "execution-context-failed",
+      message: "workflow execution context resolution failed",
+      details: {
+        reason,
+        errorMessage: errorSummary.message,
+        errorStack: errorSummary.stack,
+        hookName: errorSummary.hookName,
+        packageId: errorSummary.packageId,
+        errorWorkflowId: errorSummary.workflowId,
+      },
+      error,
+    });
+    resolved.alertWindow(
+      args.win,
+      localizeWorkflowText(
+        "workflow-execute-cannot-run",
+        `Workflow ${args.workflow.manifest.label} cannot run: ${reason}`,
+        {
+          workflowLabel: args.workflow.manifest.label,
+          reason,
+        },
+      ),
+    );
     return {
       status: "halted",
     };

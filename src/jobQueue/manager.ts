@@ -4,6 +4,11 @@ import {
   validateTransition,
   type SkillRunnerStateMachineViolation,
 } from "../modules/skillRunnerProviderStateMachine";
+import {
+  coerceRecoverableSkillRunnerState,
+  getSkillRunnerRequestIdFromJob,
+  hasRecoverableSkillRunnerRequest,
+} from "../modules/skillRunnerRecoverableState";
 
 export type JobState =
   | "queued"
@@ -285,26 +290,54 @@ export class JobQueueManager {
       });
     } catch (error) {
       this.logJobError(job, error);
-      job.state = "failed";
       job.error = error instanceof Error ? error.message : String(error);
-      this.touch(job);
-      this.emitJobUpdated(job);
-      appendRuntimeLog({
-        level: "error",
-        scope: "job",
-        workflowId: job.workflowId,
-        backendId: String(job.meta.backendId || "").trim() || undefined,
-        backendType: String(job.meta.backendType || "").trim() || undefined,
-        providerId: String(job.meta.providerId || "").trim() || undefined,
-        runId: String(job.meta.runId || "").trim() || undefined,
-        jobId: job.id,
-        component: "job-queue",
-        operation: "dispatch-failed",
-        phase: "terminal",
-        stage: "dispatch-failed",
-        message: "provider dispatch failed",
-        error,
-      });
+      const requestId = getSkillRunnerRequestIdFromJob(job);
+      if (hasRecoverableSkillRunnerRequest(job)) {
+        job.state = coerceRecoverableSkillRunnerState(job.state);
+        this.touch(job);
+        this.emitJobUpdated(job);
+        appendRuntimeLog({
+          level: "warn",
+          scope: "job",
+          workflowId: job.workflowId,
+          backendId: String(job.meta.backendId || "").trim() || undefined,
+          backendType: String(job.meta.backendType || "").trim() || undefined,
+          providerId: String(job.meta.providerId || "").trim() || undefined,
+          runId: String(job.meta.runId || "").trim() || undefined,
+          jobId: job.id,
+          requestId: requestId || undefined,
+          component: "job-queue",
+          operation: "dispatch-failed-recoverable",
+          phase: "reconcile",
+          stage: "dispatch-failed-recoverable",
+          message:
+            "provider dispatch failed after request creation; keeping recoverable non-terminal state",
+          error,
+          details: {
+            preservedState: job.state,
+          },
+        });
+      } else {
+        job.state = "failed";
+        this.touch(job);
+        this.emitJobUpdated(job);
+        appendRuntimeLog({
+          level: "error",
+          scope: "job",
+          workflowId: job.workflowId,
+          backendId: String(job.meta.backendId || "").trim() || undefined,
+          backendType: String(job.meta.backendType || "").trim() || undefined,
+          providerId: String(job.meta.providerId || "").trim() || undefined,
+          runId: String(job.meta.runId || "").trim() || undefined,
+          jobId: job.id,
+          component: "job-queue",
+          operation: "dispatch-failed",
+          phase: "terminal",
+          stage: "dispatch-failed",
+          message: "provider dispatch failed",
+          error,
+        });
+      }
     } finally {
       this.runningCount -= 1;
     }

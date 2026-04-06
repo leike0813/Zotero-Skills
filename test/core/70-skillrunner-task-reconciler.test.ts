@@ -595,6 +595,85 @@ describe("skillrunner task reconciler", function () {
     assert.equal(payload.state, "waiting_user");
   });
 
+  it("preserves existing non-terminal context when a request-created job later reports local failed state", async function () {
+    const reconciler = new SkillRunnerTaskReconciler();
+    const runningJob = makeDeferredJob({
+      id: "job-recoverable-existing",
+      requestId: "req-recoverable-existing",
+      runId: "run-recoverable-existing",
+      state: "running",
+      fetchType: "result",
+    });
+    runningJob.result = {
+      requestId: "req-recoverable-existing",
+    };
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+        runtime_options: {
+          execution_mode: "auto",
+        },
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: runningJob,
+    });
+
+    const failedJob = {
+      ...runningJob,
+      state: "failed" as const,
+      error: "poll request disconnected",
+      updatedAt: "2026-03-12T00:00:02.000Z",
+      result: {
+        requestId: "req-recoverable-existing",
+      },
+    };
+    reconciler.registerFromJob({
+      workflowId: "literature-explainer",
+      workflowLabel: "Literature Explainer",
+      requestKind: "skillrunner.job.v1",
+      request: {
+        kind: "skillrunner.job.v1",
+        targetParentID: 123,
+        runtime_options: {
+          execution_mode: "auto",
+        },
+      },
+      backend: {
+        id: TEST_SKILLRUNNER_BACKEND_ID,
+        type: "skillrunner",
+        baseUrl: TEST_SKILLRUNNER_BASE_URL,
+        auth: { kind: "none" },
+      },
+      providerId: "skillrunner",
+      providerOptions: { engine: "gemini" },
+      job: failedJob,
+    });
+
+    const persisted = listPluginTaskContextEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER);
+    const matched = persisted.find(
+      (entry) => entry.requestId === "req-recoverable-existing",
+    );
+    assert.isOk(matched);
+    assert.equal(matched?.state, "running");
+    const payload = JSON.parse(String(matched?.payload || "{}")) as {
+      state?: string;
+      error?: string;
+    };
+    assert.equal(payload.state, "running");
+    assert.equal(payload.error, "poll request disconnected");
+  });
+
   it("applies interactive bundle success to the parent note using backend-shaped result bundle", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",

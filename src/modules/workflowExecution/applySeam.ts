@@ -16,6 +16,10 @@ import {
 } from "./requestMeta";
 import { isActive } from "../skillRunnerProviderStateMachine";
 import { resolveSkillRunnerExecutionModeFromRequest } from "../skillRunnerExecutionMode";
+import {
+  getSkillRunnerRequestIdFromJob,
+  hasRecoverableSkillRunnerRequest,
+} from "../skillRunnerRecoverableState";
 import { canWorkflowRunWithoutSelection } from "../workflowSelectionPolicy";
 
 type RunResultLike = {
@@ -83,6 +87,46 @@ export async function runWorkflowApplySeam(args: {
     const jobId = args.runState.jobIds[i];
     const job = args.runState.queue.getJob(jobId);
     if (!job || job.state !== "succeeded") {
+      const recoverableRequestId = getSkillRunnerRequestIdFromJob(job as any);
+      const recoverableSkillRunnerFailure =
+        !!job &&
+        hasRecoverableSkillRunnerRequest(job as any) &&
+        (isPendingWorkflowJobState(job.state) || job.state === "failed");
+      if (recoverableSkillRunnerFailure) {
+        pending += 1;
+        if (
+          isSkillRunnerAutoRequest({
+            workflow: args.runState.workflow,
+            request: args.runState.requests[i],
+          })
+        ) {
+          reconcileOwnedPendingJobs.push({
+            index: i,
+            taskLabel,
+            succeeded: true,
+            terminalState: "succeeded",
+            jobId: job.id,
+            requestId: recoverableRequestId,
+          });
+        }
+        resolved.appendRuntimeLog({
+          level: "warn",
+          scope: "job",
+          workflowId: args.runState.workflow.manifest.id,
+          jobId: job.id,
+          requestId: recoverableRequestId || undefined,
+          stage: "job-pending-recoverable-dispatch-failure",
+          message:
+            "job kept pending because request was already created before local dispatch failure",
+          details: {
+            index: i,
+            taskLabel,
+            state: job.state,
+            error: job.error,
+          },
+        });
+        continue;
+      }
       failed += 1;
       if (!job) {
         const reason = "record missing";

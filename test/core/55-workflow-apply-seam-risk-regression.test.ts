@@ -260,6 +260,63 @@ describe("workflow apply seam risk regression", function () {
     assert.include(runtimeStages, "foreground-apply-skipped-auto");
   });
 
+  it("keeps request-created skillrunner auto job pending when local dispatch fails after request creation", async function () {
+    const runtimeStages: string[] = [];
+
+    const summary = await runWorkflowApplySeam(
+      {
+        runState: createRunState({
+          requests: [
+            {
+              kind: "skillrunner.job.v1",
+              targetParentID: 3,
+              runtime_options: {
+                execution_mode: "auto",
+              },
+            },
+          ],
+          jobIds: ["job-auto-recoverable-1"],
+          jobsById: {
+            "job-auto-recoverable-1": {
+              id: "job-auto-recoverable-1",
+              state: "running",
+              error: "backend polling temporarily failed",
+              meta: {
+                requestId: "req-auto-recoverable-1",
+                providerId: "skillrunner",
+                targetParentID: 3,
+              },
+            },
+          },
+          workflowManifest: {
+            provider: "skillrunner",
+            request: {
+              kind: "skillrunner.job.v1",
+            },
+          },
+        }),
+        messageFormatter: createMessageFormatter(),
+      },
+      {
+        appendRuntimeLog: (entry) => {
+          runtimeStages.push(entry.stage);
+        },
+      },
+    );
+
+    assert.equal(summary.succeeded, 0);
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.pending, 1);
+    assert.lengthOf(summary.failureReasons, 0);
+    assert.lengthOf(summary.jobOutcomes, 0);
+    assert.lengthOf(summary.reconcileOwnedPendingJobs, 1);
+    assert.equal(
+      summary.reconcileOwnedPendingJobs[0].requestId,
+      "req-auto-recoverable-1",
+    );
+    assert.include(runtimeStages, "job-pending-recoverable-dispatch-failure");
+  });
+
   it("propagates explicit bundle-entry path error into failureReasons", async function () {
     const summary = await runWorkflowApplySeam(
       {

@@ -40,6 +40,10 @@ import {
   type SkillRunnerStateMachineViolation,
 } from "./skillRunnerProviderStateMachine";
 import {
+  coerceRecoverableSkillRunnerState,
+  isRecoverableSkillRunnerDispatchFailure,
+} from "./skillRunnerRecoverableState";
+import {
   registerSkillRunnerRequestLedgerFromJob,
   removeSkillRunnerRequestLedgerRecordsByBackendId,
   updateSkillRunnerRequestLedgerSnapshot,
@@ -1392,8 +1396,26 @@ export class SkillRunnerTaskReconciler {
     }
     const existingContextId = `${normalizeString(args.backend.id)}:${requestId}`;
     const existing = this.contexts.get(existingContextId);
+    const recoverableDispatchFailure = isRecoverableSkillRunnerDispatchFailure({
+      ...args.job,
+      meta: {
+        ...args.job.meta,
+        providerId:
+          normalizeString(args.providerId) ||
+          normalizeString(args.job.meta.providerId) ||
+          undefined,
+      },
+      result: {
+        ...(isObject(args.job.result) ? args.job.result : {}),
+        requestId,
+      },
+    });
     const observedStatusRaw =
-      normalizeString(deferred.status) === "deferred"
+      recoverableDispatchFailure
+        ? existing && !isTerminal(existing.state)
+          ? existing.state
+          : coerceRecoverableSkillRunnerState(args.job.state)
+        : normalizeString(deferred.status) === "deferred"
         ? deferred.backendStatus
         : args.job.state;
     const normalized = normalizeStatusWithGuard({
@@ -1488,6 +1510,30 @@ export class SkillRunnerTaskReconciler {
       createdAt: existing?.createdAt || args.job.createdAt,
       updatedAt: nowIso(),
     };
+    if (recoverableDispatchFailure) {
+      appendRuntimeLog({
+        level: "warn",
+        scope: "job",
+        workflowId: context.workflowId,
+        backendId: context.backendId,
+        backendType: context.backendType,
+        providerId: context.providerId,
+        runId: context.runId,
+        jobId: context.jobId,
+        requestId: context.requestId,
+        component: "skillrunner-reconciler",
+        operation: "recoverable-dispatch-failure-preserved-nonterminal",
+        phase: "reconcile",
+        stage: "recoverable-dispatch-failure-preserved-nonterminal",
+        message:
+          "preserved non-terminal context after request-created local dispatch failure",
+        details: {
+          previousState: existing?.state,
+          incomingState: args.job.state,
+          preservedState: context.state,
+        },
+      });
+    }
     if (!existing) {
       this.trackEvent(context, {
         kind: "request-created",

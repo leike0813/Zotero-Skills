@@ -93,7 +93,7 @@ describe("skillrunner ctl bridge", function () {
     });
 
     const result = await bridge.runDirectAgentBootstrap({
-      installDir: "C:\\SkillRunner\\releases\\v0.5.1",
+      installDir: "C:\\SkillRunner\\releases\\v0.5.2",
     });
 
     assert.isTrue(result.ok);
@@ -129,7 +129,7 @@ describe("skillrunner ctl bridge", function () {
     });
 
     const result = await bridge.runDirectAgentBootstrap({
-      installDir: "C:\\SkillRunner\\releases\\v0.5.1",
+      installDir: "C:\\SkillRunner\\releases\\v0.5.2",
     });
 
     assert.equal(callCount, 2);
@@ -181,7 +181,7 @@ describe("skillrunner ctl bridge", function () {
     const os = await import("os");
     const path = await import("path");
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "zotero-skills-bridge-preflight-"));
-    const installDir = path.join(tempRoot, "releases", "v0.5.1");
+    const installDir = path.join(tempRoot, "releases", "v0.5.2");
     const serverDir = path.join(installDir, "server");
     const scriptsDir = path.join(installDir, "scripts");
     const dataDir = path.join(tempRoot, "data");

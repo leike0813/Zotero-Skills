@@ -63,6 +63,8 @@ export type SkillRunnerConversationEntry = {
   role: RunDialogMessageRole;
   kind: RunDialogMessageKind;
   text: string;
+  displayText?: string;
+  displayFormat?: string | null;
   attempt?: number;
   messageId?: string;
   replacesMessageId?: string;
@@ -156,6 +158,8 @@ type RunDialogSnapshot = {
     role: RunDialogMessageRole;
     kind: RunDialogMessageKind;
     text: string;
+    displayText?: string;
+    displayFormat?: string | null;
     attempt?: number;
     correlation?: Record<string, unknown>;
   }>;
@@ -572,17 +576,25 @@ async function sleep(ms: number) {
 }
 
 function formatSkillRunnerEventText(event: Record<string, unknown>) {
-  const kind = String(event.kind || event.type || event.event || "").trim();
   const summary = String(
     event.summary || event.text || event.content || event.message || "",
   ).trim();
   if (summary) {
     return summary;
   }
+  const kind = String(event.kind || event.type || event.event || "").trim();
   if (kind) {
     return kind;
   }
   return JSON.stringify(event);
+}
+
+function formatSkillRunnerEventDisplayText(event: Record<string, unknown>) {
+  const projected = String(event.display_text || "").trim();
+  if (projected) {
+    return projected;
+  }
+  return formatSkillRunnerEventText(event);
 }
 
 export function normalizeRunDialogMessageKind(value: unknown): RunDialogMessageKind {
@@ -625,13 +637,14 @@ export function toRunDialogConversationEntry(args: {
   const role = normalizeRunDialogMessageRole(args.event.role);
   const kind = normalizeRunDialogMessageKind(args.event.kind);
   const text = formatSkillRunnerEventText(args.event);
-  if (!String(text || "").trim()) {
+  const displayText = formatSkillRunnerEventDisplayText(args.event);
+  if (!String(displayText || text || "").trim()) {
     return null;
   }
   const type = String(
     args.event.type || args.event.kind || args.event.event || "",
   ).trim();
-  const dedupeKey = `${seq}:${type}:${kind}:${role}:${text}`;
+  const dedupeKey = `${seq}:${type}:${kind}:${role}:${displayText}:${text}`;
   if (args.seenKeys?.has(dedupeKey)) {
     return null;
   }
@@ -642,6 +655,8 @@ export function toRunDialogConversationEntry(args: {
     role,
     kind,
     text,
+    displayText,
+    displayFormat: String(args.event.display_format || "").trim() || null,
     attempt: Number.isFinite(Number(args.event.attempt))
       ? normalizeAttempt(args.event.attempt, 1)
       : undefined,
@@ -704,6 +719,10 @@ function entryAttempt(entry: SkillRunnerConversationEntry) {
   return normalizeAttempt(entry.raw.attempt, 1);
 }
 
+function entryVisibleText(entry: SkillRunnerConversationEntry) {
+  return normalizeDisplayText(entry.displayText || entry.text);
+}
+
 function isAssistantProcessEntry(entry: SkillRunnerConversationEntry) {
   return entry.role === "assistant" && entry.kind === "assistant_process";
 }
@@ -723,7 +742,7 @@ function removePromotedIntermediateEntry(
   const finalAttempt = entryAttempt(finalEntry);
   const finalMessageId = entryMessageId(finalEntry);
   const replacesMessageId = entryReplacesMessageId(finalEntry);
-  const finalText = normalizeDisplayText(finalEntry.text);
+  const finalText = entryVisibleText(finalEntry);
   let fallbackMatchIndex = -1;
   for (let index = output.length - 1; index >= 0; index -= 1) {
     const candidate = output[index];
@@ -746,7 +765,7 @@ function removePromotedIntermediateEntry(
       !replacesMessageId &&
       !finalMessageId &&
       finalText &&
-      normalizeDisplayText(candidate.text) === finalText &&
+      entryVisibleText(candidate) === finalText &&
       fallbackMatchIndex < 0
     ) {
       fallbackMatchIndex = index;
@@ -1439,6 +1458,8 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
       role: entryItem.role,
       kind: entryItem.kind,
       text: entryItem.text,
+      displayText: entryItem.displayText,
+      displayFormat: entryItem.displayFormat,
       attempt: entryAttempt(entryItem),
       correlation: isObject(entryItem.raw)
         ? (isObject(entryItem.raw.correlation)

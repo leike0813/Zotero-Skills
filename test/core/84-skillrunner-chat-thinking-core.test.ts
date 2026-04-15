@@ -178,4 +178,23 @@ describe("skillrunner chat thinking core", function () {
     assert.lengthOf(plainAgain, 2);
     assert.equal(plainAgain[1].atomKind, "intermediate");
   });
+
+  it("renders already-projected final text without local structured dispatch", async function () {
+    const core = await loadThinkingChatCore();
+    const model = core.createThinkingChatModel("plain");
+    model.consume(
+      event({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rendered final answer",
+        messageId: "f-1",
+      }),
+    );
+    const entries = model.getEntries();
+    assert.lengthOf(entries, 1);
+    assert.equal(entries[0].type, "message");
+    assert.equal(entries[0].atomKind, "final");
+    assert.equal((entries[0].event as Record<string, unknown>).text, "Rendered final answer");
+  });
 });

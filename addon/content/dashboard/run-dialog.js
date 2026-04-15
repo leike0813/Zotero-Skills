@@ -29,12 +29,13 @@
   const thinkingTitleEl = document.getElementById("thinking-title");
   const thinkingDescEl = document.getElementById("thinking-desc");
   const finalSummaryCardEl = document.getElementById("final-summary-card");
-  const finalSummaryTextEl = document.getElementById("final-summary-text");
+  const finalSummaryStatusEl = document.getElementById("final-summary-status");
 
   const promptCardEl = document.getElementById("prompt-card");
   const promptTitleEl = document.getElementById("prompt-card-title");
   const promptTextEl = document.getElementById("prompt-card-text");
   const promptHintEl = document.getElementById("prompt-card-hint");
+  const promptFilesEl = document.getElementById("prompt-card-files");
   const promptIdEl = document.getElementById("prompt-card-id");
   const promptKindEl = document.getElementById("prompt-card-kind");
   const promptRequiredEl = document.getElementById("prompt-card-required");
@@ -81,6 +82,7 @@
   const metaPendingOwnerLabelEl = document.getElementById("meta-label-pending-owner");
   const workspaceGroupsEl = document.getElementById("workspace-groups");
   const workspaceEmptyEl = document.getElementById("workspace-empty");
+  const DEFAULT_INTERACTION_PROMPT = "The agent is waiting for your reply.";
 
   function sendAction(action, payload) {
     const msg = { type: "run-dialog:action", action, payload: payload || {} };
@@ -329,7 +331,13 @@
 
   function clearFinalSummary() {
     finalSummaryCardEl.classList.add("hidden");
-    finalSummaryTextEl.textContent = "";
+    finalSummaryStatusEl.textContent = "";
+  }
+
+  function renderFinalSummary(status) {
+    const normalized = safeText(status).trim().toLowerCase();
+    finalSummaryStatusEl.textContent = normalized || "-";
+    finalSummaryCardEl.classList.remove("hidden");
   }
 
   function clearPromptCard() {
@@ -338,6 +346,8 @@
     promptTextEl.textContent = "";
     promptHintEl.textContent = "";
     promptHintEl.classList.add("hidden");
+    promptFilesEl.textContent = "";
+    promptFilesEl.classList.add("hidden");
     promptRequiredEl.textContent = "";
     promptRequiredEl.classList.add("hidden");
     promptActionsEl.textContent = "";
@@ -443,7 +453,8 @@
       role === "assistant" || role === "user" || role === "system"
         ? role
         : "system";
-    const textBody = safeText(raw.text);
+    const displayText = safeText(raw.displayText || raw.display_text);
+    const textBody = displayText || safeText(raw.text);
     if (!textBody.trim()) return null;
     return {
       seq: Number(raw.seq || 0),
@@ -451,6 +462,8 @@
       role: normalizedRole,
       kind: safeText(raw.kind),
       text: textBody,
+      displayText: displayText || safeText(raw.text),
+      displayFormat: safeText(raw.displayFormat || raw.display_format),
       attempt: Number(raw.attempt || 1),
       correlation:
         raw.correlation && typeof raw.correlation === "object"
@@ -744,7 +757,12 @@
     const askUser = snapshot && snapshot.pendingAskUser && typeof snapshot.pendingAskUser === "object"
       ? snapshot.pendingAskUser
       : null;
-    const prompt = safeText((askUser && askUser.prompt) || snapshot.pendingPrompt).trim();
+    const uiHints = snapshot && snapshot.pendingUiHints && typeof snapshot.pendingUiHints === "object"
+      ? snapshot.pendingUiHints
+      : (askUser && askUser.ui_hints && typeof askUser.ui_hints === "object" ? askUser.ui_hints : {});
+    const prompt = safeText(uiHints.prompt).trim()
+      || safeText((askUser && askUser.prompt) || snapshot.pendingPrompt).trim()
+      || DEFAULT_INTERACTION_PROMPT;
     const kind = safeText((askUser && askUser.kind) || snapshot.pendingKind).trim().toLowerCase() || "open_text";
     const optionsRaw = askUser && Array.isArray(askUser.options) ? askUser.options : snapshot.pendingOptions;
     const askHint = askUser
@@ -757,16 +775,15 @@
           )
         )
       : "";
-    const directHint = snapshot && snapshot.pendingUiHints && typeof snapshot.pendingUiHints === "object"
-      ? safeText(snapshot.pendingUiHints.hint).trim()
-      : "";
+    const directHint = safeText(uiHints.hint).trim();
     return {
       interactionId: Number(snapshot.pendingInteractionId || 0),
-      prompt: prompt || "The agent is waiting for your reply.",
+      prompt,
       kind,
       options: resolvePromptOptions(kind, optionsRaw),
       requiredFields: toArray(snapshot.pendingRequiredFields),
       hint: askHint || directHint,
+      files: uploadSpecs(uiHints.files),
     };
   }
 
@@ -820,6 +837,7 @@
       options: p.options,
       required_fields: p.requiredFields,
       hint: p.hint,
+      files: p.files,
     });
     if (signature && signature === state.promptSig && !promptCardEl.classList.contains("hidden")) return;
     state.promptSig = signature;
@@ -839,6 +857,23 @@
     } else {
       promptHintEl.textContent = "";
       promptHintEl.classList.add("hidden");
+    }
+    if (p.files.length) {
+      promptFilesEl.textContent = "";
+      p.files.forEach(function (item) {
+        const row = document.createElement("div");
+        const requirement = item.required
+          ? (safeText(l.authImportRequired) || "Required")
+          : (safeText(l.authImportOptional) || "Optional");
+        row.textContent = item.hint
+          ? `${item.name} (${requirement}) - ${item.hint}`
+          : `${item.name} (${requirement})`;
+        promptFilesEl.appendChild(row);
+      });
+      promptFilesEl.classList.remove("hidden");
+    } else {
+      promptFilesEl.textContent = "";
+      promptFilesEl.classList.add("hidden");
     }
     if (p.requiredFields.length) {
       promptRequiredEl.textContent = `${safeText(l.requiredFieldsPrefix) || "Required:"} ${p.requiredFields.join(", ")}`;
@@ -1220,6 +1255,9 @@
     clearFinalSummary();
     syncChat();
     updateThinkingCard(semantics.normalized);
+    if (semantics.terminal) {
+      renderFinalSummary(semantics.normalized);
+    }
     if (semantics.waiting && semantics.normalized === "waiting_user") {
       renderPromptCard();
       return;

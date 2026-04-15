@@ -15,7 +15,9 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(html, 'id="chat-mode-plain"');
     assert.include(html, 'id="chat-mode-bubble"');
     assert.include(html, 'id="prompt-card"');
+    assert.include(html, 'id="prompt-card-files"');
     assert.include(html, 'id="auth-card"');
+    assert.include(html, 'id="final-summary-status"');
     assert.include(html, 'id="reply-composer"');
     assert.include(html, 'id="reply-text"');
     assert.match(html, /<textarea[^>]*id="reply-text"/);
@@ -48,6 +50,8 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(hostTs, "subscribeSkillRunnerSessionState");
     assert.include(hostTs, "await syncPendingState()");
     assert.include(hostTs, "const hasStructuredPending =");
+    assert.include(hostTs, "displayText: entryItem.displayText");
+    assert.include(hostTs, "displayFormat: entryItem.displayFormat");
     assert.include(hostTs, "ensureSkillRunnerSessionSync");
     assert.include(hostTs, "streamRunChat");
     assert.include(hostTs, "initialStatus: target.item.status");
@@ -84,6 +88,8 @@ describe("skillrunner run dialog ui e2e alignment", function () {
   it("uses compatible chat-core wrapper and mode-aware markdown rendering", async function () {
     const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
     assert.include(js, "function createCompatibleThinkingChatModel");
+    assert.include(js, "DEFAULT_INTERACTION_PROMPT");
+    assert.include(js, "raw.displayText || raw.display_text");
     assert.include(js, "typeof model.setDisplayMode === \"function\"");
     assert.include(js, "typeof model.getDisplayMode === \"function\"");
     assert.include(js, "function renderMarkdown");
@@ -93,6 +99,15 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "body.innerHTML = renderMarkdown");
     assert.include(js, "setChatDisplayMode(\"plain\")");
     assert.include(js, "setChatDisplayMode(\"bubble\")");
+  });
+
+  it("keeps pending prompt card and terminal summary split aligned with backend-driven display", async function () {
+    const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    assert.include(js, "safeText(uiHints.prompt).trim()");
+    assert.include(js, "uploadSpecs(uiHints.files)");
+    assert.include(js, "promptFilesEl");
+    assert.include(js, "renderFinalSummary(semantics.normalized)");
+    assert.notInclude(js, "isStructuredDoneMessage");
   });
 
   it("keeps dedicated plain and bubble chat styling hooks", async function () {

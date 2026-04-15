@@ -37,7 +37,28 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.equal(entry?.role, "assistant");
     assert.equal(entry?.kind, "unknown");
     assert.equal(entry?.text, "final answer");
+    assert.equal(entry?.displayText, "final answer");
+    assert.isNull(entry?.displayFormat);
     assert.equal(entry?.ts, "2026-03-10T10:20:00Z");
+  });
+
+  it("prefers projected display_text over raw text for assistant_final display", function () {
+    const entry = toRunDialogConversationEntry({
+      event: {
+        seq: 10,
+        ts: "2026-04-15T09:00:00Z",
+        role: "assistant",
+        kind: "assistant_final",
+        text: '{"__SKILL_DONE__":true,"report":"raw"}',
+        display_text: "Rendered final answer",
+        display_format: "markdown",
+      },
+      lastSeq: 0,
+    });
+    assert.isOk(entry);
+    assert.equal(entry?.text, '{"__SKILL_DONE__":true,"report":"raw"}');
+    assert.equal(entry?.displayText, "Rendered final answer");
+    assert.equal(entry?.displayFormat, "markdown");
   });
 
   it("drops duplicated seq and falls back unknown role to system", function () {

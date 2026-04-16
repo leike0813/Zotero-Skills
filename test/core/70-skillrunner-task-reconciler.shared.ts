@@ -38,6 +38,7 @@ import {
 import { getPref, setPref } from "../../src/utils/prefs";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import { executeBuildRequests } from "../../src/workflows/runtime";
+import { isFullTestMode } from "../zotero/testMode";
 import {
   joinPath,
   mkTempDir,
@@ -47,6 +48,7 @@ import {
 
 const TEST_SKILLRUNNER_BACKEND_ID = "remote-skillrunner";
 const TEST_SKILLRUNNER_BASE_URL = "http://127.0.0.1:8031";
+const itFullOnly = isFullTestMode() ? it : it.skip;
 
 function createJsonResponse(payload: unknown, status = 200): Response {
   const text = JSON.stringify(payload);
@@ -303,7 +305,7 @@ function forceApplyRetryDueNow(reconciler: SkillRunnerTaskReconciler) {
   );
 }
 
-describe("skillrunner task reconciler", function () {
+function setupSkillRunnerTaskReconcilerSuite() {
   const originalFetch = (globalThis as { fetch?: typeof fetch }).fetch;
 
   beforeEach(function () {
@@ -350,6 +352,11 @@ describe("skillrunner task reconciler", function () {
     setSkillRunnerBackendReconcileFailureToastEmitterForTests();
     setSkillRunnerTaskLifecycleToastEmitterForTests();
   });
+}
+
+export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
+  describe("skillrunner task reconciler: state restore", function () {
+    setupSkillRunnerTaskReconcilerSuite();
 
   it("maps backend status to local job state one-to-one", function () {
     assert.equal(mapSkillRunnerBackendStatusToJobState("queued"), "queued");
@@ -673,6 +680,13 @@ describe("skillrunner task reconciler", function () {
     assert.equal(payload.state, "running");
     assert.equal(payload.error, "poll request disconnected");
   });
+
+  });
+}
+
+export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
+  describe("skillrunner task reconciler: apply bundle retry", function () {
+    setupSkillRunnerTaskReconcilerSuite();
 
   it("applies interactive bundle success to the parent note using backend-shaped result bundle", async function () {
     const parent = await handlers.item.create({
@@ -1518,6 +1532,13 @@ describe("skillrunner task reconciler", function () {
     assert.equal(String(applyLog?.details?.source || ""), "interval");
   });
 
+  });
+}
+
+export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
+  describe("skillrunner task reconciler: ledger reconcile", function () {
+    setupSkillRunnerTaskReconcilerSuite();
+
   it("emits failed toast when interactive task reaches terminal failed", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
       if (isListRunsProbeUrl(url)) {
@@ -1905,7 +1926,7 @@ describe("skillrunner task reconciler", function () {
     assert.lengthOf(toasts, 0);
   });
 
-  it("reports toast when backend reconcile fails due to communication error", async function () {
+  itFullOnly("reports toast when backend reconcile fails due to communication error", async function () {
     recordTaskDashboardHistoryFromJob(
       makeDashboardJob({
         id: "history-live",
@@ -1941,7 +1962,7 @@ describe("skillrunner task reconciler", function () {
     assert.include(toasts[0], "Remote SkillRunner");
   });
 
-  it("throttles repeated backend-reconcile-failed logs when backend is unreachable", async function () {
+  itFullOnly("throttles repeated backend-reconcile-failed logs when backend is unreachable", async function () {
     let networkDown = true;
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
       if (isListRunsProbeUrl(url)) {
@@ -2114,4 +2135,5 @@ describe("skillrunner task reconciler", function () {
       setPref("backendsConfigJson", previousBackendsPref);
     }
   });
-});
+  });
+}

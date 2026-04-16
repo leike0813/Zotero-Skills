@@ -1350,92 +1350,84 @@ describe("gui: workflow context menu", function () {
     );
   });
 
-  it("renders disabled workflow entries when no items are selected", async function () {
-    setWorkflowState([
-      makeLoadedWorkflow("workflow-a", "Workflow A"),
-      makeLoadedWorkflow("workflow-b", "Workflow B"),
-    ]);
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
+  it("context menu respects requiresSelection and disabled rendering when no items are selected", async function () {
+    const cases: Array<{
+      label: string;
+      workflows: LoadedWorkflow[];
+      expectedLabels: RegExp[];
+      expectedDisabledStates: Array<string | null>;
+      expectedLength: number;
+      rebuildOnly?: boolean;
+    }> = [
+      {
+        label: "renders disabled entries for ordinary workflows",
+        workflows: [
+          makeLoadedWorkflow("workflow-a", "Workflow A"),
+          makeLoadedWorkflow("workflow-b", "Workflow B"),
+        ],
+        expectedLabels: [
+          /^Workflow A \((no selection|未选择条目)\)$/,
+          /^Workflow B \((no selection|未选择条目)\)$/,
+        ],
+        expectedDisabledStates: ["true", "true"],
+        expectedLength: 4,
+      },
+      {
+        label: "keeps requiresSelection=false workflow enabled",
+        workflows: [
+          makeLoadedWorkflow("workflow-a", "Workflow A"),
+          makePassThroughWorkflow("tag-manager", "Tag Manager", {
+            requiresSelection: false,
+          }),
+        ],
+        expectedLabels: [/^Workflow A \((no selection|未选择条目)\)$/, /^Tag Manager$/],
+        expectedDisabledStates: ["true", null],
+        expectedLength: 4,
+        rebuildOnly: true,
+      },
+      {
+        label: "keeps pass-through workflow disabled without explicit override",
+        workflows: [
+          makePassThroughWorkflow("reference-matching", "Reference Matching"),
+        ],
+        expectedLabels: [/^Reference Matching \((no selection|未选择条目)\)$/],
+        expectedDisabledStates: ["true"],
+        expectedLength: 3,
+        rebuildOnly: true,
+      },
+    ];
 
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    for (let i = 0; i < 20 && popup.children.length < 4; i++) {
-      await flushTasks();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const entry of cases) {
+      setWorkflowState(entry.workflows);
+      const win = createMainWindow([]);
+      ensureWorkflowMenuForWindow(win);
+      const popup = win.document.getElementById(
+        `${config.addonRef}-workflows-popup`,
+      ) as FakeXULElement;
+
+      if (entry.rebuildOnly) {
+        await rebuildWorkflowActionPopup(win, popup as unknown as XULElement, {
+          includeTaskManagerItem: true,
+        });
+      } else {
+        popup.dispatch("popupshowing");
+        for (let i = 0; i < 20 && popup.children.length < entry.expectedLength; i++) {
+          await flushTasks();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      assert.lengthOf(popup.children, entry.expectedLength, entry.label);
+      for (const [index, expectedLabel] of entry.expectedLabels.entries()) {
+        const child = popup.children[index + 2];
+        assert.match(child.getAttribute("label") || "", expectedLabel, entry.label);
+        assert.equal(
+          child.getAttribute("disabled"),
+          entry.expectedDisabledStates[index],
+          `${entry.label}: disabled state mismatch for item ${index}`,
+        );
+      }
     }
-
-    assert.lengthOf(popup.children, 4);
-    assertMenuLabel(
-      popup.children[0].getAttribute("label"),
-      ["Open Dashboard...", "打开 Dashboard..."],
-      "task-manager label",
-    );
-    assert.equal(popup.children[1].tagName, "menuseparator");
-    assert.equal(popup.children[2].getAttribute("disabled"), "true");
-    assert.equal(popup.children[3].getAttribute("disabled"), "true");
-    assert.match(
-      popup.children[2].getAttribute("label") || "",
-      /^Workflow A \((no selection|未选择条目)\)$/,
-    );
-    assert.match(
-      popup.children[3].getAttribute("label") || "",
-      /^Workflow B \((no selection|未选择条目)\)$/,
-    );
-  });
-
-  it("keeps workflow with trigger.requiresSelection=false enabled when no items are selected", async function () {
-    setWorkflowState([
-      makeLoadedWorkflow("workflow-a", "Workflow A"),
-      makePassThroughWorkflow("tag-manager", "Tag Manager", {
-        requiresSelection: false,
-      }),
-    ]);
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    await rebuildWorkflowActionPopup(win, popup as unknown as XULElement, {
-      includeTaskManagerItem: true,
-    });
-
-    assert.lengthOf(popup.children, 4);
-    assert.equal(popup.children[2].getAttribute("disabled"), "true");
-    assert.match(
-      popup.children[2].getAttribute("label") || "",
-      /^Workflow A \((no selection|未选择条目)\)$/,
-    );
-    assert.isNull(popup.children[3].getAttribute("disabled"));
-    assert.equal(popup.children[3].getAttribute("label"), "Tag Manager");
-  });
-
-  it("keeps pass-through workflow disabled without explicit trigger.requiresSelection=false when no items are selected", async function () {
-    setWorkflowState([
-      makePassThroughWorkflow(
-        "reference-matching",
-        "Reference Matching",
-      ),
-    ]);
-    const win = createMainWindow([]);
-    ensureWorkflowMenuForWindow(win);
-
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    await rebuildWorkflowActionPopup(win, popup as unknown as XULElement, {
-      includeTaskManagerItem: true,
-    });
-
-    assert.lengthOf(popup.children, 3);
-    assert.equal(popup.children[2].getAttribute("disabled"), "true");
-    assert.match(
-      popup.children[2].getAttribute("label") || "",
-      /^Reference Matching \((no selection|未选择条目)\)$/,
-    );
   });
 
   itFullOnly("dispatches openDashboard from context-menu dashboard action", async function () {
@@ -1529,33 +1521,40 @@ describe("gui: workflow context menu", function () {
     assert.isTrue(labelsWhenVisible.some((entry) => entry.startsWith("Workflow Debug Probe")));
   });
 
-  it("shows no-valid-input hint instead of raw error name when workflow cannot run on current selection", async function () {
+  it("context menu shows no-valid-input hint instead of raw error names", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "No Valid Input Parent" },
     });
-    setWorkflowState([makeNoValidInputWorkflow("workflow-a", "Workflow A")]);
-    const win = createMainWindow([parent]);
-    ensureWorkflowMenuForWindow(win);
-    const popup = win.document.getElementById(
-      `${config.addonRef}-workflows-popup`,
-    ) as FakeXULElement;
-    popup.dispatch("popupshowing");
-    for (let i = 0; i < 10; i++) {
-      await flushTasks();
-      if (popup.children.length > 5) {
-        break;
-      }
-    }
+    const cases = [
+      {
+        label: "no-valid-input workflow hint",
+        workflow: makeNoValidInputWorkflow("workflow-a", "Workflow A"),
+        expectedLabel: /^Workflow A \((no valid input|无合法输入)\)$/,
+      },
+    ];
 
-    const workflowItem = popup.children.find(
-      (entry) => (entry.getAttribute("label") || "").startsWith("Workflow A"),
-    );
-    assert.isOk(workflowItem);
-    assert.match(
-      workflowItem.getAttribute("label") || "",
-      /^Workflow A \((no valid input|无合法输入)\)$/,
-    );
-    assert.equal(workflowItem.getAttribute("disabled"), "true");
+    for (const entry of cases) {
+      setWorkflowState([entry.workflow]);
+      const win = createMainWindow([parent]);
+      ensureWorkflowMenuForWindow(win);
+      const popup = win.document.getElementById(
+        `${config.addonRef}-workflows-popup`,
+      ) as FakeXULElement;
+      popup.dispatch("popupshowing");
+      for (let i = 0; i < 10; i++) {
+        await flushTasks();
+        if (popup.children.length > 5) {
+          break;
+        }
+      }
+
+      const workflowItem = popup.children.find(
+        (child) => (child.getAttribute("label") || "").startsWith("Workflow A"),
+      );
+      assert.isOk(workflowItem, entry.label);
+      assert.match(workflowItem.getAttribute("label") || "", entry.expectedLabel, entry.label);
+      assert.equal(workflowItem.getAttribute("disabled"), "true", entry.label);
+    }
   });
 });

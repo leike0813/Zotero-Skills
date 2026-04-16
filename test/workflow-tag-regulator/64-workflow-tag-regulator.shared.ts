@@ -26,6 +26,8 @@ import {
   workflowsPath,
 } from "../zotero/workflow-test-utils";
 
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+
 type PersistedTagEntry = {
   tag: string;
   facet: string;
@@ -385,8 +387,7 @@ async function getTagRegulatorWorkflow() {
   return workflow!;
 }
 
-describe("workflow: tag-regulator", function () {
-  const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+function setupTagRegulatorWorkflowSuite() {
   let restoreHostApi: (() => void) | null = null;
 
   beforeEach(function () {
@@ -401,6 +402,34 @@ describe("workflow: tag-regulator", function () {
     resetRuntimeBridgeOverrideForTests();
     clearTagVocabularyState();
   });
+  return { itNodeOnly };
+}
+
+export function registerTagRegulatorRequestBuildingTests() {
+  describe("workflow: tag-regulator request building", function () {
+    const { itNodeOnly } = setupTagRegulatorWorkflowSuite();
+    void itNodeOnly;
+    registerTagRegulatorRequestBuildingSegmentOne();
+    registerTagRegulatorRequestBuildingSegmentTwo();
+    registerTagRegulatorRequestBuildingSegmentThree();
+  });
+}
+
+export function registerTagRegulatorApplyIntakeTests() {
+  describe("workflow: tag-regulator apply intake", function () {
+    const { itNodeOnly } = setupTagRegulatorWorkflowSuite();
+    registerTagRegulatorApplyIntakeSegment(itNodeOnly);
+  });
+}
+
+export function registerTagRegulatorDialogRenderingTests() {
+  describe("workflow: tag-regulator dialog rendering", function () {
+    const { itNodeOnly } = setupTagRegulatorWorkflowSuite();
+    registerTagRegulatorDialogRenderingSegment(itNodeOnly);
+  });
+}
+
+function registerTagRegulatorRequestBuildingSegmentOne() {
 
   it("loads tag-regulator workflow manifest with buildRequest/applyResult hooks", async function () {
     const workflow = await getTagRegulatorWorkflow();
@@ -677,6 +706,11 @@ describe("workflow: tag-regulator", function () {
     const yamlText = await readUtf8(yamlPath);
     assert.include(yamlText, "- topic:runtime-only");
   });
+}
+
+function registerTagRegulatorApplyIntakeSegment(
+  itNodeOnly: typeof it,
+) {
 
   itNodeOnly("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
     saveTagVocabularyState([
@@ -1890,6 +1924,9 @@ describe("workflow: tag-regulator", function () {
       "model:DL/transformer",
     ]);
   });
+}
+
+function registerTagRegulatorRequestBuildingSegmentTwo() {
 
   it("reads latest exported vocabulary on each execution", async function () {
     const parent = await handlers.item.create({
@@ -1934,8 +1971,13 @@ describe("workflow: tag-regulator", function () {
     assert.include(yamlB, "topic:version-b");
     assert.notInclude(yamlB, "topic:version-a");
   });
+}
 
-  it("renders suggest dialog header and parent count column", function () {
+function registerTagRegulatorDialogRenderingSegment(
+  itNodeOnly: typeof it,
+) {
+
+  itNodeOnly("renders suggest dialog header and parent count column", function () {
     const runtimeState: {
       timerStarted?: boolean;
       timerHandle?: ReturnType<typeof setInterval> | null;
@@ -2017,7 +2059,7 @@ describe("workflow: tag-regulator", function () {
     }
   });
 
-  it("marks timeout state when renderer countdown reaches zero", async function () {
+  itNodeOnly("marks timeout state when renderer countdown reaches zero", async function () {
     const runtimeState: {
       timerStarted?: boolean;
       timerHandle?: ReturnType<typeof setInterval> | null;
@@ -2064,6 +2106,9 @@ describe("workflow: tag-regulator", function () {
     assert.isTrue(Boolean(state.closePolicyApplied));
     assert.equal(Number(state.countdownSeconds), 0);
   });
+}
+
+function registerTagRegulatorRequestBuildingSegmentThree() {
 
   it("keeps language option declarations aligned with literature-digest workflow", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -2082,4 +2127,4 @@ describe("workflow: tag-regulator", function () {
     assert.equal(tagNoteLanguage?.default, "zh-CN");
     assert.equal(literatureLanguage?.default, "zh-CN");
   });
-});
+}

@@ -42,7 +42,7 @@
 - [x] **重构 workflow 核心设计，允许一个 workflow 包中携带多个 workflow，避免像 Tag Regulator 和 Tag Manager 这样的 workflow 按现在的规则必须被拆分的问题**
 - [x] 添加专属 Note 的导入导出 workflow （导入/导出Digest、References和Citation Analysis note）
 - [x] 让 Tag Manager 不选中父条目也可以触发
-- [ ] **test 治理**
+- [x] **test 治理**
 - [ ] **兼容 Zotero 8**
 - [ ] workflow 多语言文案机制
 - [ ] Dashboard 增加 Tag Manager 快捷方式（可选，要做的话也得做成注册式的）

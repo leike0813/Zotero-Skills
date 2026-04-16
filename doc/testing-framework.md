@@ -67,6 +67,53 @@
 - `full` 必须是 `lite` 的严格超集
 - 任何从 `lite` 移出的用例都要有可审计理由
 
+### 测试治理附加维度
+
+除 `lite/full` 外，当前仓库的测试治理还要求显式考虑：
+
+- 运行宿主：`node-only` / `zotero-safe` / `zotero-unsafe`
+- 价值等级：`critical` / `standard`
+
+说明：
+
+- 这两个维度当前主要作为治理规则和文档约定使用
+- 不新增新的 runner 或 Tier 执行机制
+- 现有 `itFullOnly` 与测试入口保持不变
+
+### 运行宿主规则
+
+`node-only`：
+
+- package helper 测试
+- runtime seam 测试
+- mock-heavy 测试
+- 依赖 fake DOM 细节、多 realm 注入或宿主隔离的测试
+
+`zotero-safe`：
+
+- 可在真实 Zotero 宿主稳定执行
+- 不依赖真实 editor / picker / dialog 打开
+- 不依赖只在单一 JS realm 有效的 mock 注入
+
+`zotero-unsafe`：
+
+- 真实宿主下可能弹出 editor / file picker / dialog
+- 或高度依赖复杂 UI override、多 realm 注入与长异步链路
+- 这类测试不得进入 Zotero 常规回归
+
+### Zotero-safe 禁止项
+
+Zotero 环境测试中禁止引入会真实打开以下 UI 的测试：
+
+- editor
+- file picker
+- dialog
+
+现有此类测试必须：
+
+- 在 Zotero 环境下 `skip`
+- 或迁移为 `node-only`
+
 ### 当前实现
 
 lite 模式下：
@@ -82,6 +129,12 @@ lite 模式下：
 - 在 workflow/ui 的高复杂度测试文件内，部分边界/兼容性用例通过 `itFullOnly` 下沉到 `full`
   - 代表性文件：`test/workflow-reference-matching/24-workflow-reference-matching.test.ts`、`test/workflow-literature-digest/21-workflow-literature-digest.test.ts`、`test/workflow-mineru/39-workflow-mineru.test.ts`、`test/ui/40-gui-preferences-menu-scan.test.ts`
 - `selection-context` 的 lite 子夹具执行后保留重建产物（不清理）
+
+补充治理约定：
+
+- `lite` 只保留 `critical` 与高价值 `standard` 场景
+- 明显平台相关、纯文案、复杂兼容矩阵或长链路低频场景，优先下沉为 `itFullOnly`
+- 参数化合并时，不允许把 `it` 与 `itFullOnly` 硬合并到同一个测试体中
 
 full 模式下：
 

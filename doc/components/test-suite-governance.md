@@ -17,7 +17,39 @@ Guardrail:
 
 - `full` is a strict superset of `lite`
 
-## 2. Lite-Pruning Inventory
+Additional governance dimensions:
+
+- Runtime affinity: `node-only` / `zotero-safe` / `zotero-unsafe`
+- Priority: `critical` / `standard`
+
+These dimensions are governance rules and documentation tags, not a new runner mechanism.
+
+## 2. Runtime Affinity Governance
+
+`node-only`:
+
+- package helper tests
+- runtime seam tests
+- mock-heavy tests
+- fake DOM / renderer structure tests
+
+`zotero-safe`:
+
+- safe to run in real Zotero runtime
+- no real editor / picker / dialog opening
+- no reliance on single-realm-only mock injection
+
+`zotero-unsafe`:
+
+- can open real editor / file picker / dialog
+- or depends on brittle multi-realm injection / long UI async chains
+
+Hard rule:
+
+- Tests that may open real editor, file picker, or dialog must not run in Zotero routine suites
+- They must either be skipped in Zotero or moved to `node-only`
+
+## 3. Lite-Pruning Inventory
 
 Moved/kept as full-only:
 
@@ -49,7 +81,22 @@ Rationale:
 - Coverage is still retained in `full` gate
 - Critical-path smoke confidence remains in `lite`
 
-## 3. Selection-Context Rebuild Governance
+## 4. Parameterization Governance
+
+Parameterization is preferred when:
+
+- the scenarios share the same execution mode
+- the scenarios share the same runtime affinity
+- only inputs and expected outputs differ materially
+
+Rules:
+
+- keep coverage, reduce duplicated setup
+- use explicit case tables
+- do not hide major assertion differences behind nested conditionals
+- do not merge `it(...)` and `itFullOnly(...)` into one test body
+
+## 5. Selection-Context Rebuild Governance
 
 Lite scope:
 
@@ -61,7 +108,7 @@ Full scope:
 
 - Runs comprehensive rebuild matrix
 
-## 4. Domain Group Command Governance
+## 6. Domain Group Command Governance
 
 Supported grouped command level:
 
@@ -71,7 +118,7 @@ Out of scope in this phase:
 
 - Per-workflow grouped command variants
 
-## 5. CI Gate Governance
+## 7. CI Gate Governance
 
 Blocking gates:
 

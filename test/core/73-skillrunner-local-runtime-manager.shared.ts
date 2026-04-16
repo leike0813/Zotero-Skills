@@ -39,6 +39,18 @@ import {
   clearRuntimeLogs,
   listRuntimeLogs,
 } from "../../src/modules/runtimeLogManager";
+import { isFullTestMode } from "../zotero/testMode";
+
+const itFullOnly = isFullTestMode() ? it : it.skip;
+const backendsConfigPrefKey = `${config.prefsPrefix}.backendsConfigJson`;
+const localRuntimeStatePrefKey = `${config.prefsPrefix}.skillRunnerLocalRuntimeStateJson`;
+const localRuntimeVersionPrefKey = `${config.prefsPrefix}.skillRunnerLocalRuntimeVersion`;
+
+let prevBackendsConfigPref: unknown;
+let prevStatePref: unknown;
+let prevVersionPref: unknown;
+let prevFetch: unknown;
+let prevIOUtils: unknown;
 
 function makeCtlResult(args: {
   ok: boolean;
@@ -71,41 +83,30 @@ async function sleepMsForTest(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe("skillrunner local runtime manager", function () {
-  this.timeout(30000);
+function setBackendsConfigWithManagedLocal(baseUrl = "http://127.0.0.1:29813") {
+  Zotero.Prefs.set(
+    backendsConfigPrefKey,
+    JSON.stringify({
+      backends: [
+        {
+          id: "generic-http-local",
+          type: "generic-http",
+          baseUrl: "http://127.0.0.1:9000",
+          auth: { kind: "none" },
+        },
+        {
+          id: "local-skillrunner-backend",
+          type: "skillrunner",
+          baseUrl,
+          auth: { kind: "none" },
+        },
+      ],
+    }),
+    true,
+  );
+}
 
-  const backendsConfigPrefKey = `${config.prefsPrefix}.backendsConfigJson`;
-  const localRuntimeStatePrefKey = `${config.prefsPrefix}.skillRunnerLocalRuntimeStateJson`;
-  const localRuntimeVersionPrefKey = `${config.prefsPrefix}.skillRunnerLocalRuntimeVersion`;
-
-  let prevBackendsConfigPref: unknown;
-  let prevStatePref: unknown;
-  let prevVersionPref: unknown;
-  let prevFetch: unknown;
-  let prevIOUtils: unknown;
-
-  function setBackendsConfigWithManagedLocal(baseUrl = "http://127.0.0.1:29813") {
-    Zotero.Prefs.set(
-      backendsConfigPrefKey,
-      JSON.stringify({
-        backends: [
-          {
-            id: "generic-http-local",
-            type: "generic-http",
-            baseUrl: "http://127.0.0.1:9000",
-            auth: { kind: "none" },
-          },
-          {
-            id: "local-skillrunner-backend",
-            type: "skillrunner",
-            baseUrl,
-            auth: { kind: "none" },
-          },
-        ],
-      }),
-      true,
-    );
-  }
+function setupSkillRunnerLocalRuntimeManagerSuite() {
 
   beforeEach(function () {
     prevBackendsConfigPref = Zotero.Prefs.get(backendsConfigPrefKey, true);
@@ -204,7 +205,38 @@ describe("skillrunner local runtime manager", function () {
     setSuppressManagedRuntimeAutoEnsureTriggerForTests(false);
     await releaseManagedLocalRuntimeLeaseOnShutdown();
   });
+}
 
+export function registerSkillRunnerDeployLifecycleTests() {
+  describe("skillrunner local runtime manager: deploy lifecycle", function () {
+    this.timeout(30000);
+    setupSkillRunnerLocalRuntimeManagerSuite();
+    registerSkillRunnerDeployLifecycleSegmentOne();
+    registerSkillRunnerDeployLifecycleSegmentTwo();
+    registerSkillRunnerDeployLifecycleSegmentThree();
+    registerSkillRunnerDeployLifecycleSegmentFour();
+  });
+}
+
+export function registerSkillRunnerOneclickStartStopTests() {
+  describe("skillrunner local runtime manager: oneclick start stop", function () {
+    this.timeout(30000);
+    setupSkillRunnerLocalRuntimeManagerSuite();
+    registerSkillRunnerOneclickSegmentOne();
+    registerSkillRunnerOneclickSegmentTwo();
+  });
+}
+
+export function registerSkillRunnerAutoStartSessionTests() {
+  describe("skillrunner local runtime manager: auto start session", function () {
+    this.timeout(30000);
+    setupSkillRunnerLocalRuntimeManagerSuite();
+    registerSkillRunnerAutoStartSegmentOne();
+    registerSkillRunnerAutoStartSegmentTwo();
+  });
+}
+
+function registerSkillRunnerDeployLifecycleSegmentOne() {
   it("deploys with bootstrap only and configures managed backend", async function () {
     (globalThis as { fetch?: unknown }).fetch = undefined;
     const commands: string[] = [];
@@ -314,6 +346,9 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(result.stage, "deploy-complete");
     assert.equal(commands[0], "preflight");
   });
+}
+
+function registerSkillRunnerOneclickSegmentOne() {
 
   it("one-click uses preflight->up->lease when runtime info exists and preflight passes", async function () {
     setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
@@ -668,6 +703,9 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(result.details?.plannedAction, "start");
     assert.deepEqual(commandTrail, ["preflight"]);
   });
+}
+
+function registerSkillRunnerDeployLifecycleSegmentTwo() {
 
   it("reports deploy action progress across all 5 steps", async function () {
     const progressStages: string[] = [];
@@ -793,6 +831,9 @@ describe("skillrunner local runtime manager", function () {
       ["data", "agent-home"],
     );
   });
+}
+
+function registerSkillRunnerAutoStartSegmentOne() {
 
   it("ensures runtime with preflight -> up -> status and then acquires lease", async function () {
     setBackendsConfigWithManagedLocal("http://127.0.0.1:29813");
@@ -1065,6 +1106,9 @@ describe("skillrunner local runtime manager", function () {
     const idleSnapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(idleSnapshot.details?.inFlightAction, "");
   });
+}
+
+function registerSkillRunnerOneclickSegmentTwo() {
 
   it("blocks runtime start when preflight fails", async function () {
     Zotero.Prefs.set(
@@ -1328,97 +1372,56 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(toasts[0].kind, "runtime-down");
   });
 
-  it("uses zh fallback text for runtime-down toast when localization is unavailable", async function () {
-    Zotero.Prefs.set(
-      localRuntimeStatePrefKey,
-      JSON.stringify({
-        managedBackendId: "local-skillrunner-backend",
-        runtimeState: "running",
-        ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
-      }),
-      true,
-    );
-    setSkillRunnerCtlBridgeFactoryForTests(
-      () =>
-        ({
-          resolveCtlPathFromInstallDir: () => "",
-          runCtlCommand: async (args: { command: string }) =>
-            args.command === "status"
-              ? makeCtlResult({
-                  ok: true,
-                  details: {
-                    status: "stopped",
-                  },
-                })
-              : makeCtlResult({ ok: true }),
-        }) as any,
-    );
-    const runtime = globalThis as { addon?: unknown };
-    const previousAddon = runtime.addon;
-    const previousLocale = (Zotero as { locale?: unknown }).locale;
-    runtime.addon = undefined;
-    (Zotero as { locale?: unknown }).locale = "zh-CN";
-    const toasts: Array<{ kind: string; text: string; type: string }> = [];
-    setLocalRuntimeToastEmitterForTests((payload) => {
-      toasts.push(payload);
-    });
+  itFullOnly("uses locale-appropriate fallback text for runtime-down toast when localization is unavailable", async function () {
+    const cases = [
+      { locale: "zh-CN", expectedText: "本地后端已停止。" },
+      { locale: "en-US", expectedText: "Local backend stopped." },
+    ];
 
-    try {
-      const result = await stopLocalRuntime();
-      assert.isTrue(result.ok);
-      assert.equal(toasts.length, 1);
-      assert.equal(toasts[0].kind, "runtime-down");
-      assert.equal(toasts[0].text, "本地后端已停止。");
-    } finally {
-      runtime.addon = previousAddon;
-      (Zotero as { locale?: unknown }).locale = previousLocale;
-    }
-  });
+    for (const entry of cases) {
+      resetLocalRuntimeToastStateForTests();
+      Zotero.Prefs.set(
+        localRuntimeStatePrefKey,
+        JSON.stringify({
+          managedBackendId: "local-skillrunner-backend",
+          runtimeState: "running",
+          ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
+        }),
+        true,
+      );
+      setSkillRunnerCtlBridgeFactoryForTests(
+        () =>
+          ({
+            resolveCtlPathFromInstallDir: () => "",
+            runCtlCommand: async (args: { command: string }) =>
+              args.command === "status"
+                ? makeCtlResult({
+                    ok: true,
+                    details: { status: "stopped" },
+                  })
+                : makeCtlResult({ ok: true }),
+          }) as any,
+      );
+      const runtime = globalThis as { addon?: unknown };
+      const previousAddon = runtime.addon;
+      const previousLocale = (Zotero as { locale?: unknown }).locale;
+      runtime.addon = undefined;
+      (Zotero as { locale?: unknown }).locale = entry.locale;
+      const toasts: Array<{ kind: string; text: string; type: string }> = [];
+      setLocalRuntimeToastEmitterForTests((payload) => {
+        toasts.push(payload);
+      });
 
-  it("uses default english fallback text for runtime-down toast when locale is non-zh", async function () {
-    Zotero.Prefs.set(
-      localRuntimeStatePrefKey,
-      JSON.stringify({
-        managedBackendId: "local-skillrunner-backend",
-        runtimeState: "running",
-        ctlPath: "C:\\SkillRunner\\scripts\\skill-runnerctl.ps1",
-      }),
-      true,
-    );
-    setSkillRunnerCtlBridgeFactoryForTests(
-      () =>
-        ({
-          resolveCtlPathFromInstallDir: () => "",
-          runCtlCommand: async (args: { command: string }) =>
-            args.command === "status"
-              ? makeCtlResult({
-                  ok: true,
-                  details: {
-                    status: "stopped",
-                  },
-                })
-              : makeCtlResult({ ok: true }),
-        }) as any,
-    );
-    const runtime = globalThis as { addon?: unknown };
-    const previousAddon = runtime.addon;
-    const previousLocale = (Zotero as { locale?: unknown }).locale;
-    runtime.addon = undefined;
-    (Zotero as { locale?: unknown }).locale = "en-US";
-    const toasts: Array<{ kind: string; text: string; type: string }> = [];
-    setLocalRuntimeToastEmitterForTests((payload) => {
-      toasts.push(payload);
-    });
-
-    try {
-      const result = await stopLocalRuntime();
-      assert.isTrue(result.ok);
-      assert.equal(toasts.length, 1);
-      assert.equal(toasts[0].kind, "runtime-down");
-      assert.equal(toasts[0].text, "Local backend stopped.");
-    } finally {
-      runtime.addon = previousAddon;
-      (Zotero as { locale?: unknown }).locale = previousLocale;
+      try {
+        const result = await stopLocalRuntime();
+        assert.isTrue(result.ok, entry.locale);
+        assert.equal(toasts.length, 1, entry.locale);
+        assert.equal(toasts[0].kind, "runtime-down", entry.locale);
+        assert.equal(toasts[0].text, entry.expectedText, entry.locale);
+      } finally {
+        runtime.addon = previousAddon;
+        (Zotero as { locale?: unknown }).locale = previousLocale;
+      }
     }
   });
 
@@ -1487,6 +1490,9 @@ describe("skillrunner local runtime manager", function () {
     assert.isAtLeast(toasts.length, 1);
     assert.equal(toasts[toasts.length - 1].kind, "runtime-abnormal-stop");
   });
+}
+
+function registerSkillRunnerDeployLifecycleSegmentThree() {
 
   it("uninstall runs plugin-side orchestration and clears state on full success", async function () {
     Zotero.Prefs.set(
@@ -1952,7 +1958,7 @@ describe("skillrunner local runtime manager", function () {
     ]);
   });
 
-  it("uninstall reports npm delete diagnostics when retries and long-path fallback still fail", async function () {
+  itFullOnly("uninstall reports npm delete diagnostics when retries and long-path fallback still fail", async function () {
     Zotero.Prefs.set(
       backendsConfigPrefKey,
       JSON.stringify({
@@ -2273,7 +2279,7 @@ describe("skillrunner local runtime manager", function () {
     assert.isAtLeast(logs.length, 1);
   });
 
-  it("applies persistent log whitelist for deploy chains and excludes monitoring operations", function () {
+  itFullOnly("applies persistent log whitelist for deploy chains and excludes monitoring operations", function () {
     assert.isTrue(
       shouldPersistLocalRuntimeLogForTests({
         operation: "deploy-release-install",
@@ -2345,6 +2351,9 @@ describe("skillrunner local runtime manager", function () {
     assert.isTrue(result.ok);
     assert.deepEqual(readPaths, [reportPath]);
   });
+}
+
+function registerSkillRunnerAutoStartSegmentTwo() {
 
   it("hydrates auto-start session switch from persisted autoStartPaused", async function () {
     Zotero.Prefs.set(
@@ -2449,8 +2458,11 @@ describe("skillrunner local runtime manager", function () {
     const snapshot = getManagedLocalRuntimeStateSnapshot();
     assert.equal(snapshot.details?.autoStartPaused, false);
   });
+}
 
-  it("builds manual deploy commands using bridge-equivalent bootstrap and up flow", async function () {
+function registerSkillRunnerDeployLifecycleSegmentFour() {
+
+  itFullOnly("builds manual deploy commands using bridge-equivalent bootstrap and up flow", async function () {
     const commandText = buildManualDeployCommands({
       version: "v0.5.2",
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
@@ -2480,4 +2492,4 @@ describe("skillrunner local runtime manager", function () {
     assert.equal(snapshot.details?.inFlightAction, "");
     assert.equal(snapshot.details?.monitoringState, "inactive");
   });
-});
+}

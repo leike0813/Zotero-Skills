@@ -809,123 +809,89 @@ describe("workflow loader validation", function () {
     );
   });
 
-  it("Risk: MR-01 reports normalizeSettings missing file diagnostics", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "normalize-settings-missing-file",
+  it("Risk: MR-01 reports normalizeSettings diagnostics for missing file, import failure, and export mismatch", async function () {
+    const cases = [
       {
         id: "normalize-settings-missing-file",
         label: "Normalize Settings Missing File",
-        request: { kind: "skillrunner.job.v1" },
-        hooks: {
-          applyResult: "hooks/applyResult.js",
-          normalizeSettings: "hooks/normalizeSettings.js",
+        hookFiles: {
+          "applyResult.js":
+            "export async function applyResult(){ return { ok: true }; }",
         },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    assert.isTrue(
-      loaded.warnings.some((warning) =>
-        warning.includes("Hook file missing: hooks/normalizeSettings.js"),
-      ),
-      `warnings=${JSON.stringify(loaded.warnings)}`,
-    );
-    assert.isTrue(
-      (loaded.diagnostics || []).some(
-        (entry) =>
+        warningIncludes: "Hook file missing: hooks/normalizeSettings.js",
+        diagnosticMatcher: (entry: {
+          category?: string;
+          workflowId?: string;
+        }) =>
           entry.category === "hook_missing_error" &&
           entry.workflowId === "normalize-settings-missing-file",
-      ),
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-  });
-
-  it("Risk: MR-01 reports normalizeSettings import failures as hook_import_error", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "normalize-settings-import-error",
+      },
       {
         id: "normalize-settings-import-error",
         label: "Normalize Settings Import Error",
-        request: { kind: "skillrunner.job.v1" },
-        hooks: {
-          applyResult: "hooks/applyResult.js",
-          normalizeSettings: "hooks/normalizeSettings.js",
+        hookFiles: {
+          "applyResult.js":
+            "export async function applyResult(){ return { ok: true }; }",
+          "normalizeSettings.js":
+            "export async function normalizeSettings( { return {}; }",
         },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-        "normalizeSettings.js":
-          "export async function normalizeSettings( { return {}; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    assert.isTrue(
-      loaded.warnings.some((warning) =>
-        warning.includes("Hook import failed: hooks/normalizeSettings.js"),
-      ),
-      `warnings=${JSON.stringify(loaded.warnings)}`,
-    );
-    assert.isTrue(
-      (loaded.diagnostics || []).some(
-        (entry) =>
+        warningIncludes: "Hook import failed: hooks/normalizeSettings.js",
+        diagnosticMatcher: (entry: {
+          category?: string;
+          workflowId?: string;
+        }) =>
           entry.category === "hook_import_error" &&
           entry.workflowId === "normalize-settings-import-error",
-      ),
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-  });
-
-  it("Risk: MR-01 reports normalizeSettings export mismatch diagnostics", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "normalize-settings-export-missing",
+      },
       {
         id: "normalize-settings-export-missing",
         label: "Normalize Settings Export Missing",
-        request: { kind: "skillrunner.job.v1" },
-        hooks: {
-          applyResult: "hooks/applyResult.js",
-          normalizeSettings: "hooks/normalizeSettings.js",
+        hookFiles: {
+          "applyResult.js":
+            "export async function applyResult(){ return { ok: true }; }",
+          "normalizeSettings.js":
+            "export async function notNormalizeSettings(){ return {}; }",
         },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-        "normalizeSettings.js":
-          "export async function notNormalizeSettings(){ return {}; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    assert.isTrue(
-      loaded.warnings.some((warning) =>
-        warning.includes("Hook export normalizeSettings() not found"),
-      ),
-      `warnings=${JSON.stringify(loaded.warnings)}`,
-    );
-    assert.isTrue(
-      (loaded.diagnostics || []).some(
-        (entry) =>
+        warningIncludes: "Hook export normalizeSettings() not found",
+        diagnosticMatcher: (entry: {
+          category?: string;
+          workflowId?: string;
+          reason?: unknown;
+        }) =>
           entry.category === "hook_export_error" &&
           entry.workflowId === "normalize-settings-export-missing" &&
           String(entry.reason || "").includes("normalizeSettings export missing"),
-      ),
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
+      },
+    ];
+
+    for (const entry of cases) {
+      const tmpRoot = await mkTempDir("zotero-skills-wf");
+      await makeWorkflow(
+        tmpRoot,
+        entry.id,
+        {
+          id: entry.id,
+          label: entry.label,
+          request: { kind: "skillrunner.job.v1" },
+          hooks: {
+            applyResult: "hooks/applyResult.js",
+            normalizeSettings: "hooks/normalizeSettings.js",
+          },
+        },
+        entry.hookFiles,
+      );
+
+      const loaded = await loadWorkflowManifests(tmpRoot);
+      assert.lengthOf(loaded.workflows, 0, entry.id);
+      assert.isTrue(
+        loaded.warnings.some((warning) => warning.includes(entry.warningIncludes)),
+        `${entry.id}: warnings=${JSON.stringify(loaded.warnings)}`,
+      );
+      assert.isTrue(
+        (loaded.diagnostics || []).some(entry.diagnosticMatcher),
+        `${entry.id}: diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
+      );
+    }
   });
 
   it("rejects fixture workflows when required manifest fields are missing or empty", async function () {
@@ -989,291 +955,238 @@ describe("workflow loader validation", function () {
     );
   });
 
-  it("accepts workflow manifest when parameter allowCustom is boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "allow-custom-valid",
+  it("validates parameters.allowCustom accepts boolean and rejects non-boolean", async function () {
+    const cases = [
       {
         id: "allow-custom-valid",
-        label: "Allow Custom Valid",
-        request: { kind: "skillrunner.job.v1" },
-        parameters: {
-          language: {
-            type: "string",
-            enum: ["zh-CN", "en-US"],
-            allowCustom: true,
-            default: "zh-CN",
+        manifest: {
+          id: "allow-custom-valid",
+          label: "Allow Custom Valid",
+          request: { kind: "skillrunner.job.v1" },
+          parameters: {
+            language: {
+              type: "string",
+              enum: ["zh-CN", "en-US"],
+              allowCustom: true,
+              default: "zh-CN",
+            },
           },
+          hooks: { applyResult: "hooks/applyResult.js" },
         },
-        hooks: { applyResult: "hooks/applyResult.js" },
+        expectValid: true,
       },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(
-      loaded.workflows,
-      1,
-      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
-    );
-  });
-
-  it("rejects workflow manifest when parameter allowCustom is not boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "allow-custom-invalid",
       {
         id: "allow-custom-invalid",
-        label: "Allow Custom Invalid",
-        request: { kind: "skillrunner.job.v1" },
-        parameters: {
-          language: {
-            type: "string",
-            enum: ["zh-CN", "en-US"],
-            allowCustom: "yes",
-            default: "zh-CN",
+        manifest: {
+          id: "allow-custom-invalid",
+          label: "Allow Custom Invalid",
+          request: { kind: "skillrunner.job.v1" },
+          parameters: {
+            language: {
+              type: "string",
+              enum: ["zh-CN", "en-US"],
+              allowCustom: "yes",
+              default: "zh-CN",
+            },
           },
+          hooks: { applyResult: "hooks/applyResult.js" },
         },
-        hooks: { applyResult: "hooks/applyResult.js" },
+        expectValid: false,
+        expectedReasonIncludes: ["/parameters/language/allowCustom", "must be boolean"],
       },
-      {
+    ];
+
+    for (const entry of cases) {
+      const tmpRoot = await mkTempDir("zotero-skills-wf");
+      await makeWorkflow(tmpRoot, entry.id, entry.manifest, {
         "applyResult.js":
           "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
+      });
 
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    const diagnostic = (loaded.diagnostics || []).find(
-      (entry) =>
-        entry.category === "manifest_validation_error" &&
-        entry.entry === "allow-custom-invalid",
-    );
-    assert.isOk(
-      diagnostic,
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-    assert.include(
-      String(diagnostic?.reason || ""),
-      "/parameters/language/allowCustom",
-    );
-    assert.include(String(diagnostic?.reason || ""), "must be boolean");
+      const loaded = await loadWorkflowManifests(tmpRoot);
+      if (entry.expectValid) {
+        assert.lengthOf(
+          loaded.workflows,
+          1,
+          `${entry.id}: warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+        );
+        continue;
+      }
+
+      assert.lengthOf(loaded.workflows, 0, entry.id);
+      const diagnostic = (loaded.diagnostics || []).find(
+        (candidate) =>
+          candidate.category === "manifest_validation_error" &&
+          candidate.entry === entry.id,
+      );
+      assert.isOk(diagnostic, `${entry.id}: diagnostics=${JSON.stringify(loaded.diagnostics || [])}`);
+      for (const expected of entry.expectedReasonIncludes || []) {
+        assert.include(String(diagnostic?.reason || ""), expected, entry.id);
+      }
+    }
   });
 
-  it("accepts workflow manifest when execution.feedback.showNotifications is boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "execution-feedback-valid",
+  it("validates execution.feedback.showNotifications accepts boolean and rejects non-boolean", async function () {
+    const cases = [
       {
         id: "execution-feedback-valid",
-        label: "Execution Feedback Valid",
-        provider: "pass-through",
-        execution: {
-          feedback: {
-            showNotifications: false,
-          },
+        manifest: {
+          id: "execution-feedback-valid",
+          label: "Execution Feedback Valid",
+          provider: "pass-through",
+          execution: { feedback: { showNotifications: false } },
+          hooks: { applyResult: "hooks/applyResult.js" },
         },
-        hooks: { applyResult: "hooks/applyResult.js" },
+        expectValid: true,
       },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(
-      loaded.workflows,
-      1,
-      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
-    );
-  });
-
-  it("accepts workflow manifest when trigger.requiresSelection is boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "trigger-requires-selection-valid",
-      {
-        id: "trigger-requires-selection-valid",
-        label: "Trigger Requires Selection Valid",
-        provider: "pass-through",
-        trigger: {
-          requiresSelection: false,
-        },
-        hooks: { applyResult: "hooks/applyResult.js" },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(
-      loaded.workflows,
-      1,
-      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
-    );
-    assert.strictEqual(
-      loaded.workflows[0].manifest.trigger?.requiresSelection,
-      false,
-    );
-  });
-
-  it("accepts skillrunner workflow manifest when execution.skillrunner_mode is declared", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "skillrunner-mode-valid",
-      {
-        id: "skillrunner-mode-valid",
-        label: "SkillRunner Mode Valid",
-        request: { kind: "skillrunner.job.v1" },
-        execution: {
-          skillrunner_mode: "interactive",
-        },
-        hooks: { applyResult: "hooks/applyResult.js" },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(
-      loaded.workflows,
-      1,
-      `warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
-    );
-    assert.equal(
-      loaded.workflows[0].manifest.execution?.skillrunner_mode,
-      "interactive",
-    );
-  });
-
-  it("rejects skillrunner workflow manifest when execution.skillrunner_mode is missing", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "skillrunner-mode-missing",
-      {
-        id: "skillrunner-mode-missing",
-        label: "SkillRunner Mode Missing",
-        request: { kind: "skillrunner.job.v1" },
-        __test_skip_skillrunner_mode_autofill: true,
-        hooks: { applyResult: "hooks/applyResult.js" },
-      },
-      {
-        "applyResult.js":
-          "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    const diagnostic = (loaded.diagnostics || []).find(
-      (entry) =>
-        entry.category === "manifest_validation_error" &&
-        entry.entry === "skillrunner-mode-missing",
-    );
-    assert.isOk(
-      diagnostic,
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-    assert.include(
-      String(diagnostic?.reason || ""),
-      "missing required property",
-    );
-    assert.match(
-      String(diagnostic?.reason || ""),
-      /execution|skillrunner_mode/i,
-    );
-  });
-
-  it("rejects workflow manifest when execution.feedback.showNotifications is not boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "execution-feedback-invalid",
       {
         id: "execution-feedback-invalid",
-        label: "Execution Feedback Invalid",
-        provider: "pass-through",
-        execution: {
-          feedback: {
-            showNotifications: "no",
-          },
+        manifest: {
+          id: "execution-feedback-invalid",
+          label: "Execution Feedback Invalid",
+          provider: "pass-through",
+          execution: { feedback: { showNotifications: "no" } },
+          hooks: { applyResult: "hooks/applyResult.js" },
         },
-        hooks: { applyResult: "hooks/applyResult.js" },
+        expectValid: false,
+        expectedReasonIncludes: ["/execution/feedback/showNotifications", "must be boolean"],
       },
-      {
+    ];
+
+    for (const entry of cases) {
+      const tmpRoot = await mkTempDir("zotero-skills-wf");
+      await makeWorkflow(tmpRoot, entry.id, entry.manifest, {
         "applyResult.js":
           "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
-
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    const diagnostic = (loaded.diagnostics || []).find(
-      (entry) =>
-        entry.category === "manifest_validation_error" &&
-        entry.entry === "execution-feedback-invalid",
-    );
-    assert.isOk(
-      diagnostic,
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-    assert.include(
-      String(diagnostic?.reason || ""),
-      "/execution/feedback/showNotifications",
-    );
-    assert.include(String(diagnostic?.reason || ""), "must be boolean");
+      });
+      const loaded = await loadWorkflowManifests(tmpRoot);
+      if (entry.expectValid) {
+        assert.lengthOf(loaded.workflows, 1, entry.id);
+        continue;
+      }
+      assert.lengthOf(loaded.workflows, 0, entry.id);
+      const diagnostic = (loaded.diagnostics || []).find(
+        (candidate) =>
+          candidate.category === "manifest_validation_error" &&
+          candidate.entry === entry.id,
+      );
+      assert.isOk(diagnostic, `${entry.id}: diagnostics=${JSON.stringify(loaded.diagnostics || [])}`);
+      for (const expected of entry.expectedReasonIncludes || []) {
+        assert.include(String(diagnostic?.reason || ""), expected, entry.id);
+      }
+    }
   });
 
-  it("rejects workflow manifest when trigger.requiresSelection is not boolean", async function () {
-    const tmpRoot = await mkTempDir("zotero-skills-wf");
-    await makeWorkflow(
-      tmpRoot,
-      "trigger-requires-selection-invalid",
+  it("validates trigger.requiresSelection accepts boolean and rejects non-boolean", async function () {
+    const cases = [
+      {
+        id: "trigger-requires-selection-valid",
+        manifest: {
+          id: "trigger-requires-selection-valid",
+          label: "Trigger Requires Selection Valid",
+          provider: "pass-through",
+          trigger: { requiresSelection: false },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+        expectValid: true,
+        verifyLoaded: (loaded: Awaited<ReturnType<typeof loadWorkflowManifests>>) => {
+          assert.strictEqual(loaded.workflows[0].manifest.trigger?.requiresSelection, false);
+        },
+      },
       {
         id: "trigger-requires-selection-invalid",
-        label: "Trigger Requires Selection Invalid",
-        provider: "pass-through",
-        trigger: {
-          requiresSelection: "no",
+        manifest: {
+          id: "trigger-requires-selection-invalid",
+          label: "Trigger Requires Selection Invalid",
+          provider: "pass-through",
+          trigger: { requiresSelection: "no" },
+          hooks: { applyResult: "hooks/applyResult.js" },
         },
-        hooks: { applyResult: "hooks/applyResult.js" },
+        expectValid: false,
+        expectedReasonIncludes: ["/trigger/requiresSelection", "must be boolean"],
       },
-      {
+    ];
+
+    for (const entry of cases) {
+      const tmpRoot = await mkTempDir("zotero-skills-wf");
+      await makeWorkflow(tmpRoot, entry.id, entry.manifest, {
         "applyResult.js":
           "export async function applyResult(){ return { ok: true }; }",
-      },
-    );
+      });
+      const loaded = await loadWorkflowManifests(tmpRoot);
+      if (entry.expectValid) {
+        assert.lengthOf(loaded.workflows, 1, entry.id);
+        entry.verifyLoaded?.(loaded);
+        continue;
+      }
+      assert.lengthOf(loaded.workflows, 0, entry.id);
+      const diagnostic = (loaded.diagnostics || []).find(
+        (candidate) =>
+          candidate.category === "manifest_validation_error" &&
+          candidate.entry === entry.id,
+      );
+      assert.isOk(diagnostic, `${entry.id}: diagnostics=${JSON.stringify(loaded.diagnostics || [])}`);
+      for (const expected of entry.expectedReasonIncludes || []) {
+        assert.include(String(diagnostic?.reason || ""), expected, entry.id);
+      }
+    }
+  });
 
-    const loaded = await loadWorkflowManifests(tmpRoot);
-    assert.lengthOf(loaded.workflows, 0);
-    const diagnostic = (loaded.diagnostics || []).find(
-      (entry) =>
-        entry.category === "manifest_validation_error" &&
-        entry.entry === "trigger-requires-selection-invalid",
-    );
-    assert.isOk(
-      diagnostic,
-      `diagnostics=${JSON.stringify(loaded.diagnostics || [])}`,
-    );
-    assert.include(
-      String(diagnostic?.reason || ""),
-      "/trigger/requiresSelection",
-    );
-    assert.include(String(diagnostic?.reason || ""), "must be boolean");
+  it("validates execution.skillrunner_mode presence for skillrunner workflows", async function () {
+    const cases = [
+      {
+        id: "skillrunner-mode-valid",
+        manifest: {
+          id: "skillrunner-mode-valid",
+          label: "SkillRunner Mode Valid",
+          request: { kind: "skillrunner.job.v1" },
+          execution: { skillrunner_mode: "interactive" },
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+        expectValid: true,
+        verifyLoaded: (loaded: Awaited<ReturnType<typeof loadWorkflowManifests>>) => {
+          assert.equal(loaded.workflows[0].manifest.execution?.skillrunner_mode, "interactive");
+        },
+      },
+      {
+        id: "skillrunner-mode-missing",
+        manifest: {
+          id: "skillrunner-mode-missing",
+          label: "SkillRunner Mode Missing",
+          request: { kind: "skillrunner.job.v1" },
+          __test_skip_skillrunner_mode_autofill: true,
+          hooks: { applyResult: "hooks/applyResult.js" },
+        },
+        expectValid: false,
+        expectedReasonIncludes: ["missing required property"],
+        expectedReasonPattern: /execution|skillrunner_mode/i,
+      },
+    ];
+
+    for (const entry of cases) {
+      const tmpRoot = await mkTempDir("zotero-skills-wf");
+      await makeWorkflow(tmpRoot, entry.id, entry.manifest, {
+        "applyResult.js":
+          "export async function applyResult(){ return { ok: true }; }",
+      });
+      const loaded = await loadWorkflowManifests(tmpRoot);
+      if (entry.expectValid) {
+        assert.lengthOf(loaded.workflows, 1, entry.id);
+        entry.verifyLoaded?.(loaded);
+        continue;
+      }
+      assert.lengthOf(loaded.workflows, 0, entry.id);
+      const diagnostic = (loaded.diagnostics || []).find(
+        (candidate) =>
+          candidate.category === "manifest_validation_error" &&
+          candidate.entry === entry.id,
+      );
+      assert.isOk(diagnostic, `${entry.id}: diagnostics=${JSON.stringify(loaded.diagnostics || [])}`);
+      for (const expected of entry.expectedReasonIncludes || []) {
+        assert.include(String(diagnostic?.reason || ""), expected, entry.id);
+      }
+      assert.match(String(diagnostic?.reason || ""), entry.expectedReasonPattern!, entry.id);
+    }
   });
 
   it("rejects manifests containing deprecated fields through schema validation", async function () {

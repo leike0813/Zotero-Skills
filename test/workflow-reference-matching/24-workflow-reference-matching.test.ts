@@ -248,7 +248,7 @@ describe("workflow: reference-matching", function () {
     assert.isFunction(workflow.hooks.applyResult);
   });
 
-  it("allows only references notes to pass filterInputs", async function () {
+  it("filterInputs accepts references notes and rejects non-references notes", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -268,22 +268,57 @@ describe("workflow: reference-matching", function () {
     const plainNote = await handlers.parent.addNote(parent, {
       content: "<div><h1>Random Note</h1><p>not references</p></div>",
     });
-    const selection = await buildSelectionContext([plainNote, referencesNote]);
 
-    const requests = (await executeBuildRequests({
-      workflow,
-      selectionContext: selection,
-    })) as Array<{
-      kind: string;
-      selectionContext?: {
-        items?: { notes?: Array<{ item?: { id?: number } }> };
-      };
-    }>;
-    assert.lengthOf(requests, 1);
-    assert.equal(requests[0].kind, "pass-through.run.v1");
-    const notes = requests[0].selectionContext?.items?.notes || [];
-    assert.lengthOf(notes, 1);
-    assert.equal(notes[0]?.item?.id, referencesNote.id);
+    const cases: Array<{
+      label: string;
+      selectionItems: Zotero.Item[];
+      expectedAcceptedNoteId?: number;
+      expectReject?: boolean;
+    }> = [
+      {
+        label: "accepts references note from mixed note selection",
+        selectionItems: [plainNote, referencesNote],
+        expectedAcceptedNoteId: referencesNote.id,
+      },
+      {
+        label: "rejects plain note selection",
+        selectionItems: [plainNote],
+        expectReject: true,
+      },
+    ];
+
+    for (const entry of cases) {
+      const selection = await buildSelectionContext(entry.selectionItems);
+      if (entry.expectReject) {
+        let thrown: unknown = null;
+        try {
+          await executeBuildRequests({
+            workflow,
+            selectionContext: selection,
+          });
+        } catch (error) {
+          thrown = error;
+        }
+        assert.isOk(thrown, `${entry.label}: expected filter rejection`);
+        assert.match(String(thrown), /no valid input units/i, entry.label);
+        continue;
+      }
+
+      const requests = (await executeBuildRequests({
+        workflow,
+        selectionContext: selection,
+      })) as Array<{
+        kind: string;
+        selectionContext?: {
+          items?: { notes?: Array<{ item?: { id?: number } }> };
+        };
+      }>;
+      assert.lengthOf(requests, 1, entry.label);
+      assert.equal(requests[0].kind, "pass-through.run.v1", entry.label);
+      const notes = requests[0].selectionContext?.items?.notes || [];
+      assert.lengthOf(notes, 1, entry.label);
+      assert.equal(notes[0]?.item?.id, entry.expectedAcceptedNoteId, entry.label);
+    }
   });
 
   it("accepts parent selection and emits one request per resolved parent note", async function () {
@@ -368,30 +403,6 @@ describe("workflow: reference-matching", function () {
     assert.lengthOf(requests, 1);
     assert.equal(requests.__stats?.totalUnits, 2);
     assert.equal(requests.__stats?.skippedUnits, 1);
-  });
-
-  it("rejects non-references notes in filterInputs", async function () {
-    const workflow = await getReferenceMatchingWorkflow();
-    const parent = await handlers.item.create({
-      itemType: "journalArticle",
-      fields: { title: "Reference Matching Reject Parent" },
-    });
-    const plainNote = await handlers.parent.addNote(parent, {
-      content: "<div><h1>Digest</h1><p>not references payload</p></div>",
-    });
-    const selection = await buildSelectionContext([plainNote]);
-
-    let thrown: unknown = null;
-    try {
-      await executeBuildRequests({
-        workflow,
-        selectionContext: selection,
-      });
-    } catch (error) {
-      thrown = error;
-    }
-    assert.isOk(thrown, "expected filter to reject non-references note");
-    assert.match(String(thrown), /no valid input units/i);
   });
 
   it("parses references payload and fills citekey for exact title match", async function () {
@@ -744,84 +755,67 @@ describe("workflow: reference-matching", function () {
     assert.equal(String(payload.references?.[0]?.citekey || ""), "");
   });
 
-  itFullOnly("falls back to score matching when bbt-lite template syntax is invalid", async function () {
+  itFullOnly("falls back to score matching for various bbt-lite template errors", async function () {
     const workflow = await getReferenceMatchingWorkflow();
-    await createLibraryItem({
-      title: "Fallback After Invalid BBT Lite Expression",
-      year: "2034",
-      citekey: "ScoreAfterInvalid2034",
-      firstCreator: "Fallbacker",
-    });
+    const cases = [
+      {
+        label: "invalid syntax",
+        title: "Fallback After Invalid BBT Lite Expression",
+        year: "2034",
+        author: "Fallbacker",
+        citekey: "ScoreAfterInvalid2034",
+        parentTitle: "Reference Matching BBT Lite Invalid Syntax Parent",
+        template: "auth.lower + (",
+      },
+      {
+        label: "unsupported object",
+        title: "Fallback After Unsupported BBT Lite Object",
+        year: "2035",
+        author: "Fallbacker",
+        citekey: "ScoreAfterUnsupported2035",
+        parentTitle: "Reference Matching BBT Lite Unsupported Object Parent",
+        template: "journal.lower + '_' + year",
+      },
+    ];
 
-    const parent = await handlers.item.create({
-      itemType: "journalArticle",
-      fields: { title: "Reference Matching BBT Lite Invalid Syntax Parent" },
-    });
-    const referenceNote = await handlers.parent.addNote(parent, {
-      content: buildReferencesNoteContent({
-        references: [
-          {
-            title: "Fallback After Invalid BBT Lite Expression",
-            year: "2034",
-            author: ["Fallbacker"],
-          },
-        ],
-      }),
-    });
+    for (const entry of cases) {
+      await createLibraryItem({
+        title: entry.title,
+        year: entry.year,
+        citekey: entry.citekey,
+        firstCreator: entry.author,
+      });
 
-    await executeApplyResult({
-      workflow,
-      parent,
-      bundleReader: { readText: async () => "" },
-      runResult: await buildRunResultForNote(referenceNote, {
-        citekey_template: "auth.lower + (",
-      }),
-    });
+      const parent = await handlers.item.create({
+        itemType: "journalArticle",
+        fields: { title: entry.parentTitle },
+      });
+      const referenceNote = await handlers.parent.addNote(parent, {
+        content: buildReferencesNoteContent({
+          references: [
+            {
+              title: entry.title,
+              year: entry.year,
+              author: [entry.author],
+            },
+          ],
+        }),
+      });
 
-    const payload = decodeReferencesPayloadFromNote(
-      Zotero.Items.get(referenceNote.id)!.getNote(),
-    );
-    assert.equal(payload.references?.[0]?.citekey, "ScoreAfterInvalid2034");
-  });
+      await executeApplyResult({
+        workflow,
+        parent,
+        bundleReader: { readText: async () => "" },
+        runResult: await buildRunResultForNote(referenceNote, {
+          citekey_template: entry.template,
+        }),
+      });
 
-  itFullOnly("falls back to score matching when bbt-lite template uses unsupported object", async function () {
-    const workflow = await getReferenceMatchingWorkflow();
-    await createLibraryItem({
-      title: "Fallback After Unsupported BBT Lite Object",
-      year: "2035",
-      citekey: "ScoreAfterUnsupported2035",
-      firstCreator: "Fallbacker",
-    });
-
-    const parent = await handlers.item.create({
-      itemType: "journalArticle",
-      fields: { title: "Reference Matching BBT Lite Unsupported Object Parent" },
-    });
-    const referenceNote = await handlers.parent.addNote(parent, {
-      content: buildReferencesNoteContent({
-        references: [
-          {
-            title: "Fallback After Unsupported BBT Lite Object",
-            year: "2035",
-            author: ["Fallbacker"],
-          },
-        ],
-      }),
-    });
-
-    await executeApplyResult({
-      workflow,
-      parent,
-      bundleReader: { readText: async () => "" },
-      runResult: await buildRunResultForNote(referenceNote, {
-        citekey_template: "journal.lower + '_' + year",
-      }),
-    });
-
-    const payload = decodeReferencesPayloadFromNote(
-      Zotero.Items.get(referenceNote.id)!.getNote(),
-    );
-    assert.equal(payload.references?.[0]?.citekey, "ScoreAfterUnsupported2035");
+      const payload = decodeReferencesPayloadFromNote(
+        Zotero.Items.get(referenceNote.id)!.getNote(),
+      );
+      assert.equal(payload.references?.[0]?.citekey, entry.citekey, entry.label);
+    }
   });
 
   it("keeps note unchanged when payload is missing or damaged", async function () {

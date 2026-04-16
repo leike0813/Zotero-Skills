@@ -15,26 +15,30 @@ The project SHALL define two normative test suites: `lite` for pull request gati
 - **THEN** it executes the `full` suite
 
 ### Requirement: Full suite SHALL be a superset of lite suite
-`full` suite membership SHALL include all tests in `lite` plus additional deep regression coverage.
 
-#### Scenario: Suite inclusion relationship is validated
-- **WHEN** suite definitions are reviewed
-- **THEN** every `lite` member is present in `full`
+`full` suite membership SHALL include all tests in `lite` plus additional deep
+regression coverage.
 
 #### Scenario: Additional deep tests are only in full
-- **WHEN** environment-heavy or long-running tests are classified
+
+- **WHEN** environment-heavy, long-running, or intentionally down-tiered test
+  cases are classified
 - **THEN** they are allowed in `full` without being required in `lite`
+- **AND** case-level `itFullOnly` gating MAY be used to keep those cases inside
+  the same file while excluding them from `lite`
 
 ### Requirement: Lite suite SHALL be explicitly optimized for fast feedback
-`lite` suite membership SHALL be reviewed and pruned to keep PR feedback fast while preserving critical-path confidence.
 
-#### Scenario: Stable deep regression case is excluded from lite
-- **WHEN** a test case is identified as stable but non-essential for PR critical-path protection
-- **THEN** it can be excluded from `lite` and retained in `full`
+`lite` suite membership SHALL be reviewed and pruned to keep PR feedback fast
+while preserving critical-path confidence.
 
 #### Scenario: Lite membership changes remain auditable
+
 - **WHEN** a case is moved out of `lite`
-- **THEN** rationale and target suite placement are documented in suite governance artifacts
+- **THEN** rationale and target suite placement are documented in suite
+  governance artifacts
+- **AND** the move MUST NOT require introducing a new runner contract beyond the
+  existing `lite/full` entrypoints and `itFullOnly` mechanism
 
 ### Requirement: Lite selection-context rebuild SHALL use mix-all top-3-parent subset
 For `selection-context rebuild`, `lite` SHALL execute only a dedicated fixture derived from the first three parent entries of `selection-context-mix-all`.

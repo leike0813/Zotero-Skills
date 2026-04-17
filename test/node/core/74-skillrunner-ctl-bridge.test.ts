@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { SkillRunnerCtlBridge } from "../../../src/modules/skillRunnerCtlBridge";
+import { DEFAULT_LOCAL_RUNTIME_VERSION } from "../../../src/modules/skillRunnerLocalRuntimeManager";
 
 describe("skillrunner ctl bridge", function () {
   it("normalizes ctl --json response payload", async function () {
@@ -93,7 +94,7 @@ describe("skillrunner ctl bridge", function () {
     });
 
     const result = await bridge.runDirectAgentBootstrap({
-      installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+      installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
     });
 
     assert.isTrue(result.ok);
@@ -129,7 +130,7 @@ describe("skillrunner ctl bridge", function () {
     });
 
     const result = await bridge.runDirectAgentBootstrap({
-      installDir: "C:\\SkillRunner\\releases\\v0.5.2",
+      installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
     });
 
     assert.equal(callCount, 2);
@@ -181,7 +182,7 @@ describe("skillrunner ctl bridge", function () {
     const os = await import("os");
     const path = await import("path");
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "zotero-skills-bridge-preflight-"));
-    const installDir = path.join(tempRoot, "releases", "v0.5.2");
+    const installDir = path.join(tempRoot, "releases", DEFAULT_LOCAL_RUNTIME_VERSION);
     const serverDir = path.join(installDir, "server");
     const scriptsDir = path.join(installDir, "scripts");
     const dataDir = path.join(tempRoot, "data");

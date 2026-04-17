@@ -1,3 +1,5 @@
+import { measureAsyncTestPerformanceSpan } from "./testPerformanceProbeBridge";
+
 type SelectionSummary = {
   parentCount: number;
   childCount: number;
@@ -23,46 +25,54 @@ export type SelectionContext = {
 export async function buildSelectionContext(
   items: Zotero.Item[],
 ): Promise<SelectionContext> {
-  const warnings: string[] = [];
-  const groups: SelectionGroups = {
-    parents: [],
-    children: [],
-    attachments: [],
-    notes: [],
-  };
+  return measureAsyncTestPerformanceSpan(
+    "buildSelectionContext",
+    {
+      selectedItemCount: Array.isArray(items) ? items.length : 0,
+    },
+    async () => {
+      const warnings: string[] = [];
+      const groups: SelectionGroups = {
+        parents: [],
+        children: [],
+        attachments: [],
+        notes: [],
+      };
 
-  for (const item of items) {
-    if (item.isNote?.()) {
-      groups.notes.push(await serializeNoteItem(item, warnings));
-      continue;
-    }
-    if (item.isAttachment()) {
-      groups.attachments.push(await serializeAttachment(item, warnings));
-      continue;
-    }
-    if (item.isTopLevelItem()) {
-      groups.parents.push(await serializeParentItem(item, warnings));
-      continue;
-    }
-    groups.children.push(await serializeChildItem(item, warnings));
-  }
+      for (const item of items) {
+        if (item.isNote?.()) {
+          groups.notes.push(await serializeNoteItem(item, warnings));
+          continue;
+        }
+        if (item.isAttachment()) {
+          groups.attachments.push(await serializeAttachment(item, warnings));
+          continue;
+        }
+        if (item.isTopLevelItem()) {
+          groups.parents.push(await serializeParentItem(item, warnings));
+          continue;
+        }
+        groups.children.push(await serializeChildItem(item, warnings));
+      }
 
-  const summary: SelectionSummary = {
-    parentCount: groups.parents.length,
-    childCount: groups.children.length,
-    attachmentCount: groups.attachments.length,
-    noteCount: groups.notes.length,
-  };
+      const summary: SelectionSummary = {
+        parentCount: groups.parents.length,
+        childCount: groups.children.length,
+        attachmentCount: groups.attachments.length,
+        noteCount: groups.notes.length,
+      };
 
-  const selectionType = resolveSelectionType(summary);
+      const selectionType = resolveSelectionType(summary);
 
-  return {
-    selectionType,
-    items: groups,
-    summary,
-    warnings,
-    sampledAt: new Date().toISOString(),
-  };
+      return {
+        selectionType,
+        items: groups,
+        summary,
+        warnings,
+        sampledAt: new Date().toISOString(),
+      };
+    },
+  );
 }
 
 function resolveSelectionType(summary: SelectionSummary) {

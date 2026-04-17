@@ -16,6 +16,7 @@ import {
   requireHostItems,
   requireHostPrefs,
   resolveRuntimeFetch,
+  measureWorkflowTestSpan,
   showWorkflowToast,
   withPackageRuntimeScope,
 } from "../../lib/runtime.mjs";
@@ -2143,13 +2144,29 @@ async function applyTagMutations(item, removeTags, addTags) {
     };
   }
 
-  for (const tag of removed) {
-    item.removeTag(tag);
-  }
-  for (const tag of added) {
-    item.addTag(tag);
-  }
-  await item.saveTx();
+  await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:mutateTagsInMemory",
+    {
+      removeCount: removed.length,
+      addCount: added.length,
+    },
+    async () => {
+      for (const tag of removed) {
+        item.removeTag(tag);
+      }
+      for (const tag of added) {
+        item.addTag(tag);
+      }
+    },
+  );
+  await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:saveTagMutation",
+    {
+      removeCount: removed.length,
+      addCount: added.length,
+    },
+    () => item.saveTx(),
+  );
 
   return {
     changed: true,
@@ -2162,7 +2179,11 @@ async function applyTagMutations(item, removeTags, addTags) {
 
 async function applyResultImpl({ parent, runResult, runtime }) {
   const parentItem = runtime.helpers.resolveItemRef(parent);
-  const output = resolveTagRegulatorOutput(runResult);
+  const output = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:resolveOutput",
+    {},
+    async () => resolveTagRegulatorOutput(runResult),
+  );
   if (!output) {
     return {
       applied: false,
@@ -2175,8 +2196,16 @@ async function applyResultImpl({ parent, runResult, runtime }) {
     };
   }
 
-  const warnings = normalizeAdvisoryStringArray(output.warnings);
-  const suggestTags = normalizeSuggestTagEntries(output.suggest_tags);
+  const warnings = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:normalizeWarnings",
+    {},
+    async () => normalizeAdvisoryStringArray(output.warnings),
+  );
+  const suggestTags = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:normalizeSuggestTags",
+    {},
+    async () => normalizeSuggestTagEntries(output.suggest_tags),
+  );
   if (!suggestTags.ok) {
     return {
       applied: false,
@@ -2203,7 +2232,11 @@ async function applyResultImpl({ parent, runResult, runtime }) {
     };
   }
 
-  const removeTags = normalizeUniqueStringArray(output.remove_tags);
+  const removeTags = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:normalizeRemoveTags",
+    {},
+    async () => normalizeUniqueStringArray(output.remove_tags),
+  );
   if (!removeTags.ok) {
     return {
       applied: false,
@@ -2216,7 +2249,11 @@ async function applyResultImpl({ parent, runResult, runtime }) {
     };
   }
 
-  const addTags = normalizeUniqueStringArray(output.add_tags);
+  const addTags = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:normalizeAddTags",
+    {},
+    async () => normalizeUniqueStringArray(output.add_tags),
+  );
   if (!addTags.ok) {
     return {
       applied: false,
@@ -2229,10 +2266,17 @@ async function applyResultImpl({ parent, runResult, runtime }) {
     };
   }
 
-  const reconciledSuggest = reconcileSuggestTagsAgainstCurrentState({
-    suggestTagEntries,
-    parentItem,
-  });
+  const reconciledSuggest = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:reconcileSuggestState",
+    {
+      suggestCount: suggestTagEntries.length,
+    },
+    async () =>
+      reconcileSuggestTagsAgainstCurrentState({
+        suggestTagEntries,
+        parentItem,
+      }),
+  );
   const reclassifiedAddTags = collectUniqueSuggestTagNames(
     reconciledSuggest.nowControlled,
   );
@@ -2244,29 +2288,57 @@ async function applyResultImpl({ parent, runResult, runtime }) {
     addTags.values,
     reclassifiedAddTags,
   );
-  appendTagRegulatorRuntimeLog({
-    parentItemID:
-      typeof parentItem?.id === "number" && Number.isFinite(parentItem.id)
-        ? parentItem.id
-        : 0,
-    parentItemKey: asString(parentItem?.key),
-    reclassifiedAddCount: reclassifiedAddTags.length,
-    reclassifiedStagedCount: reclassifiedStaged.length,
-    remainingSuggestCount: remainingSuggest.length,
-  });
-
-  const mutation = await applyTagMutations(
-    parentItem,
-    removeTags.values,
-    effectiveAddTags,
+  await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:appendRuntimeLog",
+    {
+      reclassifiedAddCount: reclassifiedAddTags.length,
+      reclassifiedStagedCount: reclassifiedStaged.length,
+      remainingSuggestCount: remainingSuggest.length,
+    },
+    async () =>
+      appendTagRegulatorRuntimeLog({
+        parentItemID:
+          typeof parentItem?.id === "number" && Number.isFinite(parentItem.id)
+            ? parentItem.id
+            : 0,
+        parentItemKey: asString(parentItem?.key),
+        reclassifiedAddCount: reclassifiedAddTags.length,
+        reclassifiedStagedCount: reclassifiedStaged.length,
+        remainingSuggestCount: remainingSuggest.length,
+      }),
   );
 
-  const suggestIntake = await collectSuggestTagsIntake({
-    suggestTagEntries: remainingSuggest,
-    title: `Tag Regulator Suggest Tags - ${asString(parentItem?.getField?.("title") || "") || "Parent Item"}`,
-    parentItem,
-  });
-  const finalAfterTags = collectCurrentTags(parentItem);
+  const mutation = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:applyTagMutations",
+    {
+      removeCount: removeTags.values.length,
+      addCount: effectiveAddTags.length,
+    },
+    () =>
+      applyTagMutations(
+        parentItem,
+        removeTags.values,
+        effectiveAddTags,
+      ),
+  );
+
+  const suggestIntake = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:collectSuggestIntake",
+    {
+      suggestCount: remainingSuggest.length,
+    },
+    () =>
+      collectSuggestTagsIntake({
+        suggestTagEntries: remainingSuggest,
+        title: `Tag Regulator Suggest Tags - ${asString(parentItem?.getField?.("title") || "") || "Parent Item"}`,
+        parentItem,
+      }),
+  );
+  const finalAfterTags = await measureWorkflowTestSpan(
+    "executeApplyResult:tagRegulator:collectFinalTags",
+    {},
+    async () => collectCurrentTags(parentItem),
+  );
   const finalAdded = mergeUniqueStringArrays(
     mutation.added,
     Array.isArray(suggestIntake.appliedToCurrentParent)

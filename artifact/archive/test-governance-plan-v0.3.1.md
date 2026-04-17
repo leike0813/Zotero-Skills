@@ -1,345 +1,284 @@
 # 测试治理计划修订版：`test-governance-plan-v0.3.1-revised`
 
-## Context
+## 当前治理基线
 
-当前仓库测试现状：
+当前仓库继续使用三维测试治理：
 
-- 测试文件总数：**89**
-- 测试代码总行数：**约 33,210 行**
-- 当前主要痛点：
-  - 冗余场景偏多，`lite` 回归反馈偏慢
-  - Zotero 真实宿主中混入了不适合该宿主执行的测试
-  - 3 个巨型文件已经影响维护、定位与拆错回归的成本
+- 执行成本：`lite` / `full`
+- 运行宿主：`node-only` / `zotero-safe` / `zotero-unsafe`
+- 价值等级：`critical` / `standard`
 
-当前超大测试文件：
+当前治理重点已经从“拆 giant file / 参数化合并”推进到下一阶段：
 
-| 文件 | 行数 | 备注 |
-|------|------|------|
-| `test/core/73-skillrunner-local-runtime-manager.test.ts` | 2354 | 核心 giant file |
-| `test/core/70-skillrunner-task-reconciler.test.ts` | 1993 | 核心 giant file |
-| `test/workflow-tag-regulator/64-workflow-tag-regulator.test.ts` | 1968 | 核心 giant file |
-| `test/ui/40-gui-preferences-menu-scan.test.ts` | 1446 | 第二优先级 |
-| `test/node/core/20-workflow-loader-validation.test.ts` | 1415 | 第二优先级 |
-| `test/workflow-reference-matching/24-workflow-reference-matching.test.ts` | 1405 | 第二优先级 |
-| `test/workflow-literature-digest/21-workflow-literature-digest.test.ts` | 835 | 暂不列为首批拆分 |
+- 继续保留 Node 侧全量深度覆盖
+- 将 Zotero 常规回归收敛成双层：
+  - `lite`：日常可用的真实宿主回归集
+  - `full`：稳定优先的关键门禁集，在 `lite` 基础上补齐真实宿主 coverage buckets
+- 避免在真实 GUI 宿主中重复执行 package helper、mock-heavy、fake DOM、复杂 UI override 这类低信号场景
 
-本轮治理目标不是删测试，而是先完成三件事：
+## Zotero 常规集保留原则
 
-1. 明确新的测试分层规则
-2. 做第一批参数化合并与 `full-only` / `node-only` 调整
-3. 拆分 3 个巨型文件
+Zotero 常规集目标不是“覆盖越多越好”，而是：
 
----
+- 证明插件可以在真实 Zotero 宿主启动并注入
+- 证明核心菜单/设置路径仍可用
+- 证明关键 workflow/package 至少有一条真实宿主成功路径
+- 在 `lite` 就覆盖常见真实宿主漂移
+- 在 `full` 再补一层关键门禁 parity
 
-## 治理主轴
+不再属于 Zotero 常规集的类别：
 
-不再使用旧版 Tier 1~4 作为运行主机制，而改成更贴合当前仓库的三维治理：
+- package helper / library 测试
+- filterInputs / schema / payload-shape 纯逻辑测试
+- mock-heavy / seam-heavy / fake DOM 细节
+- editor / picker / dialog / brittle multi-realm override
+- GitHub sync / local runtime / installer / OS integration 深链路
 
-### 1. 执行成本
+## Zotero lite 保留清单
 
-- `lite`
-- `full`
+### `core`
 
-### 2. 运行宿主
+保留：
 
-- `node-only`
-- `zotero-safe`
-- `zotero-unsafe`
+- `test/core/00-startup.test.ts`
+- `test/core/11-selection-context-rebuild.test.ts`
+- `test/core/32-job-queue-transport-integration.test.ts`
+- `test/core/41-workflow-scan-registration.test.ts`
+- `test/core/42-hooks-startup-template-cleanup.test.ts`
+- `test/core/45-runtime-log-manager.test.ts`
+- `test/core/47-workflow-log-instrumentation.test.ts`
+- `test/core/52-runtime-bridge.test.ts`
+- `test/core/87-workflow-package-runtime-diagnostics.test.ts`
+- `test/core/88-workflow-runtime-scope-diagnostics.test.ts`
+- `test/core/89-workflow-debug-probe.test.ts`
 
-### 3. 价值等级
+### `ui`
 
-- `critical`
-- `standard`
+保留：
 
-说明：
+- `test/ui/01-startup-workflow-menu-init.test.ts`
+- `test/ui/35-workflow-settings-execution.test.ts` 的核心 smoke
+- `test/ui/40-gui-preferences-menu-scan.test.ts` 的 registry/context-menu/pass-through smoke
+- `test/ui/50-workflow-settings-dialog-model.test.ts` 的最小设置 smoke
 
-- 本轮**不新增新的 runner、Tier 执行器或元数据编译机制**
-- 继续沿用当前：
-  - `itFullOnly`
-  - `npm run test:*`
-  - `ZOTERO_TEST_DOMAIN`
-- 上述三维规则先作为**治理文档与测试编排规则**落地
+### `workflow`
 
----
+保留：
 
-## 新的测试分层规则
+- `test/workflow-literature-digest/21-workflow-literature-digest.test.ts` 的 canonical request/apply smoke
+- `test/workflow-literature-explainer/21-workflow-literature-explainer.test.ts` 的 canonical request/apply smoke
+- `test/workflow-literature-workbench-package/45-workflow-note-import-export.test.ts` 的 export/import validation smoke
+- `test/workflow-reference-matching/24-workflow-reference-matching.test.ts` 的 canonical matching smoke
+- `test/workflow-mineru/39-workflow-mineru.test.ts` 的 canonical request/materialization smoke
+- `test/workflow-tag-regulator/64a-workflow-tag-regulator-request-building.test.ts` 的 request-building smoke
+- `test/workflow-tag-regulator/64b-workflow-tag-regulator-apply-intake.test.ts` 的 conservative apply-intake smoke
 
-### A. lite / full
+### Lite 中新增的宿主 parity
 
-`lite`：
+- `selection-context-mix-all-top3-parents`
+- `job-queue transport integration`
+- digest idempotent skip
+- mineru sibling-markdown conflict filter
+- tag-regulator conservative apply path
+- workflow registry/context-menu/pass-through host behavior
 
-- 只保留 PR 关键路径
-- 只保留高信号、稳定、执行成本可控的场景
-- 优先保留 `critical` 与高价值 `standard`
+## Zotero full 额外 parity 清单
 
-`full`：
+在 `lite` 基础上，`full` 额外保留：
 
-- 是 `lite` 的严格超集
-- 保留深度回归、环境依赖、遗留兼容、长链路场景
+- `selection-context-mix-all`
+- `task runtime`
+- `job-queue-progress` 的 requestId / deferred / request-created non-terminal 关键用例
+- `workflow-apply-seam-risk-regression`
+- `task-dashboard-history`
+- `task-dashboard-snapshot`
+- `skillrunner-task-reconciler` 的 state-restore / apply-bundle-retry / ledger-reconcile 稳定宿主用例
+- `deferred-workflow-completion-tracker`
+- `workflow-settings-execution` 的 persisted/provider/pass-through 扩展用例
+- `gui-preferences-menu-scan` 的 local-backend controls/status 与 host-shell 扩展用例
+- `skillrunner-run-dialog-ui-e2e-alignment`
+- `skillrunner-run-dialog-waiting-auth-observer`
+- `literature-explainer` backend-shaped result guard
+- `literature-workbench-package` export/import host-safe guards
+- `reference-matching` idempotent / overwrite / parent-related guards
+- `literature-digest` host-context / idempotency guards
+- `mineru` stable host guards
+- `tag-regulator` pre-dialog 与 conservative apply host-safe guards
 
-### B. node-only / zotero-safe / zotero-unsafe
+### Full 的覆盖率桶
 
-`node-only`：
+`full` 不再定义为“lite 稍厚版”，而是按宿主风险覆盖率组织：
 
-- package helper 测试
-- runtime seam 测试
-- mock-heavy 测试
-- 依赖多 realm 注入、宿主隔离、fake DOM 细节结构的测试
+- `zotero-object-lifecycle`
+  - selection context
+  - task runtime
+  - item/note/attachment hierarchy 与宿主持久化
+- `skillrunner-transport-state`
+  - request creation / deferred / request-created non-terminal
+  - history / snapshot / reconcile / deferred completion
+- `workflow-host-context`
+  - buildRequest / applyResult / idempotency / overwrite / host guards
+- `ui-host-shell`
+  - menu / settings / preference shell / run dialog / waiting-auth host behavior
 
-`zotero-safe`：
+默认移出 Zotero 常规集：
 
-- 可以在真实 Zotero 宿主稳定执行
-- 不依赖真实 editor / picker / dialog 打开
-- 不依赖只在某一 JS realm 有效的 mock 注入
+- `reference-note-editor`
+- `tag-manager`
+- `table parity`
+- `GitHub sync`
+- `mock e2e`
+- `dialog rendering`
+- `package-lib`
+- `filterInputs`
+- `schema/payload` 纯逻辑测试
 
-`zotero-unsafe`：
+## 实施约束
 
-- 真实宿主可能弹出 editor / file picker / dialog
-- 或严重依赖复杂 UI override、多 realm 注入、长异步链路
-- 这类测试不得进入 Zotero 环境常规运行
+- 不新增 runner，不改 `test.entries`
+- 不削减 Node 侧覆盖，只调整 Zotero 常规集
+- 优先通过全局 file allowlist 做 Zotero file-level pruning
+- 对少数保留的大文件，在文件内部把非 smoke case 下沉为 `node-only`
 
-### C. 轻量注释约定
+## Zotero 后台清理约束
 
-允许在测试文件或 describe 上增加轻量注释，作为后续治理依据：
+Zotero `full` 的第一优先级是稳定性，而不是速度。真实 Zotero 测试共享
+同一 GUI 进程，因此任何后台循环、timer、session sync、reconciler 或
+dialog-level listener 都不得跨测试泄漏。
 
-- `@mode lite|full`
-- `@runtime node-only|zotero-safe|zotero-unsafe`
-- `@priority critical|standard`
+当前约束：
 
-注意：
+- 每条 Zotero 测试结束后，都必须执行统一的后台 cleanup harness
+- 失败诊断必须先采集，再执行 cleanup
+- 任何显式启动后台循环的测试，不得依赖“自然结束”来释放全局状态
+- 持有 module-level timer/listener/singleton state 的模块，必须提供
+  `reset...ForTests` / `stop...ForTests` 接口供公共 teardown 调用
 
-- 这些注释当前只用于文档化与治理说明
-- 不参与 runner 行为
+对于 `skill-runner` 相关后台异步模块，当前再增加一条 SSOT lifecycle
+contract：
 
-### D. 强约束
+- `stop()` 只负责让旧后台任务失效并禁止续命，不负责清业务状态
+- `drain()` 负责等待本代 in-flight async work 收尾
+- `resetForTests()` 固定为 `stop + drain + clear test-owned state`
+- 关键生产 shutdown/close 路径同样必须使用 `stop + drain`，不能只做
+  stop-only 清理
 
-Zotero 环境测试中禁止引入以下真实 UI 打开路径：
+## Zotero 真实对象清理约束
 
-- editor
-- file picker
-- dialog
+真实 Zotero 宿主测试除了要清后台异步状态，还必须在每条测试结束后清理
+本条测试创建的真实库对象。否则 `full` 长跑会在真实 DB 中持续累积
+parent / note / attachment / collection，进而拖慢尾段 workflow 用例。
 
-现有此类测试必须：
+当前约束：
 
-- 在 Zotero 环境中 `it.skip`
-- 或迁移为 `node-only`
+- real-host 测试对象 cleanup 由共享 harness 统一负责，不能在 workflow
+  文件里各自重复实现
+- 共享 teardown 顺序固定为：
+  1. failure diagnostics
+  2. background runtime cleanup
+  3. tracked real-object cleanup
+- 默认通过 `handlers` 创建的对象必须自动被追踪
+- 直接 `new Zotero.Item(...)` / `new Zotero.Collection()` 的测试必须显式
+  注册到 cleanup harness
+- 删除顺序固定为：
+  1. child notes
+  2. attachments
+  3. other child items
+  4. top-level parent items
+  5. collections
+- `ZOTERO_KEEP_TEST_OBJECTS` 仅用于本地调试保留现场，不可作为常规门禁配置
 
----
+## Zotero Tail Leak Probe Digest
 
-## 第一批参数化合并
+当 `zotero:full` 出现“越到尾段越重”的退化时，默认先启用 staged leak
+probe digest，而不是先调 timeout 或调整执行顺序。
 
-### 1. `test/workflow-reference-matching/24-workflow-reference-matching.test.ts`
+当前约束：
+
+- probe 通过 `ZOTERO_TEST_LEAK_PROBE=1` 显式开启
+- 默认输出目录统一为 `artifact/test-diagnostics/`
+- 共享 Zotero lifecycle 必须采集这些 phase：
+  - `test-start`
+  - `pre-cleanup`
+  - `post-background-cleanup`
+  - `post-object-cleanup`
+  - `domain-end`
+- digest 必须覆盖：
+  - reconciler
+  - session sync
+  - run dialog
+  - local runtime
+  - backend health
+  - runtime logs
+  - real-object cleanup tracking
+  - workflow temp artifacts
+- 最终报告必须同时输出：
+  - raw snapshots
+  - summary
+  - suspicions
+
+## Zotero Tail Performance Probe Digest
+
+如果 staged leak probe 没有给出可操作结论，而 `zotero:full` 仍然表现出
+明显的 tail degradation，则下一步必须升级到 staged performance probe
+digest，而不是直接调 timeout 或排序。
+
+当前约束：
+
+- probe 通过 `ZOTERO_TEST_PERF_PROBE=1` 显式开启
+- 默认输出目录统一为 `artifact/test-diagnostics/`
+- 共享 Zotero lifecycle 必须采集：
+  - `test-start`
+  - `pre-cleanup`
+  - `post-background-cleanup`
+  - `post-object-cleanup`
+  - `domain-end`
+- digest 必须包含：
+  - 关键宿主操作 timing spans
+  - event-loop lag
+  - 宿主资源快照
+  - raw snapshots / spans / summary / suspicions
+- 诊断顺序固定为：
+  1. leak probe 看残留
+  2. performance probe 看成本增长
+
+## 验收口径
+
+- Zotero `core/ui/workflow` 常规回归用例数显著下降
+- 不再包含 editor / picker / dialog 引发的潜在卡死路径
+- Node 定向回归保持全量通过
+- `npx tsc --noEmit` 通过
+
+## Zotero Full Gate 执行拓扑修订
+
+最新诊断表明：
+
+- 容器型残留不是主矛盾
+- `saveTx()` 连续写入会显著放大后续 real-host 测试成本
+- 单进程 Zotero `full` 更像 endurance run，而不是稳定的 CI host-coverage gate
+
+因此当前治理决策是：
+
+- 保持 Zotero `full` coverage contract 不变
+- 将其执行拓扑从单进程长跑改为三个独立 real-host 进程顺序执行：
+  - `core:full`
+  - `ui:full`
+  - `workflow:full`
 
 目标：
 
-- 合并 `filterInputs` 正反例
-- 合并 bbt-lite 模板错误回退族
+- 降低 single-process tail degradation
+- 保持 release gate 的真实宿主覆盖率
+- 为未来继续增加 retained `full` 用例预留增长空间
 
-处理方式：
+## Runtime Log Persistence Hardening
 
-- `filterInputs` 正反场景合并为一个参数化测试
-- bbt-lite 模板错误回退保留为 `itFullOnly` 参数化测试
+最近 node 回归表明，`runtimeLogManager` 的热点不是 retention 逻辑本身，
+而是每次 `appendRuntimeLog()` 都全量重写 `runtimeLogsJson` prefs 文档。
 
-规则：
+当前治理结论：
 
-- 不把 `it` 和 `itFullOnly` 硬并到同一个测试体中
-
-### 2. `test/workflow-literature-digest/21-workflow-literature-digest.test.ts`
-
-目标：
-
-- 合并幂等 / skip 族
-- 拆成 lite 与 full 两组参数化测试
-
-处理方式：
-
-- `lite`：保留核心幂等 / skip 主路径
-- `full`：保留 legacy note 兼容与边缘 skip 计数
-
-说明：
-
-- 本文件当前只有约 835 行，不再列为首批拆分对象
-
-### 3. `test/ui/40-gui-preferences-menu-scan.test.ts`
-
-目标：
-
-- 合并 `requiresSelection` 正反场景
-- 合并 disabled state / no-valid-input hint 相关场景
-
-处理方式：
-
-- 同宿主、同执行模式下收口为参数化测试
-
-### 4. `test/node/core/20-workflow-loader-validation.test.ts`
-
-目标：
-
-- 合并 normalizeSettings 诊断族
-- 合并 schema 正负验证对
-
-处理方式：
-
-- `normalizeSettings` 三类诊断合并为一个参数化测试
-- schema 验证按字段拆成 4 个参数化测试：
-  - `parameters.allowCustom`
-  - `execution.feedback.showNotifications`
-  - `trigger.requiresSelection`
-  - `execution.skillrunner_mode`
-
-参数化合并原则：
-
-- 保留原断言覆盖面
-- 不减少场景，只减少样板代码和重复 setup
-- 参数表显式写出“输入 + 预期”
-- 不能把大量条件分支塞进单个测试内部
-
----
-
-## 第一批 full-only 与 runtime affinity 调整
-
-本轮不再使用“Tier 4 可删除”的表述，而只做两类治理：
-
-- `full-only`
-- `node-only`
-
-### 建议调整
-
-#### `test/core/73-skillrunner-local-runtime-manager.test.ts`
-
-下沉为 `itFullOnly`：
-
-- 本地化 fallback 文案
-- Windows 长路径 / 重试边缘失败
-- persistent log whitelist helper
-- manual deploy command 细节
-
-#### `test/core/70-skillrunner-task-reconciler.test.ts`
-
-下沉为 `itFullOnly`：
-
-- toast 格式验证
-- 日志节流验证
-
-#### `test/workflow-tag-regulator/64-workflow-tag-regulator.test.ts`
-
-明确归类为 `node-only` 或 `full-only`：
-
-- dialog layout
-- renderer DOM 细节
-- fake HTML 结构断言
-
----
-
-## 巨型文件拆分优先级
-
-### 第一批拆分
-
-#### 1. `test/core/73-skillrunner-local-runtime-manager.test.ts`
-
-拆成：
-
-- `73a-skillrunner-deploy-lifecycle.test.ts`
-- `73b-skillrunner-oneclick-start-stop.test.ts`
-- `73c-skillrunner-auto-start-session.test.ts`
-
-#### 2. `test/core/70-skillrunner-task-reconciler.test.ts`
-
-拆成：
-
-- `70a-skillrunner-task-reconciler-state-restore.test.ts`
-- `70b-skillrunner-task-reconciler-apply-bundle-retry.test.ts`
-- `70c-skillrunner-task-reconciler-ledger-reconcile.test.ts`
-
-#### 3. `test/workflow-tag-regulator/64-workflow-tag-regulator.test.ts`
-
-拆成：
-
-- `64a-workflow-tag-regulator-request-building.test.ts`
-- `64b-workflow-tag-regulator-apply-intake.test.ts`
-- `64c-workflow-tag-regulator-dialog-rendering.test.ts`
-
-### 拆分约束
-
-- 保留原编号前缀，新增 `a/b/c`
-- 每个新文件必须自带最小依赖与独立 helper
-- 不跨文件共享隐式状态
-- 拆分完成后删除原文件，避免双重执行
-
-### 第二优先级
-
-- `test/ui/40-gui-preferences-menu-scan.test.ts`
-- `test/workflow-reference-matching/24-workflow-reference-matching.test.ts`
-
-### 当前不建议优先拆分
-
-- `test/workflow-literature-digest/21-workflow-literature-digest.test.ts`
-
-原因：
-
-- 文件体量已明显下降
-- 当前收益低于前三个 giant file
-
----
-
-## 文档与落地方式
-
-本轮需要同步修订：
-
-- `artifact/test-governance-plan-v0.3.1.md`
-- `doc/testing-framework.md`
-- `doc/components/test-suite-governance.md`
-
-至少补充以下规则：
-
-- 何时使用 `itFullOnly`
-- 何时必须 `node-only`
-- Zotero-safe 测试的禁止项
-- 参数化合并规则
-
----
-
-## 批次化测试计划
-
-每完成一个治理批次，只跑最小定向回归：
-
-### 参数化合并后
-
-- 跑对应文件的 Node 定向 mocha
-
-### runtime affinity 调整后
-
-- 跑定向 Zotero 测试
-- 确认不再因 editor / picker / dialog 卡死
-
-### 巨型文件拆分后
-
-- 跑新旧集合等价的定向回归
-- 确认覆盖不回退
-
-### 每批次统一要求
-
-- `npx tsc --noEmit`
-- 对应 Node mocha 定向测试
-- 涉及 Zotero-safe 改动时，补一轮：
-  - `npm run test:zotero:raw -- --no-watch`
-
----
-
-## 验收标准
-
-- `lite` 用例数与总时长可观察下降
-- Zotero workflow 域中不再出现因 editor / picker / dialog 导致的卡死
-- 拆分后的 giant file 覆盖不回退
-- 不新增 flaky 测试
-
----
-
-## 假设与默认
-
-- 默认不引入新的测试 runner
-- 默认保留现有 `itFullOnly`
-- 默认不新增 `itLiteOnly`
-- 默认不做大规模删测，只在证据明确时合并
-- 默认先治理 `73 / 70 / 64`，再处理 `40 / 24`
-- 默认把 `zotero-safe` 作为强约束，优先级高于“是否方便测”
+- runtime log 采用 memory-first + batched persistence
+- 诊断/导出/clear/shutdown 边界必须强制 flush
+- runtime log 测试应验证 durability semantics，而不是依赖 per-append
+  synchronous prefs writes

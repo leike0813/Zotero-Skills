@@ -140,6 +140,11 @@
         return safeText(initialMode).trim().toLowerCase() === "bubble" ? "bubble" : "plain";
       };
     }
+    if (typeof model.toggleRevision !== "function") {
+      model.toggleRevision = function () {
+        return false;
+      };
+    }
     return model;
   }
 
@@ -303,6 +308,12 @@
     replyComposerEl.classList.toggle("hidden", !visible);
   }
 
+  function setReplyComposerCompact(compact) {
+    const compactMode = compact === true;
+    replyComposerEl.classList.toggle("compact", compactMode);
+    replyTextEl.rows = compactMode ? 1 : 3;
+  }
+
   function clearReplyError() {
     replyErrorEl.textContent = "";
     replyErrorEl.classList.add("hidden");
@@ -321,6 +332,7 @@
   function resetReplyComposer() {
     const l = labels();
     clearReplyError();
+    setReplyComposerCompact(false);
     replyTextEl.placeholder = safeText(l.replyPlaceholder) || "Reply to agent...";
     replyTextEl.value = "";
     replySubmitEl.textContent = safeText(l.replySend) || "Send Reply";
@@ -454,15 +466,18 @@
         ? role
         : "system";
     const displayText = safeText(raw.displayText || raw.display_text);
-    const textBody = displayText || safeText(raw.text);
-    if (!textBody.trim()) return null;
+    const rawText = safeText(raw.text);
+    const kind = safeText(raw.kind);
+    if (!(displayText || rawText).trim() && kind.trim().toLowerCase() !== "assistant_revision") {
+      return null;
+    }
     return {
       seq: Number(raw.seq || 0),
       ts: safeText(raw.ts),
       role: normalizedRole,
-      kind: safeText(raw.kind),
-      text: textBody,
-      displayText: displayText || safeText(raw.text),
+      kind,
+      text: rawText,
+      displayText: displayText || rawText,
       displayFormat: safeText(raw.displayFormat || raw.display_format),
       attempt: Number(raw.attempt || 1),
       correlation:
@@ -504,7 +519,7 @@
   function renderMessageEntry(entry, mode) {
     const event = entry.event && typeof entry.event === "object" ? entry.event : {};
     const role = safeText(event.role).trim() || "assistant";
-    const messageText = safeText(event.text).trim();
+    const messageText = safeText(event.displayText || event.text).trim();
     if (!messageText) return null;
     if (mode === "plain") {
       const row = document.createElement("div");
@@ -531,6 +546,113 @@
     body.innerHTML = renderMarkdown(messageText);
     bubble.appendChild(roleEl);
     bubble.appendChild(body);
+    row.appendChild(bubble);
+    return row;
+  }
+
+  function renderRevisionEntry(entry, mode) {
+    const revisionEvent =
+      entry.originalEvent && typeof entry.originalEvent === "object"
+        ? entry.originalEvent
+        : {};
+    const attempt = Number(revisionEvent.attempt) > 0 ? Number(revisionEvent.attempt) : 1;
+    const revisionId = safeText(entry.id) || `revision-${attempt}-${safeText(entry.messageId)}`;
+    const normalizedText = safeText(
+      revisionEvent.displayText || revisionEvent.display_text || revisionEvent.text,
+    ).trim();
+    const l = labels();
+    const previewText = safeText(l.revisionCollapsedPrefix) || "(collapsed)";
+    const toggle = function () {
+      if (state.chatModel && typeof state.chatModel.toggleRevision === "function") {
+        state.chatModel.toggleRevision(revisionId);
+        renderChatModel({ preserveScroll: true });
+      }
+    };
+
+    if (mode === "plain") {
+      const row = document.createElement("div");
+      row.className = "chat-plain-revision";
+      const header = document.createElement("div");
+      header.className = "chat-plain-revision-header";
+      header.setAttribute("role", "button");
+      header.setAttribute("tabindex", "0");
+      header.setAttribute(
+        "aria-label",
+        entry.collapsed
+          ? safeText(l.revisionExpand) || "Show rejected final reply"
+          : safeText(l.revisionCollapse) || "Hide rejected final reply",
+      );
+      const title = document.createElement("span");
+      title.className = "chat-plain-revision-title";
+      title.textContent = safeText(l.roleRevision) || "Rejected Final Reply";
+      const arrow = document.createElement("span");
+      arrow.className = "thinking-arrow";
+      arrow.textContent = entry.collapsed ? "◀" : "▼";
+      header.appendChild(title);
+      header.appendChild(arrow);
+      header.addEventListener("click", toggle);
+      header.addEventListener("keydown", function (evt) {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          toggle();
+        }
+      });
+      row.appendChild(header);
+      if (entry.collapsed) {
+        const latestLine = document.createElement("div");
+        latestLine.className = "chat-plain-revision-latest";
+        appendRenderedMarkdown(latestLine, previewText);
+        row.appendChild(latestLine);
+      } else {
+        const body = document.createElement("div");
+        body.className = "chat-plain-revision-body";
+        appendRenderedMarkdown(body, normalizedText || previewText);
+        row.appendChild(body);
+      }
+      return row;
+    }
+
+    const row = document.createElement("div");
+    row.className = "chat-row agent";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble agent revision-bubble";
+    bubble.setAttribute("role", "button");
+    bubble.setAttribute("tabindex", "0");
+    bubble.setAttribute(
+      "aria-label",
+      entry.collapsed
+        ? safeText(l.revisionExpand) || "Show rejected final reply"
+        : safeText(l.revisionCollapse) || "Hide rejected final reply",
+    );
+    const header = document.createElement("div");
+    header.className = "revision-header";
+    const title = document.createElement("span");
+    title.className = "revision-title";
+    title.textContent = safeText(l.roleRevision) || "Rejected Final Reply";
+    const arrow = document.createElement("span");
+    arrow.className = "revision-arrow";
+    arrow.textContent = entry.collapsed ? "◀" : "▼";
+    header.appendChild(title);
+    header.appendChild(arrow);
+    bubble.appendChild(header);
+    bubble.addEventListener("click", toggle);
+    bubble.addEventListener("keydown", function (evt) {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        toggle();
+      }
+    });
+    if (entry.collapsed) {
+      const latestLine = document.createElement("div");
+      latestLine.className = "revision-latest";
+      appendRenderedMarkdown(latestLine, previewText);
+      bubble.appendChild(latestLine);
+    } else {
+      const body = document.createElement("div");
+      body.className = "revision-body";
+      appendRenderedMarkdown(body, normalizedText || previewText);
+      bubble.appendChild(body);
+    }
     row.appendChild(bubble);
     return row;
   }
@@ -670,6 +792,13 @@
         }
         return;
       }
+      if (entry.type === "revision") {
+        const node = renderRevisionEntry(entry, mode);
+        if (node) {
+          chatEl.appendChild(node);
+        }
+        return;
+      }
       if (entry.type !== "thinking") return;
       const node = renderThinkingEntry(entry, mode);
       if (node) {
@@ -686,7 +815,13 @@
 
   function appendChatBubble(event, key, options) {
     const opts = options || {};
-    if (!event || !event.text.trim()) return;
+    if (
+      !event ||
+      (!(safeText(event.displayText || event.text).trim()) &&
+        safeText(event.kind).trim().toLowerCase() !== "assistant_revision")
+    ) {
+      return;
+    }
     if (key && state.renderedChatKeys.has(key)) return;
     if (key) state.renderedChatKeys.add(key);
 
@@ -700,6 +835,9 @@
 
     if (chatEl.childElementCount === 1 && chatEl.firstElementChild?.classList.contains("muted")) {
       chatEl.textContent = "";
+    }
+    if (safeText(event.kind).trim().toLowerCase() === "assistant_revision") {
+      return;
     }
     const node = renderMessageEntry({ event }, state.chatDisplayMode);
     if (node) {
@@ -846,7 +984,8 @@
     promptTitleEl.textContent = safeText(l.pendingInputTitle) || "Pending Input Request";
     promptMetaIdLabelEl.textContent = safeText(l.interactionIdLabel) || "interaction_id:";
     promptMetaKindLabelEl.textContent = safeText(l.kindLabel) || "kind:";
-    promptTextEl.textContent = p.prompt;
+    promptTextEl.textContent = "";
+    promptTextEl.classList.add("hidden");
     promptIdEl.textContent = p.interactionId > 0 ? String(p.interactionId) : "-";
     promptKindEl.textContent = p.kind;
     interactionIdEl.value = p.interactionId > 0 ? String(p.interactionId) : "";
@@ -882,6 +1021,12 @@
       promptRequiredEl.textContent = "";
       promptRequiredEl.classList.add("hidden");
     }
+    const compactReply = p.kind !== "open_text";
+    setReplyComposerCompact(compactReply);
+    replyTextEl.placeholder = compactReply
+      ? safeText(l.replyPlaceholderAlternative) || "Or enter a different request..."
+      : (p.hint || safeText(l.replyPlaceholder) || "Reply to agent...");
+
     if (p.options.length) {
       renderActionButtons(promptActionsEl, p.options.map(function (opt) {
         return {
@@ -897,12 +1042,11 @@
           },
         };
       }));
-      setReplyComposerVisible(false);
-      setReplyEnabled(false);
+      setReplyComposerVisible(true);
+      setReplyEnabled(p.interactionId > 0);
     } else {
       promptActionsEl.classList.add("hidden");
       promptActionsEl.textContent = "";
-      replyTextEl.placeholder = p.hint || safeText(l.replyPlaceholder) || "Reply to agent...";
       setReplyComposerVisible(true);
       setReplyEnabled(p.interactionId > 0);
     }

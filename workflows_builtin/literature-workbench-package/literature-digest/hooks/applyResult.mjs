@@ -1,7 +1,7 @@
 import {
   upsertLiteratureDigestGeneratedNotes,
 } from "../../lib/literatureDigestNotes.mjs";
-import { withPackageRuntimeScope } from "../../lib/runtime.mjs";
+import { measureWorkflowTestSpan, withPackageRuntimeScope } from "../../lib/runtime.mjs";
 
 function normalizePathForCompare(targetPath) {
   const text = String(targetPath || "").trim();
@@ -169,67 +169,106 @@ async function resolveSourceAttachmentItemKey({ parentItem, request, runtime }) 
 
 async function applyResultImpl({ parent, bundleReader, request, runtime }) {
   const parentItem = runtime.helpers.resolveItemRef(parent);
-  const resultJsonText = await bundleReader.readText("result/result.json");
-  const result = JSON.parse(resultJsonText);
-
-  const digestResolved = await readBundleTextWithPathFallback({
-    bundleReader,
-    fieldName: "digest_path",
-    rawPath: result?.data?.digest_path,
-    fallbackPath: "artifacts/digest.md",
-  });
-  const referencesResolved = await readBundleTextWithPathFallback({
-    bundleReader,
-    fieldName: "references_path",
-    rawPath: result?.data?.references_path,
-    fallbackPath: "artifacts/references.json",
-  });
-  const citationAnalysisResolved = await readBundleTextWithPathFallback({
-    bundleReader,
-    fieldName: "citation_analysis_path",
-    rawPath: result?.data?.citation_analysis_path,
-    fallbackPath: "artifacts/citation_analysis.json",
-  });
-
-  const referencesPayload = {
-    version: 1,
-    entry: referencesResolved.entryPath,
-    format: "json",
-    references: runtime.helpers.normalizeReferencesPayload(
-      JSON.parse(referencesResolved.text),
-    ),
-  };
-  const citationPayload = {
-    version: 1,
-    entry: citationAnalysisResolved.entryPath,
-    format: "json",
-    citation_analysis: JSON.parse(citationAnalysisResolved.text) || {},
-  };
-  const sourceAttachmentItemKey = await resolveSourceAttachmentItemKey({
-    parentItem,
-    request,
-    runtime,
-  });
-
-  return upsertLiteratureDigestGeneratedNotes({
-    runtime,
-    parentItem,
-    digest: {
-      payload: {
-        version: 1,
-        entry: digestResolved.entryPath,
-        format: "markdown",
-        content: digestResolved.text,
-      },
-      sourceAttachmentItemKey,
+  const result = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:readResultJson",
+    {},
+    async () => {
+      const resultJsonText = await bundleReader.readText("result/result.json");
+      return JSON.parse(resultJsonText);
     },
-    references: {
-      payload: referencesPayload,
-    },
-    citationAnalysis: {
-      payload: citationPayload,
-    },
-  });
+  );
+
+  const digestResolved = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:readDigestArtifact",
+    {},
+    () =>
+      readBundleTextWithPathFallback({
+        bundleReader,
+        fieldName: "digest_path",
+        rawPath: result?.data?.digest_path,
+        fallbackPath: "artifacts/digest.md",
+      }),
+  );
+  const referencesResolved = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:readReferencesArtifact",
+    {},
+    () =>
+      readBundleTextWithPathFallback({
+        bundleReader,
+        fieldName: "references_path",
+        rawPath: result?.data?.references_path,
+        fallbackPath: "artifacts/references.json",
+      }),
+  );
+  const citationAnalysisResolved = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:readCitationArtifact",
+    {},
+    () =>
+      readBundleTextWithPathFallback({
+        bundleReader,
+        fieldName: "citation_analysis_path",
+        rawPath: result?.data?.citation_analysis_path,
+        fallbackPath: "artifacts/citation_analysis.json",
+      }),
+  );
+
+  const referencesPayload = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:normalizeReferencesPayload",
+    {},
+    async () => ({
+      version: 1,
+      entry: referencesResolved.entryPath,
+      format: "json",
+      references: runtime.helpers.normalizeReferencesPayload(
+        JSON.parse(referencesResolved.text),
+      ),
+    }),
+  );
+  const citationPayload = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:normalizeCitationPayload",
+    {},
+    async () => ({
+      version: 1,
+      entry: citationAnalysisResolved.entryPath,
+      format: "json",
+      citation_analysis: JSON.parse(citationAnalysisResolved.text) || {},
+    }),
+  );
+  const sourceAttachmentItemKey = await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:resolveSourceAttachment",
+    {},
+    () =>
+      resolveSourceAttachmentItemKey({
+        parentItem,
+        request,
+        runtime,
+      }),
+  );
+
+  return measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:writeGeneratedNotes",
+    {},
+    () =>
+      upsertLiteratureDigestGeneratedNotes({
+        runtime,
+        parentItem,
+        digest: {
+          payload: {
+            version: 1,
+            entry: digestResolved.entryPath,
+            format: "markdown",
+            content: digestResolved.text,
+          },
+          sourceAttachmentItemKey,
+        },
+        references: {
+          payload: referencesPayload,
+        },
+        citationAnalysis: {
+          payload: citationPayload,
+        },
+      }),
+  );
 }
 
 export async function applyResult(args) {

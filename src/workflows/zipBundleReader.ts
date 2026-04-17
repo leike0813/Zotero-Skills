@@ -1,4 +1,5 @@
 import { joinPath } from "../utils/path";
+import { recordLeakProbeTempArtifactForTests } from "../modules/testLeakProbeTempArtifacts";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 const dynamicImport: DynamicImport = new Function(
@@ -67,6 +68,10 @@ export class ZipBundleReader {
     };
     this.extractedDirPromise = (async () => {
       const extractedDir = await mkTempDir("zotero-skills-bundle");
+      recordLeakProbeTempArtifactForTests({
+        kind: "zip-extracted-dir",
+        path: extractedDir,
+      });
       const zipReader = runtime.Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
         runtime.Ci.nsIZipReader,
       );
@@ -115,6 +120,10 @@ export class ZipBundleReader {
     if (!this.extractedDirPromise) {
       this.extractedDirPromise = (async () => {
         const tmpDir = await mkTempDir("zotero-skills-bundle");
+        recordLeakProbeTempArtifactForTests({
+          kind: "zip-extracted-dir",
+          path: tmpDir,
+        });
         const childProcess = await dynamicImport("child_process");
         const util = await dynamicImport("util");
         const execFileAsync = util.promisify(childProcess.execFile);

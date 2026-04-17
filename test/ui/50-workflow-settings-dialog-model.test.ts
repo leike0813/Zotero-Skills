@@ -10,6 +10,9 @@ import {
   upsertSkillRunnerModelCacheEntry,
 } from "../../src/providers/skillrunner/modelCache";
 import { config } from "../../package.json";
+import { isZoteroRuntime } from "./workflow-test-utils";
+
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
 
 type FakeControl = {
   getAttribute: (name: string) => string | null;
@@ -53,7 +56,7 @@ describe("workflow settings dialog model", function () {
     }
   });
 
-  it("builds deterministic render model without mutating initial state", function () {
+  itNodeOnly("builds deterministic render model without mutating initial state", function () {
     const initialState = {
       selectedProfile: "skillrunner-default",
       persistedWorkflowParams: { bbtPort: 23124, mode: "strict" },
@@ -117,7 +120,7 @@ describe("workflow settings dialog model", function () {
     assert.deepEqual(modeEntry?.enumValues || [], ["strict", "fuzzy"]);
   });
 
-  it("collects schema values with correct coercion", function () {
+  itNodeOnly("collects schema values with correct coercion", function () {
     const controls: FakeControl[] = [
       makeControl(
         {
@@ -167,7 +170,7 @@ describe("workflow settings dialog model", function () {
     });
   });
 
-  it("builds centralized drafts for persistent and run-once payloads", function () {
+  itNodeOnly("builds centralized drafts for persistent and run-once payloads", function () {
     const persistedWorkflow = makeContainer([
       makeControl(
         {
@@ -230,7 +233,7 @@ describe("workflow settings dialog model", function () {
     });
   });
 
-  it("collects editable enum value from custom input as final payload", function () {
+  itNodeOnly("collects editable enum value from custom input as final payload", function () {
     const controls: FakeControl[] = [
       makeControl(
         {
@@ -254,7 +257,7 @@ describe("workflow settings dialog model", function () {
     });
   });
 
-  it("collects opencode provider_id and model from choice controls", function () {
+  itNodeOnly("collects opencode provider_id and model from choice controls", function () {
     const controls: FakeControl[] = [
       makeControl(
         {

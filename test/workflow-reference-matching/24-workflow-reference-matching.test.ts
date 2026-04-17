@@ -11,6 +11,7 @@ import {
   decodeBase64Utf8,
   encodeBase64Utf8,
   expectWorkflowSummaryCounter,
+  isZoteroRuntime,
   workflowsPath,
 } from "./workflow-test-utils";
 import { isFullTestMode } from "../zotero/testMode";
@@ -237,18 +238,20 @@ function listRelatedKeys(itemRef: Zotero.Item | number) {
 }
 
 const itFullOnly = isFullTestMode() ? it : it.skip;
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+const itZoteroFullOrNode = isZoteroRuntime() && !isFullTestMode() ? it.skip : it;
 
 describe("workflow: reference-matching", function () {
   this.timeout(30000);
 
-  it("loads reference-matching workflow manifest from workflows directory", async function () {
+  itNodeOnly("loads reference-matching workflow manifest from workflows directory", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     assert.equal(workflow.manifest.provider, "pass-through");
     assert.isFunction(workflow.hooks.filterInputs);
     assert.isFunction(workflow.hooks.applyResult);
   });
 
-  it("filterInputs accepts references notes and rejects non-references notes", async function () {
+  itNodeOnly("filterInputs accepts references notes and rejects non-references notes", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -373,7 +376,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(requests.__stats?.skippedUnits, 0);
   });
 
-  it("reports skipped parent units when only part of selected parents are valid", async function () {
+  itNodeOnly("reports skipped parent units when only part of selected parents are valid", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const parentValid = await handlers.item.create({
       itemType: "journalArticle",
@@ -405,7 +408,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(requests.__stats?.skippedUnits, 1);
   });
 
-  it("parses references payload and fills citekey for exact title match", async function () {
+  itNodeOnly("parses references payload and fills citekey for exact title match", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Exact Match for Reference Workflow",
@@ -444,7 +447,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "Exact2021");
   });
 
-  it("prioritizes explicit citekey and short-circuits before score matching", async function () {
+  itNodeOnly("prioritizes explicit citekey and short-circuits before score matching", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Reference Matching Direct CiteKey Item",
@@ -489,7 +492,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "DirectHit2026");
   });
 
-  it("falls back to predicted/score matching when explicit citekey misses", async function () {
+  itNodeOnly("falls back to predicted/score matching when explicit citekey misses", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Reference Matching Explicit Miss Fallback",
@@ -528,7 +531,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "Fallback2027");
   });
 
-  it("parses html-escaped plain payload JSON and fills citekey", async function () {
+  itNodeOnly("parses html-escaped plain payload JSON and fills citekey", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Plain Payload Html Escaped",
@@ -565,7 +568,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "Plain2024");
   });
 
-  it("matches by predicted citekey using default template when explicit citekey is absent", async function () {
+  itNodeOnly("matches by predicted citekey using default template when explicit citekey is absent", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Unrelated Candidate Title For Predicted Key",
@@ -603,7 +606,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "zhao_neural-runtime_2031");
   });
 
-  it("uses custom citekey template override from workflow parameter", async function () {
+  itNodeOnly("uses custom citekey template override from workflow parameter", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Unrelated Candidate Title For Custom Template",
@@ -643,7 +646,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "2032-liu");
   });
 
-  it("supports bbt-lite expression template and matches by predicted citekey", async function () {
+  itNodeOnly("supports bbt-lite expression template and matches by predicted citekey", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Unrelated Candidate Title For BBT Lite Expression",
@@ -818,7 +821,7 @@ describe("workflow: reference-matching", function () {
     }
   });
 
-  it("keeps note unchanged when payload is missing or damaged", async function () {
+  itNodeOnly("keeps note unchanged when payload is missing or damaged", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -982,7 +985,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "ScoreWinner2028");
   });
 
-  it("ignores deleted duplicates when matching by predicted citekey via zotero-api", async function () {
+  itNodeOnly("ignores deleted duplicates when matching by predicted citekey via zotero-api", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const title = "Deleted Duplicate Filtering Runtime Proof";
     const year = "2037";
@@ -1043,7 +1046,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, citekey);
   });
 
-  it("keeps payload JSON and html citekey column synchronized after overwrite", async function () {
+  itNodeOnly("keeps payload JSON and html citekey column synchronized after overwrite", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Sync Payload and Html",
@@ -1085,7 +1088,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(payload.references?.[0]?.citekey, "Sync2022");
   });
 
-  it("renders Source by precedence and Locator in deterministic order", async function () {
+  itNodeOnly("renders Source by precedence and Locator in deterministic order", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Reference Matching Source Locator",
@@ -1264,7 +1267,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(Zotero.Items.get(referenceNote.id)!.getNote(), before);
   });
 
-  it("adds matched library items to references note parent related items", async function () {
+  itNodeOnly("adds matched library items to references note parent related items", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const matched = await createLibraryItem({
       title: "Reference Matching Parent Related Exact",
@@ -1309,7 +1312,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(applied.related_skipped, 0);
   });
 
-  it("adds only matched subset to parent related items when references are partially matched", async function () {
+  itNodeOnly("adds only matched subset to parent related items when references are partially matched", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const matched = await createLibraryItem({
       title: "Reference Matching Parent Related Partial Hit",
@@ -1357,7 +1360,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(applied.related_skipped, 0);
   });
 
-  it("keeps parent related updates idempotent and only fills missing links", async function () {
+  itZoteroFullOrNode("keeps parent related updates idempotent and only fills missing links", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     const matchedA = await createLibraryItem({
       title: "Reference Matching Parent Related Idempotent A",
@@ -1425,7 +1428,7 @@ describe("workflow: reference-matching", function () {
     assert.equal(second.related_skipped, 0);
   });
 
-  it("keeps matching flow running when references note has no parent item", async function () {
+  itNodeOnly("keeps matching flow running when references note has no parent item", async function () {
     const workflow = await getReferenceMatchingWorkflow();
     await createLibraryItem({
       title: "Reference Matching Orphan References Note",

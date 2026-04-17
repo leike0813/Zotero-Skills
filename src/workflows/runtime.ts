@@ -27,6 +27,7 @@ import {
   summarizeWorkflowExecutionError,
 } from "./errorMeta";
 import { canWorkflowRunWithoutSelection } from "./triggerPolicy";
+import { measureAsyncTestPerformanceSpan } from "../modules/testPerformanceProbeBridge";
 import type {
   LoadedWorkflow,
   WorkflowRuntimeContext,
@@ -946,108 +947,118 @@ export async function executeBuildRequests(args: {
   };
   runtime?: Partial<WorkflowRuntimeContext>;
 }) {
-  const runtime = createRuntimeContext(args.runtime);
-  const resolved = await resolveSelectionContexts({
-    workflow: args.workflow,
-    selectionContext: args.selectionContext,
-    runtime,
-  });
-  const resolvedSelections = resolved.contexts;
-
-  if (resolvedSelections.length === 0) {
-    throw createNoValidInputUnitsError({
+  return measureAsyncTestPerformanceSpan(
+    "executeBuildRequests",
+    {
       workflowId: args.workflow.manifest.id,
-      totalUnits: resolved.totalUnits,
-    });
-  }
-
-  const requests: BuildRequestsResult = [];
-  for (const selectionContext of resolvedSelections) {
-    const passThroughFallbackKind =
-      String(args.workflow.manifest.provider || "").trim() ===
-      PASS_THROUGH_BACKEND_TYPE
-        ? PASS_THROUGH_REQUEST_KIND
-        : "";
-    const requestKind = String(
-      args.workflow.manifest.request?.kind || passThroughFallbackKind,
-    ).trim();
-
-    if (args.workflow.hooks.buildRequest) {
-      const builtRequest = enrichRequestWithSelectionMeta(
-        await runWorkflowHookWithDiagnostics({
-          workflow: args.workflow,
-          runtime,
-          hookName: "buildRequest",
-          component: "workflow-runtime",
-          operation: "build-request",
-          work: (hookRuntime) =>
-            args.workflow.hooks.buildRequest!({
-              selectionContext,
-              manifest: args.workflow.manifest,
-              executionOptions: args.executionOptions,
-              runtime: hookRuntime,
-            }),
-        }),
-        selectionContext,
-      );
-      const finalBuiltRequest = withInjectedSkillRunnerExecutionMode({
+      inputUnit: args.workflow.manifest.inputs?.unit || "attachment",
+      hasBuildHook: !!args.workflow.hooks.buildRequest,
+    },
+    async () => {
+      const runtime = createRuntimeContext(args.runtime);
+      const resolved = await resolveSelectionContexts({
         workflow: args.workflow,
-        requestKind,
-        request: builtRequest,
+        selectionContext: args.selectionContext,
+        runtime,
       });
-      if (requestKind) {
-        assertRequestPayloadContract({
-          requestKind,
-          request: finalBuiltRequest,
+      const resolvedSelections = resolved.contexts;
+
+      if (resolvedSelections.length === 0) {
+        throw createNoValidInputUnitsError({
+          workflowId: args.workflow.manifest.id,
+          totalUnits: resolved.totalUnits,
         });
       }
-      requests.push(finalBuiltRequest);
-      continue;
-    }
 
-    const request = args.workflow.manifest.request;
-    const requestKindFromManifest = String(
-      request?.kind || passThroughFallbackKind,
-    ).trim();
-    if (!requestKindFromManifest) {
-      throw new Error(
-        `Workflow ${args.workflow.manifest.id} missing buildRequest hook and request declaration`,
-      );
-    }
+      const requests: BuildRequestsResult = [];
+      for (const selectionContext of resolvedSelections) {
+        const passThroughFallbackKind =
+          String(args.workflow.manifest.provider || "").trim() ===
+          PASS_THROUGH_BACKEND_TYPE
+            ? PASS_THROUGH_REQUEST_KIND
+            : "";
+        const requestKind = String(
+          args.workflow.manifest.request?.kind || passThroughFallbackKind,
+        ).trim();
 
-    const compiledRequest = enrichRequestWithSelectionMeta(
-      compileDeclarativeRequest({
-        kind: requestKindFromManifest,
-        selectionContext,
-        manifest: args.workflow.manifest,
-        executionOptions: args.executionOptions,
-      }),
-      selectionContext,
-    );
-    const finalCompiledRequest = withInjectedSkillRunnerExecutionMode({
-      workflow: args.workflow,
-      requestKind: requestKindFromManifest,
-      request: compiledRequest,
-    });
-    assertRequestPayloadContract({
-      requestKind: requestKindFromManifest,
-      request: finalCompiledRequest,
-    });
-    requests.push(finalCompiledRequest);
-  }
-  const skippedUnits = Math.max(0, resolved.totalUnits - requests.length);
-  Object.defineProperty(requests, "__stats", {
-    value: {
-      totalUnits: resolved.totalUnits,
-      requestCount: requests.length,
-      skippedUnits,
-    } satisfies BuildRequestStats,
-    enumerable: false,
-    configurable: true,
-    writable: false,
-  });
+        if (args.workflow.hooks.buildRequest) {
+          const builtRequest = enrichRequestWithSelectionMeta(
+            await runWorkflowHookWithDiagnostics({
+              workflow: args.workflow,
+              runtime,
+              hookName: "buildRequest",
+              component: "workflow-runtime",
+              operation: "build-request",
+              work: (hookRuntime) =>
+                args.workflow.hooks.buildRequest!({
+                  selectionContext,
+                  manifest: args.workflow.manifest,
+                  executionOptions: args.executionOptions,
+                  runtime: hookRuntime,
+                }),
+            }),
+            selectionContext,
+          );
+          const finalBuiltRequest = withInjectedSkillRunnerExecutionMode({
+            workflow: args.workflow,
+            requestKind,
+            request: builtRequest,
+          });
+          if (requestKind) {
+            assertRequestPayloadContract({
+              requestKind,
+              request: finalBuiltRequest,
+            });
+          }
+          requests.push(finalBuiltRequest);
+          continue;
+        }
 
-  return requests;
+        const request = args.workflow.manifest.request;
+        const requestKindFromManifest = String(
+          request?.kind || passThroughFallbackKind,
+        ).trim();
+        if (!requestKindFromManifest) {
+          throw new Error(
+            `Workflow ${args.workflow.manifest.id} missing buildRequest hook and request declaration`,
+          );
+        }
+
+        const compiledRequest = enrichRequestWithSelectionMeta(
+          compileDeclarativeRequest({
+            kind: requestKindFromManifest,
+            selectionContext,
+            manifest: args.workflow.manifest,
+            executionOptions: args.executionOptions,
+          }),
+          selectionContext,
+        );
+        const finalCompiledRequest = withInjectedSkillRunnerExecutionMode({
+          workflow: args.workflow,
+          requestKind: requestKindFromManifest,
+          request: compiledRequest,
+        });
+        assertRequestPayloadContract({
+          requestKind: requestKindFromManifest,
+          request: finalCompiledRequest,
+        });
+        requests.push(finalCompiledRequest);
+      }
+      const skippedUnits = Math.max(0, resolved.totalUnits - requests.length);
+      Object.defineProperty(requests, "__stats", {
+        value: {
+          totalUnits: resolved.totalUnits,
+          requestCount: requests.length,
+          skippedUnits,
+        } satisfies BuildRequestStats,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+
+      return requests;
+    },
+  );
 }
 
 export async function executeApplyResult(args: {
@@ -1061,21 +1072,47 @@ export async function executeApplyResult(args: {
   runResult?: unknown;
   runtime?: Partial<WorkflowRuntimeContext>;
 }) {
-  const runtime = createRuntimeContext(args.runtime);
-  return runWorkflowHookWithDiagnostics({
-    workflow: args.workflow,
-    runtime,
-    hookName: "applyResult",
-    component: "workflow-runtime",
-    operation: "apply-result",
-    work: (hookRuntime) =>
-      args.workflow.hooks.applyResult({
-        parent: args.parent,
-        bundleReader: args.bundleReader,
-        request: args.request,
-        runResult: args.runResult,
-        manifest: args.workflow.manifest,
-        runtime: hookRuntime,
-      }),
-  });
+  return measureAsyncTestPerformanceSpan(
+    "executeApplyResult",
+    {
+      workflowId: args.workflow.manifest.id,
+      hasRequest: typeof args.request !== "undefined",
+      hasRunResult: typeof args.runResult !== "undefined",
+    },
+    async () => {
+      const runtime = createRuntimeContext(args.runtime);
+      const hookResult = await measureAsyncTestPerformanceSpan(
+        "executeApplyResult:hook",
+        {
+          workflowId: args.workflow.manifest.id,
+          hasRequest: typeof args.request !== "undefined",
+          hasRunResult: typeof args.runResult !== "undefined",
+        },
+        () =>
+          runWorkflowHookWithDiagnostics({
+            workflow: args.workflow,
+            runtime,
+            hookName: "applyResult",
+            component: "workflow-runtime",
+            operation: "apply-result",
+            work: (hookRuntime) =>
+              args.workflow.hooks.applyResult({
+                parent: args.parent,
+                bundleReader: args.bundleReader,
+                request: args.request,
+                runResult: args.runResult,
+                manifest: args.workflow.manifest,
+                runtime: hookRuntime,
+              }),
+          }),
+      );
+      return measureAsyncTestPerformanceSpan(
+        "executeApplyResult:finalize",
+        {
+          workflowId: args.workflow.manifest.id,
+        },
+        async () => hookResult,
+      );
+    },
+  );
 }

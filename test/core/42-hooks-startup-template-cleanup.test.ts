@@ -9,6 +9,7 @@ import {
   resetRuntimeLogAllowedLevels,
   setRuntimeLogDiagnosticMode,
 } from "../../src/modules/runtimeLogManager";
+import { cleanupBackgroundRuntimeForZoteroTests } from "../../src/modules/testRuntimeCleanup";
 
 type LocalizationRequest = {
   id: string;
@@ -69,7 +70,7 @@ describe("hooks startup template cleanup", function () {
     runtime.Localization = MockLocalization;
   });
 
-  afterEach(function () {
+  afterEach(async function () {
     const runtime = globalThis as {
       addon?: unknown;
       Localization?: unknown;
@@ -83,6 +84,7 @@ describe("hooks startup template cleanup", function () {
     setDebugModeOverrideForTests();
     resetRuntimeLogAllowedLevels();
     setRuntimeLogDiagnosticMode(false);
+    await cleanupBackgroundRuntimeForZoteroTests();
   });
 
   it("registers preferences pane on startup", async function () {

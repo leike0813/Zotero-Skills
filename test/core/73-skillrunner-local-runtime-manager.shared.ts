@@ -4,6 +4,7 @@ import { loadBackendsRegistry } from "../../src/backends/registry";
 import {
   buildManualDeployCommands,
   deployAndConfigureLocalSkillRunner,
+  DEFAULT_LOCAL_RUNTIME_VERSION,
   ensureManagedLocalRuntimeForBackend,
   resetManagedLocalRuntimeStateChangeListenersForTests,
   resetManagedRuntimeAsyncTriggerForTests,
@@ -129,7 +130,7 @@ function setupSkillRunnerLocalRuntimeManagerSuite() {
       true,
     );
     Zotero.Prefs.clear(localRuntimeStatePrefKey, true);
-    Zotero.Prefs.set(localRuntimeVersionPrefKey, "v0.5.2", true);
+    Zotero.Prefs.set(localRuntimeVersionPrefKey, DEFAULT_LOCAL_RUNTIME_VERSION, true);
     (globalThis as { fetch?: unknown }).fetch = undefined;
     (globalThis as { IOUtils?: unknown }).IOUtils = {
       exists: async () => true,
@@ -261,7 +262,7 @@ function registerSkillRunnerDeployLifecycleSegmentOne() {
     await setLocalRuntimeAutoPullEnabled(true);
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok, JSON.stringify(result));
@@ -310,7 +311,7 @@ function registerSkillRunnerDeployLifecycleSegmentOne() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok, JSON.stringify(result));
@@ -339,7 +340,7 @@ function registerSkillRunnerDeployLifecycleSegmentOne() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok, JSON.stringify(result));
@@ -356,8 +357,8 @@ function registerSkillRunnerOneclickSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -427,7 +428,7 @@ function registerSkillRunnerOneclickSegmentOne() {
     });
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
     for (let i = 0; i < 30; i++) {
       if (modelCacheRefreshIds.length > 0) {
@@ -457,8 +458,8 @@ function registerSkillRunnerOneclickSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -529,8 +530,8 @@ function registerSkillRunnerOneclickSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -577,7 +578,7 @@ function registerSkillRunnerOneclickSegmentOne() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok);
@@ -593,8 +594,8 @@ function registerSkillRunnerOneclickSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -639,7 +640,7 @@ function registerSkillRunnerOneclickSegmentOne() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isFalse(result.ok);
@@ -652,7 +653,7 @@ function registerSkillRunnerOneclickSegmentOne() {
 
   it("plans one-click deploy when runtime info is missing", async function () {
     const result = await planLocalRuntimeOneclick({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok);
@@ -672,8 +673,8 @@ function registerSkillRunnerOneclickSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -695,7 +696,7 @@ function registerSkillRunnerOneclickSegmentOne() {
     );
 
     const result = await planLocalRuntimeOneclick({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok);
@@ -766,7 +767,7 @@ function registerSkillRunnerDeployLifecycleSegmentTwo() {
 
     try {
       const result = await deployAndConfigureLocalSkillRunner({
-        version: "v0.5.2",
+        version: DEFAULT_LOCAL_RUNTIME_VERSION,
         forcedBranch: "deploy",
       });
       assert.isTrue(result.ok, JSON.stringify(result));
@@ -790,8 +791,8 @@ function registerSkillRunnerDeployLifecycleSegmentTwo() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -960,8 +961,8 @@ function registerSkillRunnerAutoStartSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -1035,8 +1036,8 @@ function registerSkillRunnerAutoStartSegmentOne() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeState: "stopped",
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
@@ -1513,14 +1514,14 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
     const deletedPaths: string[] = [];
     const existingPaths = new Set([
-      "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       "C:\\SkillRunner\\releases",
       "C:\\SkillRunner\\agent-cache\\npm",
       "C:\\SkillRunner\\agent-cache\\uv_cache",
@@ -1592,13 +1593,13 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
     const existingPaths = new Set([
-      "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       "C:\\SkillRunner\\releases",
       "C:\\SkillRunner\\agent-cache\\npm",
       "C:\\SkillRunner\\agent-cache\\uv_cache",
@@ -1707,8 +1708,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -1777,7 +1778,7 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
       forcedBranch: "deploy",
     });
 
@@ -1808,14 +1809,14 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
     const removedPaths: string[] = [];
     const existingPaths = new Set([
-      "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+      `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       "C:\\SkillRunner\\releases",
       "C:\\SkillRunner\\agent-cache\\npm",
       "C:\\SkillRunner\\agent-cache\\uv_cache",
@@ -1898,8 +1899,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -1977,8 +1978,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -2049,7 +2050,7 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -2112,8 +2113,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -2180,8 +2181,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -2244,8 +2245,8 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
       localRuntimeStatePrefKey,
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
       }),
       true,
     );
@@ -2345,7 +2346,7 @@ function registerSkillRunnerDeployLifecycleSegmentThree() {
     );
 
     const result = await deployAndConfigureLocalSkillRunner({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
 
     assert.isTrue(result.ok);
@@ -2433,8 +2434,8 @@ function registerSkillRunnerAutoStartSegmentTwo() {
       JSON.stringify({
         managedBackendId: "local-skillrunner-backend",
         autoStartPaused: false,
-        installDir: "C:\\SkillRunner\\releases\\v0.5.2",
-        ctlPath: "C:\\SkillRunner\\releases\\v0.5.2\\scripts\\skill-runnerctl.ps1",
+        installDir: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}`,
+        ctlPath: `C:\\SkillRunner\\releases\\${DEFAULT_LOCAL_RUNTIME_VERSION}\\scripts\\skill-runnerctl.ps1`,
         runtimeHost: "127.0.0.1",
         runtimePort: 29813,
         requestedPort: 29813,
@@ -2464,7 +2465,7 @@ function registerSkillRunnerDeployLifecycleSegmentFour() {
 
   itFullOnly("builds manual deploy commands using bridge-equivalent bootstrap and up flow", async function () {
     const commandText = buildManualDeployCommands({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
       installRoot: "C:\\Users\\tester\\AppData\\Local\\SkillRunner\\releases",
       host: "127.0.0.1",
       port: 29813,
@@ -2475,7 +2476,7 @@ function registerSkillRunnerDeployLifecycleSegmentFour() {
     assert.notInclude(commandText, "skill-runnerctl");
 
     const result = await getLocalRuntimeManualDeployCommands({
-      version: "v0.5.2",
+      version: DEFAULT_LOCAL_RUNTIME_VERSION,
     });
     assert.isTrue(result.ok);
     assert.equal(result.stage, "manual-deploy-commands");

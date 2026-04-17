@@ -2069,3 +2069,12 @@ export async function openTaskManagerDialog(args?: {
 
   taskManagerDialog = undefined;
 }
+
+export async function resetTaskManagerDialogRuntimeForTests() {
+  externalSelectTab = undefined;
+  if (isWindowAlive(taskManagerDialog?.window)) {
+    taskManagerDialog?.window?.close();
+    await Promise.resolve();
+  }
+  taskManagerDialog = undefined;
+}

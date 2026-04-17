@@ -19,11 +19,16 @@ import { executeBuildRequests } from "../../src/workflows/runtime";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
 import {
   fixturePath,
+  isZoteroRuntime,
   workflowsPath,
   joinPath,
   mkTempDir,
   writeUtf8,
 } from "./workflow-test-utils";
+import { isFullTestMode } from "../zotero/testMode";
+
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+const itZoteroFullOrNode = isZoteroRuntime() && !isFullTestMode() ? it.skip : it;
 
 async function ensureWorkflowRegistryLoaded() {
   await rescanWorkflowRegistry({ workflowsDir: workflowsPath() });
@@ -156,7 +161,7 @@ describe("workflow settings execution", function () {
     assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
-  it("applies per-submit execution overrides without mutating persisted settings", async function () {
+  itZoteroFullOrNode("applies per-submit execution overrides without mutating persisted settings", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
@@ -203,7 +208,7 @@ describe("workflow settings execution", function () {
     assert.equal(persisted.providerOptions.no_cache, false);
   });
 
-  it("persists explicit A->B updates for default settings", async function () {
+  itZoteroFullOrNode("persists explicit A->B updates for default settings", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
@@ -235,7 +240,7 @@ describe("workflow settings execution", function () {
     assert.equal(persisted.providerOptions.no_cache, true);
   });
 
-  it("enforces interactive-mode runtime options for interactive workflows", async function () {
+  itNodeOnly("enforces interactive-mode runtime options for interactive workflows", async function () {
     updateWorkflowSettings("literature-explainer", {
       backendId: "skillrunner-alt",
       providerOptions: {
@@ -260,7 +265,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.hard_timeout_seconds, 900);
   });
 
-  it("enforces auto-mode runtime options for auto workflows", async function () {
+  itNodeOnly("enforces auto-mode runtime options for auto workflows", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-alt",
       providerOptions: {
@@ -285,7 +290,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.hard_timeout_seconds, 1200);
   });
 
-  it("normalizes opencode provider_id + model into separate execution fields", async function () {
+  itNodeOnly("normalizes opencode provider_id + model into separate execution fields", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -332,7 +337,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.effort, "high");
   });
 
-  it("maps persisted opencode canonical model id to provider model name in settings descriptor", async function () {
+  itNodeOnly("maps persisted opencode canonical model id to provider model name in settings descriptor", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -391,7 +396,7 @@ describe("workflow settings execution", function () {
     assert.equal(descriptor.providerOptions.effort, "default");
   });
 
-  it("keeps legacy opencode provider/model@effort string compatible", async function () {
+  itNodeOnly("keeps legacy opencode provider/model@effort string compatible", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -434,7 +439,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.effort, "high");
   });
 
-  it("shows provider-scoped qwen settings using provider_id + model", async function () {
+  itZoteroFullOrNode("shows provider-scoped qwen settings using provider_id + model", async function () {
     upsertSkillRunnerModelCacheEntry({
       backendId: "skillrunner-alt",
       baseUrl: "http://127.0.0.1:18030",
@@ -495,7 +500,7 @@ describe("workflow settings execution", function () {
     );
   });
 
-  it("hides provider_id for non provider-scoped engines but keeps canonical provider internally", async function () {
+  itNodeOnly("hides provider_id for non provider-scoped engines but keeps canonical provider internally", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
     const workflow = loaded.workflows.find(
       (entry) => entry.manifest.id === "literature-digest",
@@ -525,7 +530,7 @@ describe("workflow settings execution", function () {
     assert.equal(descriptor.providerOptions.effort, "default");
   });
 
-  it("normalizes legacy model@effort for single-provider engines", async function () {
+  itNodeOnly("normalizes legacy model@effort for single-provider engines", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-primary",
       providerOptions: {
@@ -549,7 +554,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.effort, "high");
   });
 
-  it("returns persisted snapshot when settings page opens", async function () {
+  itNodeOnly("returns persisted snapshot when settings page opens", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
@@ -581,7 +586,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.providerOptions.no_cache, false);
   });
 
-  it("filters profile options by workflow provider in settings descriptor", async function () {
+  itNodeOnly("filters profile options by workflow provider in settings descriptor", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
     const workflow = loaded.workflows.find(
       (entry) => entry.manifest.id === "literature-digest",
@@ -601,7 +606,7 @@ describe("workflow settings execution", function () {
     assert.isFalse(profileIds.includes("generic-http-local"));
   });
 
-  it("drops incompatible persisted backendId when provider mismatches", async function () {
+  itNodeOnly("drops incompatible persisted backendId when provider mismatches", async function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "generic-http-local",
     });
@@ -626,7 +631,7 @@ describe("workflow settings execution", function () {
     );
   });
 
-  it("uses latest persisted values for settings defaults after persistent update", function () {
+  itNodeOnly("uses latest persisted values for settings defaults after persistent update", function () {
     updateWorkflowSettings("literature-digest", {
       backendId: "skillrunner-primary",
       workflowParams: { language: "zh-CN" },
@@ -713,7 +718,7 @@ describe("workflow settings execution", function () {
     assert.deepEqual(requests[0].parameter, { hello: "world" });
   });
 
-  it("builds configurable pass-through descriptor without requiring backend profile", async function () {
+  itZoteroFullOrNode("builds configurable pass-through descriptor without requiring backend profile", async function () {
     await ensureWorkflowRegistryLoaded();
     clearWorkflowSettings("reference-matching");
     const loaded = await loadWorkflowManifests(workflowsPath());
@@ -735,7 +740,7 @@ describe("workflow settings execution", function () {
     assert.equal(descriptor.hasConfigurableSettings, true);
   });
 
-  it("persists GitHub workflow params for tag-manager without requiring backend profile", async function () {
+  itNodeOnly("persists GitHub workflow params for tag-manager without requiring backend profile", async function () {
     await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("tag-manager", {
       workflowParams: {
@@ -766,7 +771,7 @@ describe("workflow settings execution", function () {
     assert.equal(descriptor.workflowParams.github_token, "secret-token");
   });
 
-  it("applies persisted bbt port parameter for reference-matching workflow", async function () {
+  itNodeOnly("applies persisted bbt port parameter for reference-matching workflow", async function () {
     await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
@@ -788,7 +793,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.workflowParams.bbt_port, 24119);
   });
 
-  it("falls back to default bbt port when persisted value is invalid", async function () {
+  itNodeOnly("falls back to default bbt port when persisted value is invalid", async function () {
     await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
@@ -810,7 +815,7 @@ describe("workflow settings execution", function () {
     assert.equal(context.workflowParams.bbt_port, 23119);
   });
 
-  it("applies persisted bbt-lite citekey template for reference-matching workflow", async function () {
+  itNodeOnly("applies persisted bbt-lite citekey template for reference-matching workflow", async function () {
     await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {
@@ -834,7 +839,7 @@ describe("workflow settings execution", function () {
     );
   });
 
-  it("rejects invalid bbt-lite citekey template and falls back to last valid/default", async function () {
+  itNodeOnly("rejects invalid bbt-lite citekey template and falls back to last valid/default", async function () {
     await ensureWorkflowRegistryLoaded();
     updateWorkflowSettings("reference-matching", {
       workflowParams: {

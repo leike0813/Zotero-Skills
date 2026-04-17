@@ -8,6 +8,7 @@ import { executeBuildRequests } from "../../src/workflows/runtime";
 import { isFullTestMode } from "./testMode";
 import {
   fixturePath,
+  isZoteroRuntime,
   workflowsPath,
 } from "./workflow-test-utils";
 
@@ -43,7 +44,8 @@ async function isMockSkillRunnerReachable(baseUrl: string) {
   }
 }
 
-const describeJobQueueTransportSuite = isFullTestMode() ? describe : describe.skip;
+const describeJobQueueTransportSuite =
+  isZoteroRuntime() || isFullTestMode() ? describe : describe.skip;
 
 describeJobQueueTransportSuite("job-queue: transport integration", function () {
   this.timeout(20000);

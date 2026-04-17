@@ -214,6 +214,26 @@ export function subscribeSkillRunnerBackendHealth(
   };
 }
 
+export function getSkillRunnerBackendHealthRegistryRuntimeForTests() {
+  let flaggedBackendCount = 0;
+  let failureBackoffEntryCount = 0;
+  for (const state of states.values()) {
+    if (state.reconcileFlag) {
+      flaggedBackendCount += 1;
+    }
+    if (state.failureStreak > 0 || state.backoffLevel > 0) {
+      failureBackoffEntryCount += 1;
+    }
+  }
+  return {
+    trackedBackendCount: states.size,
+    flaggedBackendCount,
+    failureBackoffEntryCount,
+    listenerCount: listeners.size,
+  };
+}
+
 export function resetSkillRunnerBackendHealthRegistryForTests() {
   states.clear();
+  listeners.clear();
 }

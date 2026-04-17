@@ -418,7 +418,7 @@ export function listSkillRunnerReconnectCandidates() {
 
 export function resetSkillRunnerRequestLedgerForTests() {
   writeRecordsMap(new Map<string, SkillRunnerRequestLedgerRecord>());
-  emitLedgerChanged();
+  listeners.clear();
 }
 
 export function mapSkillRunnerLedgerSnapshotToJobState(

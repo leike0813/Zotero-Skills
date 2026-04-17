@@ -21,13 +21,11 @@ import {
 import { resolveRuntimeToolkit } from "./utils/runtimeBridge";
 import {
   startSkillRunnerModelCacheAutoRefresh,
-  stopSkillRunnerModelCacheAutoRefresh,
 } from "./providers/skillrunner/modelCache";
 import {
   reconcileSkillRunnerBackendTaskLedgerOnce,
   purgeSkillRunnerBackendReconcileState,
   startSkillRunnerTaskReconciler,
-  stopSkillRunnerTaskReconciler,
 } from "./modules/skillRunnerTaskReconciler";
 import {
   deployAndConfigureLocalSkillRunner,
@@ -36,11 +34,9 @@ import {
   isLocalRuntimeAutoStartPaused,
   planLocalRuntimeOneclick,
   previewLocalRuntimeUninstall,
-  releaseManagedLocalRuntimeLeaseOnShutdown,
   runManagedRuntimeStartupPreflightProbe,
   resolveManagedLocalSkillsFolderPath,
   startManagedLocalRuntimeAutoEnsureLoop,
-  stopManagedLocalRuntimeAutoEnsureLoop,
   stopLocalRuntime,
   uninstallLocalRuntime,
 } from "./modules/skillRunnerLocalRuntimeManager";
@@ -51,6 +47,8 @@ import { refreshSkillRunnerModelCacheForBackend } from "./providers/skillrunner/
 import { MANAGED_LOCAL_BACKEND_ID } from "./modules/skillRunnerLocalRuntimeConstants";
 import { isDebugModeEnabled } from "./modules/debugMode";
 import { untrackSkillRunnerBackendHealth } from "./modules/skillRunnerBackendHealthRegistry";
+import { shutdownSkillRunnerAsyncLifecycle } from "./modules/skillRunnerAsyncLifecycle";
+import { flushRuntimeLogsPersistence } from "./modules/runtimeLogManager";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -281,11 +279,9 @@ async function onMainWindowUnload(win: Window): Promise<void> {
   addon.data.dialog?.window?.close();
 }
 
-function onShutdown(): void {
-  stopManagedLocalRuntimeAutoEnsureLoop();
-  void releaseManagedLocalRuntimeLeaseOnShutdown();
-  stopSkillRunnerModelCacheAutoRefresh();
-  stopSkillRunnerTaskReconciler();
+async function onShutdown(): Promise<void> {
+  await shutdownSkillRunnerAsyncLifecycle();
+  await flushRuntimeLogsPersistence();
   for (const win of Zotero.getMainWindows?.() || []) {
     removeDashboardToolbarButton(win);
   }

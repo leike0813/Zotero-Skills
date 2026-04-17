@@ -35,10 +35,13 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "snapshot.statusSemantics");
     assert.include(js, "function setReplyEnabled");
     assert.include(js, "function setReplyComposerVisible");
+    assert.include(js, "function setReplyComposerCompact");
     assert.include(js, "semantics.normalized === \"waiting_user\"");
     assert.include(js, "semantics.normalized === \"waiting_auth\"");
     assert.include(js, "setReplyComposerVisible(false)");
     assert.include(js, "setReplyComposerVisible(true)");
+    assert.include(js, "setReplyComposerCompact(compactReply)");
+    assert.include(js, "replyPlaceholderAlternative");
   });
 
   it("aligns interactive submit flow with explicit run state refresh after submit", async function () {
@@ -92,6 +95,7 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "raw.displayText || raw.display_text");
     assert.include(js, "typeof model.setDisplayMode === \"function\"");
     assert.include(js, "typeof model.getDisplayMode === \"function\"");
+    assert.include(js, "typeof model.toggleRevision !== \"function\"");
     assert.include(js, "function renderMarkdown");
     assert.include(js, "html: false");
     assert.include(js, "breaks: true");
@@ -101,11 +105,26 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "setChatDisplayMode(\"bubble\")");
   });
 
+  it("renders assistant_revision through dedicated revision branches instead of normal assistant bubbles", async function () {
+    const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    assert.include(js, "function renderRevisionEntry");
+    assert.include(js, "entry.type === \"revision\"");
+    assert.include(js, "chat-plain-revision");
+    assert.include(js, "revision-bubble");
+    assert.include(js, "roleRevision");
+    assert.include(js, "revisionCollapsedPrefix");
+    assert.include(js, "state.chatModel.toggleRevision");
+    assert.include(js, "kind.trim().toLowerCase() !== \"assistant_revision\"");
+  });
+
   it("keeps pending prompt card and terminal summary split aligned with backend-driven display", async function () {
     const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
     assert.include(js, "safeText(uiHints.prompt).trim()");
     assert.include(js, "uploadSpecs(uiHints.files)");
     assert.include(js, "promptFilesEl");
+    assert.include(js, "promptTextEl.textContent = \"\"");
+    assert.include(js, "promptTextEl.classList.add(\"hidden\")");
+    assert.notInclude(js, "promptTextEl.textContent = p.prompt");
     assert.include(js, "renderFinalSummary(semantics.normalized)");
     assert.notInclude(js, "isStructuredDoneMessage");
   });
@@ -115,8 +134,11 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(css, ".chat-panel.plain-mode");
     assert.include(css, ".chat-panel.bubble-mode");
     assert.include(css, ".chat-plain-process");
+    assert.include(css, ".chat-plain-revision");
     assert.include(css, ".chat-plain-body");
     assert.include(css, ".thinking-bubble");
+    assert.include(css, ".revision-bubble");
+    assert.include(css, "#reply-composer.compact");
     assert.include(css, "line-height: 1.4");
     assert.include(css, "line-height: 1.5");
   });

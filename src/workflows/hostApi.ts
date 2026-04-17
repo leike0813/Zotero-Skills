@@ -5,6 +5,11 @@ import {
   unregisterWorkflowEditorRenderer,
 } from "../modules/workflowEditorHost";
 import { appendRuntimeLog } from "../modules/runtimeLogManager";
+import {
+  recordLeakProbeTempArtifactForTests,
+  releaseLeakProbeTempArtifactForTests,
+} from "../modules/testLeakProbeTempArtifacts";
+import { recordTestPerformanceSpan } from "../modules/testPerformanceProbeBridge";
 import { showWorkflowToast } from "../modules/workflowExecution/feedbackSeam";
 import {
   resolveRuntimeAddon,
@@ -380,6 +385,9 @@ export function createWorkflowHostApi(): WorkflowHostApi {
     },
     logging: {
       appendRuntimeLog,
+      recordPerformanceSpanForTests: recordTestPerformanceSpan,
+      recordLeakProbeTempArtifactForTests,
+      releaseLeakProbeTempArtifactForTests,
     },
     file: {
       pathToFile(path: string) {

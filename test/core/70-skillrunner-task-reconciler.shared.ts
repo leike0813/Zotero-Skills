@@ -307,6 +307,13 @@ function forceApplyRetryDueNow(reconciler: SkillRunnerTaskReconciler) {
 
 function setupSkillRunnerTaskReconcilerSuite() {
   const originalFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+  const trackedReconcilers: SkillRunnerTaskReconciler[] = [];
+
+  function createTrackedReconciler() {
+    const reconciler = new SkillRunnerTaskReconciler();
+    trackedReconcilers.push(reconciler);
+    return reconciler;
+  }
 
   beforeEach(function () {
     setPref("skillRunnerRequestLedgerJson", "");
@@ -338,7 +345,10 @@ function setupSkillRunnerTaskReconcilerSuite() {
     });
   });
 
-  afterEach(function () {
+  afterEach(async function () {
+    for (const reconciler of trackedReconcilers.splice(0)) {
+      await reconciler.resetForTests();
+    }
     (globalThis as { fetch?: typeof fetch }).fetch = originalFetch;
     setPref("skillRunnerRequestLedgerJson", "");
     setPref("skillRunnerDeferredTasksJson", "");
@@ -352,11 +362,13 @@ function setupSkillRunnerTaskReconcilerSuite() {
     setSkillRunnerBackendReconcileFailureToastEmitterForTests();
     setSkillRunnerTaskLifecycleToastEmitterForTests();
   });
+
+  return { createTrackedReconciler };
 }
 
 export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
   describe("skillrunner task reconciler: state restore", function () {
-    setupSkillRunnerTaskReconcilerSuite();
+    const { createTrackedReconciler } = setupSkillRunnerTaskReconcilerSuite();
 
   it("maps backend status to local job state one-to-one", function () {
     assert.equal(mapSkillRunnerBackendStatusToJobState("queued"), "queued");
@@ -395,7 +407,7 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Deferred Apply Retry Success Parent" },
@@ -482,7 +494,7 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.start();
     await reconciler.reconcilePending();
     reconciler.stop();
@@ -535,7 +547,7 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.start();
     await reconciler.reconcilePending();
     reconciler.stop();
@@ -562,7 +574,7 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -603,7 +615,7 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
   });
 
   it("preserves existing non-terminal context when a request-created job later reports local failed state", async function () {
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     const runningJob = makeDeferredJob({
       id: "job-recoverable-existing",
       requestId: "req-recoverable-existing",
@@ -686,9 +698,10 @@ export function registerSkillRunnerTaskReconcilerStateRestoreTests() {
 
 export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
   describe("skillrunner task reconciler: apply bundle retry", function () {
-    setupSkillRunnerTaskReconcilerSuite();
+    const { createTrackedReconciler } = setupSkillRunnerTaskReconcilerSuite();
 
   it("applies interactive bundle success to the parent note using backend-shaped result bundle", async function () {
+    this.timeout(5000);
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Interactive Bundle Apply Parent" },
@@ -740,7 +753,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -887,7 +900,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: workflow.manifest.id,
       workflowLabel: workflow.manifest.label || workflow.manifest.id,
@@ -962,7 +975,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       itemType: "journalArticle",
       fields: { title: "Deferred Apply Retry Success Parent" },
     });
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1035,7 +1048,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       itemType: "journalArticle",
       fields: { title: "Toast Succeeded Parent" },
     });
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1121,7 +1134,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       itemType: "journalArticle",
       fields: { title: "Deferred Summary Replay Parent" },
     });
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1264,7 +1277,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1430,7 +1443,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
       itemType: "journalArticle",
       fields: { title: "Prompt Retry Parent" },
     });
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1537,7 +1550,7 @@ export function registerSkillRunnerTaskReconcilerApplyBundleRetryTests() {
 
 export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
   describe("skillrunner task reconciler: ledger reconcile", function () {
-    setupSkillRunnerTaskReconcilerSuite();
+    const { createTrackedReconciler } = setupSkillRunnerTaskReconcilerSuite();
 
   it("emits failed toast when interactive task reaches terminal failed", async function () {
     (globalThis as { fetch?: typeof fetch }).fetch = async (url: string) => {
@@ -1561,7 +1574,7 @@ export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
       toasts.push(payload);
     });
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1618,7 +1631,7 @@ export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
       toasts.push(payload);
     });
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1673,7 +1686,7 @@ export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -1976,7 +1989,7 @@ export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
       return createJsonResponse({ error: "unexpected route" }, 404);
     };
 
-    const reconciler = new SkillRunnerTaskReconciler();
+    const reconciler = createTrackedReconciler();
     reconciler.registerFromJob({
       workflowId: "literature-explainer",
       workflowLabel: "Literature Explainer",
@@ -2065,7 +2078,7 @@ export function registerSkillRunnerTaskReconcilerLedgerReconcileTests() {
         return createJsonResponse({ error: "unexpected route" }, 404);
       };
 
-      const reconciler = new SkillRunnerTaskReconciler();
+      const reconciler = createTrackedReconciler();
       reconciler.registerFromJob({
         workflowId: "literature-explainer",
         workflowLabel: "Literature Explainer",

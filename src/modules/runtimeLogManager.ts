@@ -244,6 +244,7 @@ const MAX_OBJECT_KEYS = 200;
 const REDACTED = "<redacted>";
 const DEFAULT_ALLOWED_LEVELS = new Set<RuntimeLogLevel>(["info", "warn", "error"]);
 const SENSITIVE_KEY = /(authorization|token|secret|password|api[-_]?key|cookie|bearer)/i;
+const PERSIST_DEBOUNCE_MS = 25;
 
 let sequence = 0;
 let droppedEntries = 0;
@@ -259,6 +260,9 @@ const listeners = new Set<RuntimeLogListener>();
 const allowedLevels = new Set<RuntimeLogLevel>(DEFAULT_ALLOWED_LEVELS);
 let diagnosticMode = false;
 let hydrated = false;
+let persistenceDirty = false;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistenceFlushCount = 0;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -595,19 +599,45 @@ function parseRuntimeLogEntry(raw: unknown): RuntimeLogEntry | null {
   return entry;
 }
 
-function persistRuntimeLogs() {
+function buildRuntimeLogDocument() {
+  return {
+    entries,
+    droppedEntries,
+    droppedByReason,
+  };
+}
+
+function clearPersistTimer() {
+  if (!persistTimer) {
+    return;
+  }
+  clearTimeout(persistTimer);
+  persistTimer = null;
+}
+
+function persistRuntimeLogsNow(force = false) {
+  clearPersistTimer();
+  if (!force && !persistenceDirty) {
+    return;
+  }
   try {
-    setPref(
-      HISTORY_PREF_KEY,
-      JSON.stringify({
-        entries,
-        droppedEntries,
-        droppedByReason,
-      }),
-    );
+    setPref(HISTORY_PREF_KEY, JSON.stringify(buildRuntimeLogDocument()));
   } catch {
     // Ignore prefs persistence failures in runtime logger.
   }
+  persistenceDirty = false;
+  persistenceFlushCount += 1;
+}
+
+function scheduleRuntimeLogPersistence() {
+  persistenceDirty = true;
+  if (persistTimer) {
+    return;
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistRuntimeLogsNow();
+  }, PERSIST_DEBOUNCE_MS);
 }
 
 function pruneExpiredRuntimeLogs(nowMs = Date.now()) {
@@ -720,7 +750,7 @@ function hydrateRuntimeLogsIfNeeded() {
     const beforeDropped = droppedEntries;
     enforceRetentionBudgets();
     if (beforeDropped !== droppedEntries) {
-      persistRuntimeLogs();
+      persistRuntimeLogsNow(true);
     }
   } catch {
     entries.length = 0;
@@ -732,7 +762,7 @@ function hydrateRuntimeLogsIfNeeded() {
       byte_budget: 0,
       expired: 0,
     };
-    persistRuntimeLogs();
+    persistRuntimeLogsNow(true);
   }
 }
 
@@ -740,10 +770,19 @@ function emitChanged() {
   if (listeners.size === 0) {
     return;
   }
-  const snapshot = snapshotRuntimeLogs();
+  const snapshot = snapshotRuntimeLogsInternal();
   for (const listener of listeners) {
     listener(snapshot);
   }
+}
+
+function flushRuntimeLogsPersistenceNow() {
+  hydrateRuntimeLogsIfNeeded();
+  persistRuntimeLogsNow();
+}
+
+export async function flushRuntimeLogsPersistence() {
+  flushRuntimeLogsPersistenceNow();
 }
 
 export function setRuntimeLogAllowedLevels(levels: RuntimeLogLevel[]) {
@@ -764,7 +803,8 @@ export function setRuntimeLogDiagnosticMode(enabled: boolean) {
   hydrateRuntimeLogsIfNeeded();
   diagnosticMode = enabled === true;
   enforceRetentionBudgets();
-  persistRuntimeLogs();
+  persistenceDirty = true;
+  persistRuntimeLogsNow();
   emitChanged();
 }
 
@@ -816,7 +856,7 @@ export function appendRuntimeLog(input: RuntimeLogInput) {
   entryByteSizes.set(entry.id, entryBytes);
   estimatedBytes += entryBytes;
   enforceRetentionBudgets();
-  persistRuntimeLogs();
+  scheduleRuntimeLogPersistence();
   emitChanged();
   return cloneEntry(entry);
 }
@@ -912,12 +952,12 @@ export function clearRuntimeLogs() {
     byte_budget: 0,
     expired: 0,
   };
-  persistRuntimeLogs();
+  persistenceDirty = true;
+  persistRuntimeLogsNow(true);
   emitChanged();
 }
 
-export function snapshotRuntimeLogs(): RuntimeLogSnapshot {
-  hydrateRuntimeLogsIfNeeded();
+function snapshotRuntimeLogsInternal(): RuntimeLogSnapshot {
   const budget = resolveActiveRetentionBudget();
   return {
     entries: entries.map((entry) => cloneEntry(entry)),
@@ -932,6 +972,32 @@ export function snapshotRuntimeLogs(): RuntimeLogSnapshot {
       redactedPlaceholder: REDACTED,
       stringLimit: MAX_STRING_LENGTH,
     },
+  };
+}
+
+export function snapshotRuntimeLogs(): RuntimeLogSnapshot {
+  flushRuntimeLogsPersistenceNow();
+  return snapshotRuntimeLogsInternal();
+}
+
+export function getRuntimeLogManagerSnapshotForTests() {
+  hydrateRuntimeLogsIfNeeded();
+  const snapshot = snapshotRuntimeLogsInternal();
+  return {
+    entryCount: snapshot.entries.length,
+    estimatedBytes: snapshot.estimatedBytes,
+    droppedEntries: snapshot.droppedEntries,
+    listenerCount: listeners.size,
+    retentionMode: snapshot.retentionMode,
+    diagnosticMode: snapshot.diagnosticMode,
+  };
+}
+
+export function getRuntimeLogPersistenceStateForTests() {
+  return {
+    dirty: persistenceDirty,
+    hasPendingTimer: persistTimer !== null,
+    flushCount: persistenceFlushCount,
   };
 }
 
@@ -1146,7 +1212,7 @@ function buildIncidentsFromTimeline(timeline: RuntimeDiagnosticTimelineEvent[]) 
 export function buildRuntimeDiagnosticBundle(args: {
   filters?: RuntimeLogListFilters;
 } = {}): RuntimeDiagnosticBundleV1 {
-  hydrateRuntimeLogsIfNeeded();
+  flushRuntimeLogsPersistenceNow();
   const filters = args.filters || {};
   const timelineEntries = listRuntimeLogs({
     ...filters,

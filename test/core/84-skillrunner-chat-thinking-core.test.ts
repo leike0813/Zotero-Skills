@@ -24,9 +24,11 @@ function event(args: {
   seq: number;
   role: "assistant" | "user" | "system";
   kind: string;
-  text: string;
+  text?: string;
+  displayText?: string;
   attempt?: number;
   messageId?: string;
+  messageFamilyId?: string;
   replacesMessageId?: string;
   processType?: string;
 }) {
@@ -34,10 +36,12 @@ function event(args: {
     seq: args.seq,
     role: args.role,
     kind: args.kind,
-    text: args.text,
+    text: args.text ?? "",
+    ...(args.displayText ? { displayText: args.displayText } : {}),
     attempt: args.attempt ?? 1,
     correlation: {
       ...(args.messageId ? { message_id: args.messageId } : {}),
+      ...(args.messageFamilyId ? { message_family_id: args.messageFamilyId } : {}),
       ...(args.replacesMessageId
         ? { replaces_message_id: args.replacesMessageId }
         : {}),
@@ -196,5 +200,135 @@ describe("skillrunner chat thinking core", function () {
     assert.equal(entries[0].type, "message");
     assert.equal(entries[0].atomKind, "final");
     assert.equal((entries[0].event as Record<string, unknown>).text, "Rendered final answer");
+  });
+
+  it("turns superseded finals into folded revision entries and keeps only winner final visible", async function () {
+    const core = await loadThinkingChatCore();
+    const model = core.createThinkingChatModel("bubble");
+    model.consume(
+      event({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rejected final",
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_revision",
+        text: "",
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Winning final",
+        messageId: "f-2",
+        messageFamilyId: "family-1",
+      }),
+    );
+    const entries = model.getEntries();
+    assert.lengthOf(entries, 2);
+    assert.equal(entries[0].type, "revision");
+    assert.equal(entries[0].collapsed, true);
+    assert.equal(entries[1].type, "message");
+    assert.equal(entries[1].atomKind, "final");
+    assert.equal((entries[1].event as Record<string, unknown>).text, "Winning final");
+  });
+
+  it("keeps separate revision entries for multiple rejected finals in one family", async function () {
+    const core = await loadThinkingChatCore();
+    const model = core.createThinkingChatModel("plain");
+    model.consume(
+      event({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rejected final one",
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_revision",
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rejected final two",
+        messageId: "f-2",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 4,
+        role: "assistant",
+        kind: "assistant_revision",
+        messageId: "f-2",
+        messageFamilyId: "family-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 5,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Winning final",
+        messageId: "f-3",
+        messageFamilyId: "family-1",
+      }),
+    );
+    const entries = model.getEntries();
+    assert.deepEqual(
+      entries.map((entry) => entry.type),
+      ["revision", "revision", "message"],
+    );
+  });
+
+  it("toggles revision folding without duplicating the rejected final body", async function () {
+    const core = await loadThinkingChatCore();
+    const model = core.createThinkingChatModel("plain");
+    model.consume(
+      event({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rejected final",
+        messageId: "f-1",
+      }),
+    );
+    model.consume(
+      event({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_revision",
+        messageId: "f-1",
+      }),
+    );
+    let entries = model.getEntries();
+    assert.equal(entries[0].type, "revision");
+    assert.equal(entries[0].collapsed, true);
+    assert.equal((entries[0] as Record<string, unknown>).originalEvent["text"], "Rejected final");
+    assert.equal(model.toggleRevision("revision-1-f-1"), true);
+    entries = model.getEntries();
+    assert.equal(entries[0].collapsed, false);
+    assert.equal((entries[0] as Record<string, unknown>).originalEvent["text"], "Rejected final");
   });
 });

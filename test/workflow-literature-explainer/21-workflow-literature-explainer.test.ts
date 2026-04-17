@@ -8,12 +8,17 @@ import {
 } from "../../src/workflows/runtime";
 import {
   decodeBase64Utf8,
+  isZoteroRuntime,
   joinPath,
   mkTempDir,
   workflowsPath,
   writeUtf8,
 } from "./workflow-test-utils";
+import { isFullTestMode } from "../zotero/testMode";
 import { applyResult as applyLiteratureExplainerResult } from "../../workflows_builtin/literature-workbench-package/literature-explainer/hooks/applyResult.mjs";
+
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+const itZoteroFullOrNode = isZoteroRuntime() && !isFullTestMode() ? it.skip : it;
 
 async function writeZoteroDebugSnapshot(name: string, payload: unknown) {
   try {
@@ -70,7 +75,7 @@ async function getWorkflow() {
 }
 
 describe("workflow: literature-explainer", function () {
-  it("loads literature-explainer workflow manifest", async function () {
+  itNodeOnly("loads literature-explainer workflow manifest", async function () {
     const workflow = await getWorkflow();
     assert.equal(workflow.manifest.provider, "skillrunner");
     assert.equal(workflow.manifest.request?.kind, "skillrunner.job.v1");
@@ -129,7 +134,7 @@ describe("workflow: literature-explainer", function () {
     assert.match(String(requests[0].input?.source_path || ""), /^inputs\/source_path\//);
   });
 
-  it("builds request from selected pdf when markdown is unavailable", async function () {
+  itNodeOnly("builds request from selected pdf when markdown is unavailable", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Parent PDF" },
@@ -211,7 +216,7 @@ describe("workflow: literature-explainer", function () {
     assert.equal(payload?.content, markdown);
   });
 
-  it("creates a conversation note when applyResult receives parent id instead of item object", async function () {
+  itNodeOnly("creates a conversation note when applyResult receives parent id instead of item object", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Parent Id Apply Parent" },
@@ -245,7 +250,7 @@ describe("workflow: literature-explainer", function () {
     assert.include(note.getNote(), "Parent Id Path");
   });
 
-  it("falls back to runtime btoa when Buffer is null", async function () {
+  itNodeOnly("falls back to runtime btoa when Buffer is null", async function () {
     const originalBuffer = (globalThis as typeof globalThis & { Buffer?: unknown }).Buffer;
     const nodeBuffer = originalBuffer as typeof Buffer;
     let capturedContent = "";
@@ -316,7 +321,7 @@ describe("workflow: literature-explainer", function () {
     }
   });
 
-  it("creates a conversation note from backend-shaped result/result.json payload", async function () {
+  itZoteroFullOrNode("creates a conversation note from backend-shaped result/result.json payload", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Backend-Shaped Result Parent" },
@@ -433,7 +438,7 @@ describe("workflow: literature-explainer", function () {
     }
   });
 
-  it("keeps oversized markdown payload fully inlined while still creating the parent note", async function () {
+  itNodeOnly("keeps oversized markdown payload fully inlined while still creating the parent note", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Oversized Payload Parent" },
@@ -484,7 +489,7 @@ describe("workflow: literature-explainer", function () {
     assert.include(note.getNote(), "<h1>Oversized Note</h1>");
   });
 
-  it("maps absolute note_path to bundle entry suffix and creates note", async function () {
+  itNodeOnly("maps absolute note_path to bundle entry suffix and creates note", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Absolute note_path Parent" },
@@ -518,7 +523,7 @@ describe("workflow: literature-explainer", function () {
     assert.equal(payload?.content, markdown);
   });
 
-  it("prefers uploads-prefixed note_path without forcing artifacts/result rewrite", async function () {
+  itNodeOnly("prefers uploads-prefixed note_path without forcing artifacts/result rewrite", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Uploads note_path Parent" },
@@ -552,7 +557,7 @@ describe("workflow: literature-explainer", function () {
     assert.equal(payload?.content, markdown);
   });
 
-  it("skips note creation when note_path is empty", async function () {
+  itNodeOnly("skips note creation when note_path is empty", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Empty note_path Parent" },
@@ -579,7 +584,7 @@ describe("workflow: literature-explainer", function () {
     assert.lengthOf(parent.getNotes() || [], 0);
   });
 
-  it("skips note creation when note_path cannot be resolved in bundle", async function () {
+  itNodeOnly("skips note creation when note_path cannot be resolved in bundle", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Literature Explainer Missing note_path Parent" },

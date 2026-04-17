@@ -971,6 +971,39 @@ export class SkillRunnerTaskReconciler {
 
   private isReconciling = false;
 
+  private runGeneration = 0;
+
+  private running = false;
+
+  private readonly inflightTasks = new Set<Promise<void>>();
+
+  private isGenerationActive(generation: number) {
+    return this.running && this.runGeneration === generation;
+  }
+
+  private spawnBackgroundTask(
+    _label: string,
+    generation: number,
+    runner: () => Promise<void>,
+  ) {
+    if (!this.isGenerationActive(generation)) {
+      return;
+    }
+    const task = Promise.resolve(runner()).catch(() => {
+      // keep fire-and-forget background tasks non-fatal
+    });
+    this.inflightTasks.add(task);
+    void task.finally(() => {
+      this.inflightTasks.delete(task);
+    });
+  }
+
+  private async drainInFlightTasks() {
+    while (this.inflightTasks.size > 0) {
+      await Promise.allSettled(Array.from(this.inflightTasks));
+    }
+  }
+
   private applySnapshotToTaskStores(args: {
     context: ReconcileContext;
     state: JobState;
@@ -1034,7 +1067,16 @@ export class SkillRunnerTaskReconciler {
     return Array.from(candidates.values());
   }
 
-  private async reconcileMissingContextCandidate(candidate: MissingContextCandidate) {
+  private async reconcileMissingContextCandidate(
+    candidate: MissingContextCandidate,
+    generation?: number,
+  ) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (isSkillRunnerBackendReconcileFlagged(candidate.backendId)) {
       return;
     }
@@ -1047,6 +1089,12 @@ export class SkillRunnerTaskReconciler {
     const runState = await client.getRunState({
       requestId: candidate.requestId,
     });
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     const observed = normalizeStatusWithGuard({
       value: runState.status,
       fallback: "running",
@@ -1078,6 +1126,12 @@ export class SkillRunnerTaskReconciler {
       firstStatus: runState.status,
       firstError: runState.error,
     });
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (!confirmedTerminal) {
       return;
     }
@@ -1127,12 +1181,30 @@ export class SkillRunnerTaskReconciler {
     }
   }
 
-  private async reconcileMissingContextRunningTasks() {
+  private async reconcileMissingContextRunningTasks(generation?: number) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     const candidates = this.buildMissingContextCandidates();
     for (const candidate of candidates) {
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       try {
-        await this.reconcileMissingContextCandidate(candidate);
+        await this.reconcileMissingContextCandidate(candidate, generation);
       } catch (error) {
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
         appendRuntimeLog({
           level: "warn",
           scope: "job",
@@ -1219,10 +1291,22 @@ export class SkillRunnerTaskReconciler {
     this.reportedViolationKeysByContext.set(context.id, reported);
   }
 
-  private async refreshTrackedBackendHealth() {
+  private async refreshTrackedBackendHealth(generation?: number) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     let loadedBackends: BackendInstance[] = [];
     try {
       const loaded = await loadBackendsRegistry();
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       if (!loaded.fatalError) {
         loadedBackends = loaded.backends.filter(
           (entry) => normalizeString(entry.type) === "skillrunner",
@@ -1248,6 +1332,12 @@ export class SkillRunnerTaskReconciler {
       });
     }
     for (const backendId of backendIds.values()) {
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       if (!shouldProbeSkillRunnerBackendNow(backendId, Date.now())) {
         continue;
       }
@@ -1263,6 +1353,12 @@ export class SkillRunnerTaskReconciler {
           localize: (_key: string, fallback: string) => fallback,
         });
         await client.probeReachability();
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
         const previousFlagged = isSkillRunnerBackendReconcileFlagged(backendId);
         markSkillRunnerBackendHealthSuccess(backendId);
         this.backendReconcileFailureLogUntilByBackend.delete(backendId);
@@ -1275,6 +1371,12 @@ export class SkillRunnerTaskReconciler {
           }
         }
       } catch (error) {
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
         const backoff = markSkillRunnerBackendHealthFailure({
           backendId,
           error,
@@ -1317,6 +1419,9 @@ export class SkillRunnerTaskReconciler {
     if (this.timer) {
       return;
     }
+    this.running = true;
+    this.runGeneration += 1;
+    const generation = this.runGeneration;
     const persisted = readPersistedContexts();
     for (const context of persisted) {
       this.contexts.set(context.id, context);
@@ -1333,22 +1438,54 @@ export class SkillRunnerTaskReconciler {
       });
     }
     this.timer = setInterval(() => {
-      void this.reconcilePending();
+      this.spawnBackgroundTask("interval-reconcile", generation, async () => {
+        await this.reconcilePending(generation);
+      });
     }, POLL_INTERVAL_MS);
     const timerLike = this.timer as unknown as { unref?: () => void };
     if (typeof timerLike.unref === "function") {
       timerLike.unref();
     }
-    void this.refreshTrackedBackendHealth();
-    void this.reconcilePending();
+    this.spawnBackgroundTask("startup-health", generation, async () => {
+      await this.refreshTrackedBackendHealth(generation);
+    });
+    this.spawnBackgroundTask("startup-reconcile", generation, async () => {
+      await this.reconcilePending(generation);
+    });
   }
 
   stop() {
+    this.running = false;
+    this.runGeneration += 1;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
     stopAllSkillRunnerSessionSync();
+  }
+
+  async resetForTests() {
+    this.stop();
+    await this.drainInFlightTasks();
+    this.contexts.clear();
+    this.reportedViolationKeysByContext.clear();
+    this.backendReconcileFailureLogUntilByBackend.clear();
+    this.pendingPromptReconciles.clear();
+    writePersistedContexts([]);
+  }
+
+  getRuntimeSnapshotForTests() {
+    return {
+      running: this.running,
+      runGeneration: this.runGeneration,
+      inflightTaskCount: this.inflightTasks.size,
+      contextCount: this.contexts.size,
+      pendingPromptReconcileCount: this.pendingPromptReconciles.size,
+      backendFailureThrottleCount:
+        this.backendReconcileFailureLogUntilByBackend.size,
+      isReconciling: this.isReconciling,
+      timerActive: !!this.timer,
+    };
   }
 
   purgeBackendContexts(backendIdRaw: string) {
@@ -1668,8 +1805,15 @@ export class SkillRunnerTaskReconciler {
     context: ReconcileContext,
     client: SkillRunnerClient,
     source: ReconcileDispatchSource,
+    generation?: number,
   ) {
     const workflow = await resolveWorkflow(context.workflowId);
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (!workflow) {
       throw new Error(`workflow not found for apply: ${context.workflowId}`);
     }
@@ -1732,9 +1876,21 @@ export class SkillRunnerTaskReconciler {
         const bundleBytes = await client.fetchRunBundle({
           requestId: context.requestId,
         });
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
         runResult.bundleBytes = bundleBytes;
         bundlePath = buildTempBundlePath(context.requestId);
         await writeBytes(bundlePath, bundleBytes);
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
         bundleReader = new ZipBundleReader(bundlePath);
         appendRuntimeLog({
           level: "info",
@@ -1760,6 +1916,12 @@ export class SkillRunnerTaskReconciler {
         runResult.resultJson = await client.fetchRunResult({
           requestId: context.requestId,
         });
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
       }
       await executeApplyResult({
         workflow,
@@ -1768,6 +1930,12 @@ export class SkillRunnerTaskReconciler {
         request: context.request,
         runResult,
       });
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       appendRuntimeLog({
         level: "info",
         scope: "job",
@@ -1821,7 +1989,14 @@ export class SkillRunnerTaskReconciler {
   private async reconcileOneContext(
     context: ReconcileContext,
     source: ReconcileDispatchSource,
+    generation?: number,
   ) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     const client = new SkillRunnerClient({
       baseUrl: context.backendBaseUrl,
     });
@@ -1831,6 +2006,12 @@ export class SkillRunnerTaskReconciler {
       const runState = await client.getRunState({
         requestId: context.requestId,
       });
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       this.backendReconcileFailureLogUntilByBackend.delete(backendFailureKey);
       const observed = normalizeStatusWithGuard({
         value: runState.status,
@@ -1856,6 +2037,12 @@ export class SkillRunnerTaskReconciler {
         firstStatus: runState.status,
         firstError: runState.error,
       });
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       if (!confirmedTerminal) {
         return;
       }
@@ -1912,7 +2099,13 @@ export class SkillRunnerTaskReconciler {
           }
         }
         try {
-          await this.applyTerminalSuccessContext(context, client, source);
+          await this.applyTerminalSuccessContext(context, client, source, generation);
+          if (
+            typeof generation === "number" &&
+            !this.isGenerationActive(generation)
+          ) {
+            return;
+          }
           context.applyAttempt = 0;
           context.nextApplyRetryAt = undefined;
           context.lastApplyError = undefined;
@@ -2053,6 +2246,12 @@ export class SkillRunnerTaskReconciler {
       });
       writePersistedContexts(Array.from(this.contexts.values()));
     } catch (error) {
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       const health = getSkillRunnerBackendHealthState(context.backendId);
       const now = Date.now();
       const throttleUntil =
@@ -2096,10 +2295,23 @@ export class SkillRunnerTaskReconciler {
   private async reconcileTrackedContexts(
     entries: ReconcileContext[],
     source: ReconcileDispatchSource,
+    generation?: number,
   ) {
     for (const context of entries) {
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       if (source === "post-register") {
-        await this.refreshContextBackendHealthForPrompt(context);
+        await this.refreshContextBackendHealthForPrompt(context, generation);
+        if (
+          typeof generation === "number" &&
+          !this.isGenerationActive(generation)
+        ) {
+          return;
+        }
       }
       if (isSkillRunnerBackendReconcileFlagged(context.backendId)) {
         if (source === "post-register") {
@@ -2158,11 +2370,20 @@ export class SkillRunnerTaskReconciler {
         continue;
       }
       this.ensureRunningSessionSync(context);
-      await this.reconcileOneContext(context, source);
+      await this.reconcileOneContext(context, source, generation);
     }
   }
 
-  private async refreshContextBackendHealthForPrompt(context: ReconcileContext) {
+  private async refreshContextBackendHealthForPrompt(
+    context: ReconcileContext,
+    generation?: number,
+  ) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (
       getSkillRunnerBackendHealthState(context.backendId) &&
       !isSkillRunnerBackendReconcileFlagged(context.backendId)
@@ -2180,6 +2401,12 @@ export class SkillRunnerTaskReconciler {
         localize: (_key: string, fallback: string) => fallback,
       });
       await client.probeReachability();
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       markSkillRunnerBackendHealthSuccess(context.backendId);
       this.backendReconcileFailureLogUntilByBackend.delete(context.backendId);
     } catch (error) {
@@ -2205,7 +2432,13 @@ export class SkillRunnerTaskReconciler {
     }
   }
 
-  private async flushPromptReconcileQueue() {
+  private async flushPromptReconcileQueue(generation?: number) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (this.isReconciling || this.pendingPromptReconciles.size === 0) {
       return;
     }
@@ -2213,7 +2446,13 @@ export class SkillRunnerTaskReconciler {
     this.pendingPromptReconciles.clear();
     this.isReconciling = true;
     try {
-      await this.refreshTrackedBackendHealth();
+      await this.refreshTrackedBackendHealth(generation);
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       const contexts = pending
         .map((entry) => {
           if (entry.backendId) {
@@ -2239,11 +2478,17 @@ export class SkillRunnerTaskReconciler {
           },
         });
       }
-      await this.reconcileTrackedContexts(contexts, "post-register");
+      await this.reconcileTrackedContexts(contexts, "post-register", generation);
     } finally {
       this.isReconciling = false;
-      if (this.pendingPromptReconciles.size > 0) {
-        void this.flushPromptReconcileQueue();
+      if (
+        this.pendingPromptReconciles.size > 0 &&
+        typeof generation === "number" &&
+        this.isGenerationActive(generation)
+      ) {
+        this.spawnBackgroundTask("prompt-flush", generation, async () => {
+          await this.flushPromptReconcileQueue(generation);
+        });
       }
     }
   }
@@ -2288,22 +2533,50 @@ export class SkillRunnerTaskReconciler {
     await this.flushPromptReconcileQueue();
   }
 
-  async reconcilePending() {
+  async reconcilePending(generation?: number) {
+    if (
+      typeof generation === "number" &&
+      !this.isGenerationActive(generation)
+    ) {
+      return;
+    }
     if (this.isReconciling) {
       return;
     }
     this.isReconciling = true;
     try {
-      await this.refreshTrackedBackendHealth();
+      await this.refreshTrackedBackendHealth(generation);
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
       const entries = Array.from(this.contexts.values());
-      await this.reconcileTrackedContexts(entries, "interval");
-      await this.reconcileMissingContextRunningTasks();
+      await this.reconcileTrackedContexts(entries, "interval", generation);
+      if (
+        typeof generation === "number" &&
+        !this.isGenerationActive(generation)
+      ) {
+        return;
+      }
+      await this.reconcileMissingContextRunningTasks(generation);
     } finally {
       this.isReconciling = false;
-      if (this.pendingPromptReconciles.size > 0) {
-        void this.flushPromptReconcileQueue();
+      if (
+        this.pendingPromptReconciles.size > 0 &&
+        typeof generation === "number" &&
+        this.isGenerationActive(generation)
+      ) {
+        this.spawnBackgroundTask("prompt-flush", generation, async () => {
+          await this.flushPromptReconcileQueue(generation);
+        });
       }
     }
+  }
+
+  async drain() {
+    await this.drainInFlightTasks();
   }
 }
 
@@ -2315,6 +2588,23 @@ export function startSkillRunnerTaskReconciler() {
 
 export function stopSkillRunnerTaskReconciler() {
   defaultReconciler.stop();
+}
+
+export async function drainSkillRunnerTaskReconciler() {
+  await defaultReconciler.drain();
+}
+
+export async function shutdownSkillRunnerTaskReconciler() {
+  defaultReconciler.stop();
+  await defaultReconciler.drain();
+}
+
+export async function resetSkillRunnerTaskReconcilerForTests() {
+  await defaultReconciler.resetForTests();
+}
+
+export function getSkillRunnerTaskReconcilerRuntimeForTests() {
+  return defaultReconciler.getRuntimeSnapshotForTests();
 }
 
 export function ensureSkillRunnerRecoverableContext(args: {

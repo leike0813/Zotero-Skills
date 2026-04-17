@@ -8,7 +8,7 @@ import {
   parseReferencesPayload,
 } from "./referencesNote.mjs";
 import { escapeAttribute } from "./htmlCodec.mjs";
-import { requireHostApi } from "./runtime.mjs";
+import { measureWorkflowTestSpan, requireHostApi } from "./runtime.mjs";
 import { getBaseName, sanitizeFileNameSegment } from "./path.mjs";
 import {
   buildConversationNoteContent,
@@ -115,95 +115,136 @@ export function collectGeneratedNotesByKind(parentItem, runtime) {
 
 async function upsertUniqueGeneratedNote(args) {
   const existingNotes = args.existingNotes || [];
+  const noteKind = String(args.noteKind || "").trim() || "unknown";
   if (existingNotes.length === 0) {
-    return requireHostApi(args.runtime).parents.addNote(args.parentItem, {
-      content: args.content,
-    });
+    return measureWorkflowTestSpan(
+      "executeApplyResult:literatureDigest:addNote",
+      {
+        noteKind,
+        existingCount: 0,
+      },
+      () =>
+        requireHostApi(args.runtime).parents.addNote(args.parentItem, {
+          content: args.content,
+        }),
+    );
   }
 
   const primary = existingNotes[0];
-  await requireHostApi(args.runtime).notes.update(primary, {
-    content: args.content,
-  });
+  await measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:updateNote",
+    {
+      noteKind,
+      existingCount: existingNotes.length,
+    },
+    () =>
+      requireHostApi(args.runtime).notes.update(primary, {
+        content: args.content,
+      }),
+  );
   for (let index = 1; index < existingNotes.length; index += 1) {
-    await requireHostApi(args.runtime).notes.remove(existingNotes[index]);
+    await measureWorkflowTestSpan(
+      "executeApplyResult:literatureDigest:removeDuplicateNote",
+      {
+        noteKind,
+        duplicateIndex: index,
+      },
+      () => requireHostApi(args.runtime).notes.remove(existingNotes[index]),
+    );
   }
   return primary;
 }
 
 export async function upsertLiteratureDigestGeneratedNotes(args) {
-  const existingByKind = collectGeneratedNotesByKind(args.parentItem, args.runtime);
-  const writtenNotes = [];
+  return measureWorkflowTestSpan(
+    "executeApplyResult:literatureDigest:upsertGeneratedNotes",
+    {
+      hasDigest: !!args.digest,
+      hasReferences: !!args.references,
+      hasCitationAnalysis: !!args.citationAnalysis,
+    },
+    async () => {
+      const existingByKind = collectGeneratedNotesByKind(args.parentItem, args.runtime);
+      const writtenNotes = [];
 
-  if (args.digest) {
-    const digestNoteContent = buildMarkdownBackedNoteContent({
-      noteKind: "digest",
-      title: "Digest",
-      viewName: "digest-html",
-      payloadType: "digest-markdown",
-      payload: args.digest.payload,
-      payloadFormat: "json",
-      markdown: args.digest.payload.content,
-      runtime: args.runtime,
-      metadataBlocks: [renderSourceMetadataBlock(args.digest.sourceAttachmentItemKey)],
-    });
-    writtenNotes.push(
-      await upsertUniqueGeneratedNote({
-        runtime: args.runtime,
-        parentItem: args.parentItem,
-        content: digestNoteContent,
-        existingNotes: existingByKind.get("digest"),
-      }),
-    );
-  }
+      if (args.digest) {
+        const digestNoteContent = buildMarkdownBackedNoteContent({
+          noteKind: "digest",
+          title: "Digest",
+          viewName: "digest-html",
+          payloadType: "digest-markdown",
+          payload: args.digest.payload,
+          payloadFormat: "json",
+          markdown: args.digest.payload.content,
+          runtime: args.runtime,
+          metadataBlocks: [
+            renderSourceMetadataBlock(args.digest.sourceAttachmentItemKey),
+          ],
+        });
+        writtenNotes.push(
+          await upsertUniqueGeneratedNote({
+            runtime: args.runtime,
+            parentItem: args.parentItem,
+            content: digestNoteContent,
+            existingNotes: existingByKind.get("digest"),
+            noteKind: "digest",
+          }),
+        );
+      }
 
-  if (args.references) {
-    const referencesNoteContent = [
-      '<div data-zs-note-kind="references">',
-      "<h1>References</h1>",
-      args.runtime.helpers.renderReferencesTable(args.references.payload.references || []),
-      renderPayloadBlock("references-json", args.references.payload, args.runtime, {
-        payloadFormat: "json",
-      }),
-      "</div>",
-    ].join("\n");
-    writtenNotes.push(
-      await upsertUniqueGeneratedNote({
-        runtime: args.runtime,
-        parentItem: args.parentItem,
-        content: referencesNoteContent,
-        existingNotes: existingByKind.get("references"),
-      }),
-    );
-  }
+      if (args.references) {
+        const referencesNoteContent = [
+          '<div data-zs-note-kind="references">',
+          "<h1>References</h1>",
+          args.runtime.helpers.renderReferencesTable(
+            args.references.payload.references || [],
+          ),
+          renderPayloadBlock("references-json", args.references.payload, args.runtime, {
+            payloadFormat: "json",
+          }),
+          "</div>",
+        ].join("\n");
+        writtenNotes.push(
+          await upsertUniqueGeneratedNote({
+            runtime: args.runtime,
+            parentItem: args.parentItem,
+            content: referencesNoteContent,
+            existingNotes: existingByKind.get("references"),
+            noteKind: "references",
+          }),
+        );
+      }
 
-  if (args.citationAnalysis) {
-    const reportMarkdown = String(
-      args.citationAnalysis.payload?.citation_analysis?.report_md || "",
-    );
-    const citationNoteContent = buildMarkdownBackedNoteContent({
-      noteKind: "citation-analysis",
-      title: "Citation Analysis",
-      viewName: "citation-analysis-html",
-      payloadType: "citation-analysis-json",
-      payload: args.citationAnalysis.payload,
-      payloadFormat: "json",
-      markdown: reportMarkdown,
-      runtime: args.runtime,
-    });
-    writtenNotes.push(
-      await upsertUniqueGeneratedNote({
-        runtime: args.runtime,
-        parentItem: args.parentItem,
-        content: citationNoteContent,
-        existingNotes: existingByKind.get("citation-analysis"),
-      }),
-    );
-  }
+      if (args.citationAnalysis) {
+        const reportMarkdown = String(
+          args.citationAnalysis.payload?.citation_analysis?.report_md || "",
+        );
+        const citationNoteContent = buildMarkdownBackedNoteContent({
+          noteKind: "citation-analysis",
+          title: "Citation Analysis",
+          viewName: "citation-analysis-html",
+          payloadType: "citation-analysis-json",
+          payload: args.citationAnalysis.payload,
+          payloadFormat: "json",
+          markdown: reportMarkdown,
+          runtime: args.runtime,
+        });
+        writtenNotes.push(
+          await upsertUniqueGeneratedNote({
+            runtime: args.runtime,
+            parentItem: args.parentItem,
+            content: citationNoteContent,
+            existingNotes: existingByKind.get("citation-analysis"),
+            noteKind: "citation-analysis",
+          }),
+        );
+      }
 
-  return {
-    notes: writtenNotes,
-  };
+      return {
+        notes: writtenNotes,
+      };
+    },
+  );
 }
 
 export async function exportGeneratedNoteCandidate(args) {

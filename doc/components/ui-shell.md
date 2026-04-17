@@ -61,6 +61,18 @@
   - 401 时重新弹窗覆盖保存
   - 与执行链 `/v1/jobs*` 的鉴权配置解耦
 
+## Run Dialog 聊天与等待输入语义
+
+- `run-dialog` 的聊天面现在承接 `assistant_revision`：
+  - `/chat`、`/chat/history`、SSE `chat_event` 都允许该 kind 进入共享 chat model
+  - `assistant_revision` 不按普通 assistant final 直接渲染
+  - 同一 repair family 中，只有赢家 final 主显
+  - 被打回 final 以默认折叠的 revision 历史项保留
+- waiting-user 输入策略：
+  - `open_text` 继续使用现有多行 composer
+  - 非 `open_text` 仍展示 prompt-card actions，但 composer 不再隐藏
+  - 非 `open_text` 下 composer 切换为 compact 单行模式，并使用独立 placeholder
+
 ## 测试点（TDD）
 
 - 菜单初始化与重建

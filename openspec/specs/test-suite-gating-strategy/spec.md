@@ -32,13 +32,29 @@ regression coverage.
 `lite` suite membership SHALL be reviewed and pruned to keep PR feedback fast
 while preserving critical-path confidence.
 
-#### Scenario: Lite membership changes remain auditable
+#### Scenario: Zotero lite retains a daily real-host regression ring
 
-- **WHEN** a case is moved out of `lite`
-- **THEN** rationale and target suite placement are documented in suite
-  governance artifacts
-- **AND** the move MUST NOT require introducing a new runner contract beyond the
-  existing `lite/full` entrypoints and `itFullOnly` mechanism
+- **WHEN** Zotero `lite` routine suites are selected
+- **THEN** they MUST include host smoke plus a small set of real-host parity
+  cases for object operations, backend handoff, workflow context, and UI shell
+  behavior
+- **AND** they remain substantially smaller than broad historical Zotero
+  coverage
+
+#### Scenario: Zotero full remains a strict superset of Zotero lite
+
+- **WHEN** Zotero `full` routine suites are selected
+- **THEN** they MUST execute every retained `lite` case
+- **AND** they MUST add an extra parity ring of guard, idempotency, and
+  real-host regression cases
+
+#### Scenario: Workflow Zotero coverage uses lite baseline plus full parity
+
+- **WHEN** a workflow package is retained in routine Zotero execution
+- **THEN** `lite` MUST keep a canonical success path and only the smallest
+  necessary host-parity guards
+- **AND** `full` MAY add a small number of extra host-safe guards without
+  reintroducing deep matrix coverage
 
 ### Requirement: Lite selection-context rebuild SHALL use mix-all top-3-parent subset
 For `selection-context rebuild`, `lite` SHALL execute only a dedicated fixture derived from the first three parent entries of `selection-context-mix-all`.
@@ -80,4 +96,53 @@ The project SHALL provide grouped test commands for both Node and Zotero runs at
 #### Scenario: Per-workflow grouped commands are not required in this change
 - **WHEN** grouped commands are defined for this change
 - **THEN** command surface is limited to first-level domain groups and does not require per-workflow command variants
+
+### Requirement: Full suite SHALL serve as the stable CI host-coverage gate
+
+Zotero `full` SHALL be a strict superset of Zotero `lite`, but its purpose is
+not merely to add a narrow parity ring. Its purpose is to provide stable
+real-host coverage for CI gate use.
+
+#### Scenario: Zotero full prioritizes stable host coverage over speed
+
+- **WHEN** Zotero `full` routine suites are selected
+- **THEN** they MUST include every retained `lite` case
+- **AND** they MUST add stable real-host suites or guards that improve coverage
+  across major host-risk buckets
+- **AND** they MUST not be optimized primarily for speed
+
+#### Scenario: Zotero full is evaluated by coverage buckets
+
+- **WHEN** Zotero `full` routine suites are curated
+- **THEN** they MUST cover:
+  - Zotero object lifecycle
+  - SkillRunner transport/state/reconcile
+  - workflow host context and idempotency
+  - UI host shell behavior
+- **AND** a full suite is incomplete when one of these buckets has no retained
+  stable real-host coverage
+
+### Requirement: Zotero full MAY run as sequential real-host domain segments
+
+Release gating SHALL continue to use the `full` suite. Zotero real-host `full`
+execution SHALL support sequential multi-process execution instead of requiring
+one monolithic process.
+
+#### Scenario: Release gate runs Zotero full as sequential real-host segments
+
+- **WHEN** a release gate runs the Zotero `full` suite
+- **THEN** it MAY execute `full` as multiple sequential real-host processes
+- **AND** the default retained execution topology SHALL run:
+  - `core:full`
+  - `ui:full`
+  - `workflow:full`
+- **AND** failure in any segment SHALL fail the overall `full` gate
+
+#### Scenario: Process splitting does not shrink full coverage
+
+- **WHEN** Zotero `full` is executed as sequential segments
+- **THEN** membership and gating semantics SHALL remain identical to the
+  retained `full` suite contract
+- **AND** process splitting SHALL be treated as an execution-topology change,
+  not a coverage reduction
 

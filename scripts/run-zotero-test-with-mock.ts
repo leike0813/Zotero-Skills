@@ -1,37 +1,28 @@
 import { spawn } from "child_process";
 import path from "path";
+import { pathToFileURL } from "url";
 
 type Child = ReturnType<typeof spawn>;
 type SpawnOptions = Parameters<typeof spawn>[2];
 
+type WrappedTestInvocation = {
+  targetScript: string;
+  requestedMode: string;
+  requestedDomain: string;
+  targetTestArgs: string[];
+};
+
 const MOCK_PORT = "8030";
 const MOCK_HOST = "127.0.0.1";
-const CLI_ARGS = process.argv.slice(2);
-const TARGET_TEST_SCRIPT = CLI_ARGS[0] || "test:zotero:raw";
-let modeArg = CLI_ARGS[1];
-let domainArg = CLI_ARGS[2];
-let targetTestArgs = CLI_ARGS.slice(3);
-if (modeArg?.startsWith("-")) {
-  modeArg = undefined;
-  domainArg = undefined;
-  targetTestArgs = CLI_ARGS.slice(1);
-} else if (domainArg?.startsWith("-")) {
-  domainArg = undefined;
-  targetTestArgs = CLI_ARGS.slice(2);
-}
-const REQUESTED_TEST_MODE = modeArg || process.env.ZOTERO_TEST_MODE || "lite";
-const REQUESTED_TEST_DOMAIN =
-  domainArg || process.env.ZOTERO_TEST_DOMAIN || "all";
+const DEFAULT_ZOTERO_TARGET_SCRIPT = "test:zotero:cli";
+const DEFAULT_NODE_TARGET_SCRIPT = "test:node:raw";
 const DEFAULT_TEST_WORKFLOW_DIR = path.join(process.cwd(), "workflows_builtin");
-const TEST_WORKFLOW_DIR = String(
-  process.env.ZOTERO_TEST_WORKFLOW_DIR || DEFAULT_TEST_WORKFLOW_DIR,
-).trim();
 
-function normalizeTestMode(value: string) {
+export function normalizeTestMode(value: string) {
   return value.trim().toLowerCase() === "full" ? "full" : "lite";
 }
 
-function normalizeTestDomain(value: string) {
+export function normalizeTestDomain(value: string) {
   const normalized = value.trim().toLowerCase();
   if (
     normalized === "core" ||
@@ -43,8 +34,83 @@ function normalizeTestDomain(value: string) {
   return "all";
 }
 
-const TEST_MODE = normalizeTestMode(REQUESTED_TEST_MODE);
-const TEST_DOMAIN = normalizeTestDomain(REQUESTED_TEST_DOMAIN);
+export function parseWrappedTestInvocation(
+  cliArgs: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): WrappedTestInvocation {
+  const targetScript =
+    cliArgs[0] ||
+    env.ZOTERO_TEST_TARGET_SCRIPT ||
+    DEFAULT_ZOTERO_TARGET_SCRIPT;
+  let modeArg = cliArgs[1];
+  let domainArg = cliArgs[2];
+  let targetTestArgs = cliArgs.slice(3);
+  if (modeArg?.startsWith("-")) {
+    modeArg = undefined;
+    domainArg = undefined;
+    targetTestArgs = cliArgs.slice(1);
+  } else if (domainArg?.startsWith("-")) {
+    domainArg = undefined;
+    targetTestArgs = cliArgs.slice(2);
+  }
+  const defaultMode = targetScript.startsWith("test:zotero")
+    ? "lite"
+    : normalizeTestMode(env.ZOTERO_TEST_MODE || "lite");
+  const defaultDomain = targetScript.startsWith("test:zotero")
+    ? "all"
+    : normalizeTestDomain(env.ZOTERO_TEST_DOMAIN || "all");
+  return {
+    targetScript,
+    requestedMode: modeArg || env.ZOTERO_TEST_MODE || defaultMode,
+    requestedDomain: domainArg || env.ZOTERO_TEST_DOMAIN || defaultDomain,
+    targetTestArgs,
+  };
+}
+
+export function isZoteroTargetScript(targetScript: string) {
+  return /^test:zotero(?::|$)/.test(String(targetScript || "").trim());
+}
+
+export function hasExplicitWatchFlag(args: string[]) {
+  return args.some(
+    (arg) =>
+      arg === "--watch" ||
+      arg === "--no-watch" ||
+      arg === "--exit-on-finish",
+  );
+}
+
+export function buildForwardedTestArgs(
+  targetScript: string,
+  args: string[],
+): string[] {
+  if (isZoteroTargetScript(targetScript) && !hasExplicitWatchFlag(args)) {
+    return [...args, "--no-watch"];
+  }
+  return [...args];
+}
+
+export function buildTestEnvironment(
+  invocation: WrappedTestInvocation,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const testMode = normalizeTestMode(invocation.requestedMode);
+  const testDomain = normalizeTestDomain(invocation.requestedDomain);
+  const workflowDir = String(
+    env.ZOTERO_TEST_WORKFLOW_DIR || DEFAULT_TEST_WORKFLOW_DIR,
+  ).trim();
+  const nextEnv: NodeJS.ProcessEnv = {
+    ...env,
+    ZOTERO_TEST_MODE: testMode,
+    ZOTERO_TEST_DOMAIN: testDomain,
+  };
+  if (workflowDir) {
+    nextEnv.ZOTERO_TEST_WORKFLOW_DIR = workflowDir;
+  } else {
+    delete nextEnv.ZOTERO_TEST_WORKFLOW_DIR;
+  }
+  return nextEnv;
+}
 
 function spawnNpm(args: string[], options?: SpawnOptions) {
   if (process.platform === "win32") {
@@ -64,13 +130,20 @@ function waitForMockReady(mock: Child, timeoutMs = 8000) {
         return;
       }
       settled = true;
-      reject(new Error(`mock skillrunner did not become ready within ${timeoutMs}ms`));
+      reject(
+        new Error(
+          `mock skillrunner did not become ready within ${timeoutMs}ms`,
+        ),
+      );
     }, timeoutMs);
 
     const onData = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       process.stdout.write(text);
-      if (text.includes("mock skillrunner started") || text.includes("baseUrl=")) {
+      if (
+        text.includes("mock skillrunner started") ||
+        text.includes("baseUrl=")
+      ) {
         if (settled) {
           return;
         }
@@ -99,11 +172,15 @@ function waitForMockReady(mock: Child, timeoutMs = 8000) {
   });
 }
 
-function runTargetTests(env: NodeJS.ProcessEnv) {
+function runTargetTests(invocation: WrappedTestInvocation, env: NodeJS.ProcessEnv) {
   return new Promise<number>((resolve) => {
-    const args = ["run", TARGET_TEST_SCRIPT];
-    if (targetTestArgs.length > 0) {
-      args.push("--", ...targetTestArgs);
+    const args = ["run", invocation.targetScript];
+    const forwardedArgs = buildForwardedTestArgs(
+      invocation.targetScript,
+      invocation.targetTestArgs,
+    );
+    if (forwardedArgs.length > 0) {
+      args.push("--", ...forwardedArgs);
     }
     const proc = spawnNpm(args, {
       stdio: "inherit",
@@ -155,21 +232,15 @@ function terminateMock(mock: Child) {
 }
 
 async function main() {
-  const testEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ZOTERO_TEST_MODE: TEST_MODE,
-    ZOTERO_TEST_DOMAIN: TEST_DOMAIN,
-  };
-  if (TEST_WORKFLOW_DIR) {
-    testEnv.ZOTERO_TEST_WORKFLOW_DIR = TEST_WORKFLOW_DIR;
-  } else {
-    delete testEnv.ZOTERO_TEST_WORKFLOW_DIR;
-  }
-  console.log(`[test-mode] ${TEST_MODE}`);
-  console.log(`[test-domain] ${TEST_DOMAIN}`);
+  const invocation = parseWrappedTestInvocation(process.argv.slice(2));
+  const testEnv = buildTestEnvironment(invocation);
+  const workflowDir = String(testEnv.ZOTERO_TEST_WORKFLOW_DIR || "").trim();
+  console.log(`[test-target] ${invocation.targetScript}`);
+  console.log(`[test-mode] ${testEnv.ZOTERO_TEST_MODE}`);
+  console.log(`[test-domain] ${testEnv.ZOTERO_TEST_DOMAIN}`);
   console.log(
     `[test-workflow-dir] ${
-      TEST_WORKFLOW_DIR || "(default from project/workflows_builtin)"
+      workflowDir || "(default from project/workflows_builtin)"
     }`,
   );
 
@@ -221,7 +292,7 @@ async function main() {
 
   try {
     await waitForMockReady(mock);
-    const code = await runTargetTests(testEnv);
+    const code = await runTargetTests(invocation, testEnv);
     await cleanup();
     process.exit(code);
   } catch (error) {
@@ -231,4 +302,15 @@ async function main() {
   }
 }
 
-void main();
+const shouldRunAsScript =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (shouldRunAsScript) {
+  void main();
+}
+
+export const DEFAULT_TARGET_SCRIPTS = {
+  zotero: DEFAULT_ZOTERO_TARGET_SCRIPT,
+  node: DEFAULT_NODE_TARGET_SCRIPT,
+};

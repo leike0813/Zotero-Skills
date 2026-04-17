@@ -102,7 +102,29 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.equal(normalizeRunDialogMessageKind("assistant_process"), "assistant_process");
     assert.equal(normalizeRunDialogMessageKind("assistant_message"), "assistant_message");
     assert.equal(normalizeRunDialogMessageKind("assistant_final"), "assistant_final");
+    assert.equal(normalizeRunDialogMessageKind("assistant_revision"), "assistant_revision");
     assert.equal(normalizeRunDialogMessageKind("weird_kind"), "unknown");
+  });
+
+  it("keeps assistant_revision rows even when display text is empty", function () {
+    const entry = toRunDialogConversationEntry({
+      event: {
+        seq: 11,
+        role: "assistant",
+        kind: "assistant_revision",
+        text: "",
+        display_text: "",
+        correlation: {
+          message_id: "f-1",
+          message_family_id: "family-1",
+        },
+      },
+      lastSeq: 0,
+    });
+    assert.isOk(entry);
+    assert.equal(entry?.kind, "assistant_revision");
+    assert.equal(entry?.messageId, "f-1");
+    assert.equal(entry?.messageFamilyId, "family-1");
   });
 
   it("normalizes choice options from object and string forms", function () {
@@ -163,6 +185,7 @@ describe("skillrunner run dialog bubble message model", function () {
     text: string;
     attempt?: number;
     messageId?: string;
+    messageFamilyId?: string;
     replacesMessageId?: string;
   }): SkillRunnerConversationEntry {
     return {
@@ -170,6 +193,7 @@ describe("skillrunner run dialog bubble message model", function () {
       role: args.role,
       kind: normalizeRunDialogMessageKind(args.kind),
       text: args.text,
+      messageFamilyId: args.messageFamilyId,
       raw: {
         seq: args.seq,
         role: args.role,
@@ -179,6 +203,11 @@ describe("skillrunner run dialog bubble message model", function () {
         correlation: args.messageId
           ? {
               message_id: args.messageId,
+              ...(args.messageFamilyId
+                ? {
+                    message_family_id: args.messageFamilyId,
+                  }
+                : {}),
               ...(args.replacesMessageId
                 ? {
                     replaces_message_id: args.replacesMessageId,
@@ -356,6 +385,43 @@ describe("skillrunner run dialog bubble message model", function () {
     assert.lengthOf(output, 2);
     assert.equal(output[0].kind, "assistant_process");
     assert.equal(output[1].kind, "assistant_final");
+  });
+
+  it("keeps assistant_revision rows in display ordering without converting them into visible winners", function () {
+    const messages: SkillRunnerConversationEntry[] = [
+      entry({
+        seq: 1,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Rejected final",
+        attempt: 1,
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+      entry({
+        seq: 2,
+        role: "assistant",
+        kind: "assistant_revision",
+        text: "",
+        attempt: 1,
+        messageId: "f-1",
+        messageFamilyId: "family-1",
+      }),
+      entry({
+        seq: 3,
+        role: "assistant",
+        kind: "assistant_final",
+        text: "Winning final",
+        attempt: 1,
+        messageId: "f-2",
+        messageFamilyId: "family-1",
+      }),
+    ];
+    const output = buildRunDialogDisplayMessages(messages);
+    assert.deepEqual(
+      output.map((entry) => entry.kind),
+      ["assistant_final", "assistant_revision", "assistant_final"],
+    );
   });
 
   it("prefers explicit responseValue for option-based interactions", function () {

@@ -5,7 +5,9 @@ import {
   buildRuntimeDiagnosticBundle,
   buildRuntimeIssueSummary,
   clearRuntimeLogs,
+  flushRuntimeLogsPersistence,
   getRuntimeLogDiagnosticMode,
+  getRuntimeLogPersistenceStateForTests,
   getRuntimeLogRetentionConfig,
   listRuntimeLogs,
   resetRuntimeLogAllowedLevels,
@@ -80,6 +82,7 @@ describe("runtime log manager", function () {
   });
 
   it("enforces fixed retention with oldest-first eviction", function () {
+    this.timeout(10000);
     setRuntimeLogDiagnosticMode(true);
     for (let i = 0; i < 2005; i++) {
       appendRuntimeLog({
@@ -118,6 +121,7 @@ describe("runtime log manager", function () {
   });
 
   it("keeps normal mode entry budget and drops oldest entries", function () {
+    this.timeout(10000);
     for (let i = 0; i < 2005; i++) {
       appendRuntimeLog({
         level: "info",
@@ -169,13 +173,14 @@ describe("runtime log manager", function () {
     assert.equal(filtered[0].stage, "warn-stage");
   });
 
-  it("persists logs into prefs and clears persisted payload", function () {
+  it("persists logs into prefs and clears persisted payload", async function () {
     appendRuntimeLog({
       level: "info",
       scope: "system",
       stage: "persist-stage",
       message: "persist message",
     });
+    await flushRuntimeLogsPersistence();
     const prefKey = `${config.prefsPrefix}.runtimeLogsJson`;
     const rawPersisted = String(
       (globalThis as any).Zotero.Prefs.get(prefKey, true) || "",
@@ -191,6 +196,100 @@ describe("runtime log manager", function () {
     assert.isTrue(rawCleared.length > 0);
     const parsedCleared = JSON.parse(rawCleared) as { entries?: unknown[] };
     assert.equal(parsedCleared.entries?.length || 0, 0);
+  });
+
+  it("coalesces append persistence until an explicit durability boundary flushes", async function () {
+    const baseline = getRuntimeLogPersistenceStateForTests().flushCount;
+
+    appendRuntimeLog({
+      level: "info",
+      scope: "system",
+      stage: "batched-1",
+      message: "batched-1",
+    });
+    appendRuntimeLog({
+      level: "info",
+      scope: "system",
+      stage: "batched-2",
+      message: "batched-2",
+    });
+    appendRuntimeLog({
+      level: "warn",
+      scope: "system",
+      stage: "batched-3",
+      message: "batched-3",
+    });
+
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: true,
+      hasPendingTimer: true,
+      flushCount: baseline,
+    });
+
+    await flushRuntimeLogsPersistence();
+
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: false,
+      hasPendingTimer: false,
+      flushCount: baseline + 1,
+    });
+  });
+
+  it("flushes pending persistence before snapshot and bundle export", function () {
+    const prefKey = `${config.prefsPrefix}.runtimeLogsJson`;
+
+    appendRuntimeLog({
+      level: "info",
+      scope: "system",
+      stage: "snapshot-stage",
+      message: "snapshot-message",
+    });
+
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: true,
+      hasPendingTimer: true,
+    });
+
+    const snapshot = snapshotRuntimeLogs();
+    assert.lengthOf(snapshot.entries, 1);
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: false,
+      hasPendingTimer: false,
+    });
+    const persistedAfterSnapshot = JSON.parse(
+      String((globalThis as any).Zotero.Prefs.get(prefKey, true) || "{}"),
+    ) as { entries?: Array<{ stage?: string }> };
+    assert.equal(persistedAfterSnapshot.entries?.[0]?.stage, "snapshot-stage");
+
+    appendRuntimeLog({
+      level: "error",
+      scope: "system",
+      requestId: "bundle-req",
+      stage: "bundle-stage",
+      message: "bundle-message",
+    });
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: true,
+      hasPendingTimer: true,
+    });
+
+    const bundle = buildRuntimeDiagnosticBundle({
+      filters: {
+        requestId: "bundle-req",
+      },
+    });
+    assert.equal(bundle.entries.length, 1);
+    assert.deepInclude(getRuntimeLogPersistenceStateForTests(), {
+      dirty: false,
+      hasPendingTimer: false,
+    });
+    const persistedAfterBundle = JSON.parse(
+      String((globalThis as any).Zotero.Prefs.get(prefKey, true) || "{}"),
+    ) as { entries?: Array<{ stage?: string }> };
+    assert.equal(
+      persistedAfterBundle.entries?.[persistedAfterBundle.entries.length - 1]?.stage,
+      "bundle-stage",
+    );
   });
 
   it("supports diagnostic mode toggle", function () {

@@ -20,6 +20,22 @@ type SessionLoopState = {
   started: boolean;
   eventCursor: number;
   retryDelayMs: number;
+  generation: number;
+};
+
+type SessionSyncClient = ReturnType<typeof buildSkillRunnerManagementClient>;
+
+type SessionSyncDeps = {
+  buildManagementClient: (args: {
+    backend: BackendInstance;
+    localize: (key: string, fallback: string) => string;
+  }) => SessionSyncClient;
+  appendRuntimeLog: typeof appendRuntimeLog;
+  updateTaskDashboardHistoryStateByRequest: typeof updateTaskDashboardHistoryStateByRequest;
+  updateSkillRunnerRequestLedgerSnapshot: typeof updateSkillRunnerRequestLedgerSnapshot;
+  updateWorkflowTaskStateByRequest: typeof updateWorkflowTaskStateByRequest;
+  markSkillRunnerBackendHealthFailure: typeof markSkillRunnerBackendHealthFailure;
+  markSkillRunnerBackendHealthSuccess: typeof markSkillRunnerBackendHealthSuccess;
 };
 
 const sessions = new Map<string, SessionLoopState>();
@@ -28,6 +44,21 @@ const sessionStateListeners = new Map<
   string,
   Set<(payload: SkillRunnerSessionStateUpdate) => void>
 >();
+const inflightTasks = new Set<Promise<void>>();
+let nextSessionGeneration = 0;
+
+const defaultSessionSyncDeps: SessionSyncDeps = {
+  buildManagementClient: buildSkillRunnerManagementClient,
+  appendRuntimeLog,
+  updateTaskDashboardHistoryStateByRequest,
+  updateSkillRunnerRequestLedgerSnapshot,
+  updateWorkflowTaskStateByRequest,
+  markSkillRunnerBackendHealthFailure,
+  markSkillRunnerBackendHealthSuccess,
+};
+
+let sessionSyncDeps: SessionSyncDeps = defaultSessionSyncDeps;
+
 export const SKILLRUNNER_EVENT_STREAM_CONNECT_SNAPSHOT = "running" as const;
 export const SKILLRUNNER_EVENT_STREAM_DISCONNECT_STATES = [
   "waiting_user",
@@ -42,6 +73,14 @@ export type SkillRunnerSessionStateUpdate = {
   requestId: string;
   status: string;
   updatedAt?: string;
+};
+
+type SessionSyncRuntimeSnapshot = {
+  sessionCount: number;
+  lastEventCursorCount: number;
+  listenerCount: number;
+  inflightTaskCount: number;
+  activeGenerationCount: number;
 };
 
 function normalizeString(value: unknown) {
@@ -83,6 +122,34 @@ function resolveConversationStateChangedStatus(event: Record<string, unknown>) {
   return normalizeString(data?.to);
 }
 
+function isSessionActive(session: SessionLoopState) {
+  const key = toSessionKey(session.backend.id, session.requestId);
+  return !session.stopped && sessions.get(key)?.generation === session.generation;
+}
+
+function trackInFlightTask(task: Promise<void>) {
+  inflightTasks.add(task);
+  void task.finally(() => {
+    inflightTasks.delete(task);
+  });
+}
+
+function spawnSessionTask(session: SessionLoopState, runner: () => Promise<void>) {
+  if (!isSessionActive(session)) {
+    return;
+  }
+  const task = Promise.resolve(runner()).catch(() => {
+    // session sync runs in the background; failures are normalized in-loop
+  });
+  trackInFlightTask(task);
+}
+
+async function drainSessionSyncTasks() {
+  while (inflightTasks.size > 0) {
+    await Promise.allSettled(Array.from(inflightTasks));
+  }
+}
+
 function stopSessionByKey(key: string) {
   const session = sessions.get(key);
   if (!session) {
@@ -92,6 +159,7 @@ function stopSessionByKey(key: string) {
     lastEventCursorBySession.set(key, session.eventCursor);
   }
   session.stopped = true;
+  session.generation += 1;
   sessions.delete(key);
 }
 
@@ -127,7 +195,7 @@ function applyStateSnapshot(args: {
   const normalized = normalizeStatus(args.status, "running");
   const backendId = normalizeString(args.session.backend.id);
   const requestId = normalizeString(args.session.requestId);
-  const updated = updateSkillRunnerRequestLedgerSnapshot({
+  const updated = sessionSyncDeps.updateSkillRunnerRequestLedgerSnapshot({
     requestId,
     source: "events",
     status: normalized,
@@ -141,14 +209,14 @@ function applyStateSnapshot(args: {
       updatedAt: args.updatedAt,
     };
   }
-  updateWorkflowTaskStateByRequest({
+  sessionSyncDeps.updateWorkflowTaskStateByRequest({
     backendId: updated.backendId,
     requestId: updated.requestId,
     state: updated.snapshot,
     error: undefined,
     updatedAt: updated.updatedAt,
   });
-  updateTaskDashboardHistoryStateByRequest({
+  sessionSyncDeps.updateTaskDashboardHistoryStateByRequest({
     backendId: updated.backendId,
     requestId: updated.requestId,
     state: updated.snapshot,
@@ -165,17 +233,22 @@ function applyStateSnapshot(args: {
   return payload;
 }
 
-async function consumeEventHistory(session: SessionLoopState) {
-  const client = buildSkillRunnerManagementClient({
-    backend: session.backend,
-    localize: (_key, fallback) => fallback,
-  });
+async function consumeEventHistory(
+  session: SessionLoopState,
+  client: SessionSyncClient,
+) {
   const payload = await client.listRunEventHistory({
     requestId: session.requestId,
     fromSeq: session.eventCursor + 1,
   });
+  if (!isSessionActive(session)) {
+    return;
+  }
   let latestObservedStatus = "";
   for (const event of payload.events || []) {
+    if (!isSessionActive(session)) {
+      return;
+    }
     if (!isObject(event)) {
       continue;
     }
@@ -210,26 +283,26 @@ async function streamEventLoop(session: SessionLoopState) {
   const backendId = normalizeString(session.backend.id);
   const requestId = normalizeString(session.requestId);
   const key = toSessionKey(backendId, requestId);
-  const client = buildSkillRunnerManagementClient({
+  const client = sessionSyncDeps.buildManagementClient({
     backend: session.backend,
     localize: (_key, fallback) => fallback,
   });
-  while (!session.stopped) {
+  while (isSessionActive(session)) {
     if (isSkillRunnerBackendReconcileFlagged(backendId)) {
       stopSessionByKey(key);
       return;
     }
     try {
-      await consumeEventHistory(session);
-      if (session.stopped) {
+      await consumeEventHistory(session, client);
+      if (!isSessionActive(session)) {
         return;
       }
-      markSkillRunnerBackendHealthSuccess(backendId);
+      sessionSyncDeps.markSkillRunnerBackendHealthSuccess(backendId);
       await client.streamRunEvents({
         requestId,
         cursor: session.eventCursor,
         onFrame: (frame) => {
-          if (session.stopped) {
+          if (!isSessionActive(session)) {
             return;
           }
           if (frame.event === "snapshot" && isObject(frame.data)) {
@@ -255,7 +328,9 @@ async function streamEventLoop(session: SessionLoopState) {
           const current = applyStateSnapshot({
             session,
             status,
-            updatedAt: normalizeString((frame.data as Record<string, unknown>).ts) || undefined,
+            updatedAt:
+              normalizeString((frame.data as Record<string, unknown>).ts) ||
+              undefined,
           });
           if (current.status === "running") {
             return;
@@ -265,13 +340,19 @@ async function streamEventLoop(session: SessionLoopState) {
           }
         },
       });
+      if (!isSessionActive(session)) {
+        return;
+      }
       session.retryDelayMs = 800;
     } catch (error) {
-      markSkillRunnerBackendHealthFailure({
+      if (!isSessionActive(session)) {
+        return;
+      }
+      sessionSyncDeps.markSkillRunnerBackendHealthFailure({
         backendId,
         error,
       });
-      appendRuntimeLog({
+      sessionSyncDeps.appendRuntimeLog({
         level: "warn",
         scope: "job",
         backendId,
@@ -285,7 +366,13 @@ async function streamEventLoop(session: SessionLoopState) {
         error,
       });
       stopSessionByKey(key);
+      if (!isSessionActive(session)) {
+        return;
+      }
       await sleep(session.retryDelayMs);
+      if (!isSessionActive(session)) {
+        return;
+      }
       session.retryDelayMs = Math.min(30000, session.retryDelayMs * 2);
       return;
     }
@@ -316,11 +403,14 @@ export function ensureSkillRunnerSessionSync(args: {
     started: false,
     eventCursor: Math.max(0, Math.floor(lastEventCursorBySession.get(key) || 0)),
     retryDelayMs: 800,
+    generation: ++nextSessionGeneration,
   };
   sessions.set(key, session);
   if (!session.started) {
     session.started = true;
-    void streamEventLoop(session);
+    spawnSessionTask(session, async () => {
+      await streamEventLoop(session);
+    });
   }
 }
 
@@ -330,24 +420,40 @@ export function stopSessionSync(args?: {
 }) {
   const backendId = normalizeString(args?.backendId);
   const requestId = normalizeString(args?.requestId);
-  for (const [key, session] of sessions.entries()) {
+  for (const [key, session] of Array.from(sessions.entries())) {
     if (backendId && normalizeString(session.backend.id) !== backendId) {
       continue;
     }
     if (requestId && normalizeString(session.requestId) !== requestId) {
       continue;
     }
-    session.stopped = true;
-    sessions.delete(key);
+    stopSessionByKey(key);
   }
 }
 
 export function stopAllSkillRunnerSessionSync() {
-  for (const session of sessions.values()) {
-    session.stopped = true;
+  for (const key of Array.from(sessions.keys())) {
+    stopSessionByKey(key);
   }
-  sessions.clear();
+}
+
+export async function drainSkillRunnerSessionSync() {
+  await drainSessionSyncTasks();
+}
+
+export async function shutdownSkillRunnerSessionSync() {
+  stopAllSkillRunnerSessionSync();
+  await drainSkillRunnerSessionSync();
+}
+
+export async function drainSkillRunnerSessionSyncForTests() {
+  await drainSkillRunnerSessionSync();
+}
+
+export async function resetSkillRunnerSessionSyncForTests() {
+  await shutdownSkillRunnerSessionSync();
   lastEventCursorBySession.clear();
+  sessionStateListeners.clear();
 }
 
 export function subscribeSkillRunnerSessionState(args: {
@@ -373,5 +479,34 @@ export function subscribeSkillRunnerSessionState(args: {
     if (current.size === 0) {
       sessionStateListeners.delete(key);
     }
+  };
+}
+
+export function setSkillRunnerSessionSyncDepsForTests(
+  overrides?: Partial<SessionSyncDeps>,
+) {
+  sessionSyncDeps = overrides
+    ? {
+        ...defaultSessionSyncDeps,
+        ...overrides,
+      }
+    : defaultSessionSyncDeps;
+}
+
+export function getSkillRunnerSessionSyncRuntimeForTests(): SessionSyncRuntimeSnapshot {
+  let listenerCount = 0;
+  for (const listeners of sessionStateListeners.values()) {
+    listenerCount += listeners.size;
+  }
+  const generations = new Set<number>();
+  for (const session of sessions.values()) {
+    generations.add(session.generation);
+  }
+  return {
+    sessionCount: sessions.size,
+    lastEventCursorCount: lastEventCursorBySession.size,
+    listenerCount,
+    inflightTaskCount: inflightTasks.size,
+    activeGenerationCount: generations.size,
   };
 }

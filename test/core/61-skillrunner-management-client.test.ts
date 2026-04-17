@@ -230,6 +230,44 @@ describe("skillrunner management client", function () {
     );
   });
 
+  it("passes assistant_revision rows through chat history without reshaping", async function () {
+    const client = new SkillRunnerManagementClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            request_id: "req-3",
+            events: [
+              {
+                seq: 4,
+                role: "assistant",
+                kind: "assistant_revision",
+                text: "",
+                correlation: {
+                  message_id: "f-1",
+                  message_family_id: "family-1",
+                },
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        ),
+    });
+    const history = await client.listRunChatHistory({
+      requestId: "req-3",
+    });
+    assert.equal(history.events[0]?.kind, "assistant_revision");
+    assert.deepEqual(history.events[0]?.correlation, {
+      message_id: "f-1",
+      message_family_id: "family-1",
+    });
+  });
+
   it("posts reply/cancel to management endpoints with stable payload", async function () {
     const requests: Array<{ url: string; method: string; body: string }> = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {

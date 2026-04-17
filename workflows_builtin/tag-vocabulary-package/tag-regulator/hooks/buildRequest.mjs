@@ -193,6 +193,14 @@ async function materializeValidTagsYaml(tags, parentId, runtime) {
   const fileName = `valid_tags-parent-${String(parentId || "unknown")}-${Date.now()}-${nonce}.yaml`;
   const filePath = joinPath(tempDir, fileName);
   await writeText(filePath, renderYamlTagList(tags));
+  try {
+    requireHostApi(runtime).logging?.recordLeakProbeTempArtifactForTests?.({
+      kind: "tag-regulator-valid-tags-yaml",
+      path: toNativePath(filePath),
+    });
+  } catch {
+    // keep probe registration best-effort
+  }
   return toNativePath(filePath);
 }
 

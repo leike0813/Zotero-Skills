@@ -1,3 +1,5 @@
+import { measureAsyncTestPerformanceSpan } from "../modules/testPerformanceProbeBridge";
+
 type ItemRef = Zotero.Item | number | string;
 type NotePayload = { content: string };
 type FileSpec = { file: any } | { filePath: string };
@@ -73,12 +75,59 @@ function assertValidField(item: Zotero.Item, field: string) {
   }
 }
 
-async function applyFieldPatch(item: Zotero.Item, patch: FieldPatch) {
+type PerformanceLabels = Record<string, unknown>;
+
+function buildItemPerformanceLabels(
+  item: Zotero.Item,
+  labels?: PerformanceLabels,
+): PerformanceLabels {
+  return {
+    itemType: item.itemType || "",
+    ...labels,
+  };
+}
+
+async function saveItemTx(
+  item: Zotero.Item,
+  spanName: string,
+  labels?: PerformanceLabels,
+) {
+  return measureAsyncTestPerformanceSpan(
+    spanName,
+    buildItemPerformanceLabels(item, labels),
+    () => item.saveTx(),
+  );
+}
+
+async function eraseItemTx(
+  item: Zotero.Item,
+  spanName: string,
+  labels?: PerformanceLabels,
+) {
+  return measureAsyncTestPerformanceSpan(
+    spanName,
+    buildItemPerformanceLabels(item, labels),
+    () => item.eraseTx(),
+  );
+}
+
+async function applyFieldPatch(
+  item: Zotero.Item,
+  patch: FieldPatch,
+  options?: {
+    spanName?: string;
+    labels?: PerformanceLabels;
+  },
+) {
   Object.entries(patch).forEach(([field, value]) => {
     assertValidField(item, field);
     item.setField(field, value as any);
   });
-  await item.saveTx();
+  await saveItemTx(
+    item,
+    options?.spanName || "handlers:applyFieldPatch:saveTx",
+    options?.labels,
+  );
 }
 
 function resolveItem(ref: ItemRef): Zotero.Item {
@@ -254,7 +303,9 @@ export const handlers = {
         (item as any).libraryID = options.libraryID;
       }
       setParent(item, options.parent ?? null);
-      await item.saveTx();
+      await saveItemTx(item, "handlers:item.create:saveTx", {
+        hasParent: !!options.parent,
+      });
       const patch = buildFieldPatch(
         item,
         options.data ?? null,
@@ -262,19 +313,27 @@ export const handlers = {
         options.fields,
       );
       if (Object.keys(patch).length > 0) {
-        await applyFieldPatch(item, patch);
+        await applyFieldPatch(item, patch, {
+          spanName: "handlers:item.create:updateFields:saveTx",
+          labels: {
+            hasData: !!options.data,
+            hasFields: !!options.fields,
+          },
+        });
       }
       return item;
     },
     setParent: async (itemRef: ItemRef, parentRef: ItemRef | null) => {
       const item = resolveItem(itemRef);
       setParent(item, parentRef);
-      await item.saveTx();
+      await saveItemTx(item, "handlers:item.setParent:saveTx", {
+        hasParent: !!parentRef,
+      });
       return item;
     },
     remove: async (itemRef: ItemRef) => {
       const item = resolveItem(itemRef);
-      await item.eraseTx();
+      await eraseItemTx(item, "handlers:item.remove:eraseTx");
     },
   },
   parent: {
@@ -283,16 +342,25 @@ export const handlers = {
       const newNote = new Zotero.Item("note");
       newNote.parentID = parent.id;
       newNote.setNote(note.content);
-      await newNote.saveTx();
+      await saveItemTx(newNote, "handlers:parent.addNote:saveTx", {
+        parentItemType: parent.itemType || "",
+      });
       return newNote;
     },
     addAttachment: async (parentRef: ItemRef, spec: FileSpec) => {
       const parent = resolveItem(parentRef);
       const file = await resolveFile(spec);
-      const attachment = await Zotero.Attachments.linkFromFile({
-        file,
-        parentItemID: parent.id,
-      });
+      const attachment = await measureAsyncTestPerformanceSpan(
+        "handlers:parent.addAttachment:linkFromFile",
+        {
+          parentItemType: parent.itemType || "",
+        },
+        () =>
+          Zotero.Attachments.linkFromFile({
+            file,
+            parentItemID: parent.id,
+          }),
+      );
       return attachment;
     },
     addRelated: async (
@@ -303,7 +371,9 @@ export const handlers = {
       const relatedItems = resolveItems(relatedRefs);
       for (const parent of parents) {
         relatedItems.forEach((item) => parent.addRelatedItem(item));
-        await parent.saveTx();
+        await saveItemTx(parent, "handlers:parent.addRelated:saveTx", {
+          relatedCount: relatedItems.length,
+        });
       }
     },
     removeRelated: async (
@@ -316,12 +386,19 @@ export const handlers = {
         for (const item of relatedItems) {
           await parent.removeRelatedItem(item);
         }
-        await parent.saveTx();
+        await saveItemTx(parent, "handlers:parent.removeRelated:saveTx", {
+          relatedCount: relatedItems.length,
+        });
       }
     },
     updateFields: async (parentRef: ItemRef, patch: FieldPatch) => {
       const parent = resolveItem(parentRef);
-      await applyFieldPatch(parent, patch);
+      await applyFieldPatch(parent, patch, {
+        spanName: "handlers:parent.updateFields:saveTx",
+        labels: {
+          fieldCount: Object.keys(patch).length,
+        },
+      });
       return parent;
     },
   },
@@ -329,35 +406,48 @@ export const handlers = {
     create: async (note: NotePayload) => {
       const newNote = new Zotero.Item("note");
       newNote.setNote(note.content);
-      await newNote.saveTx();
+      await saveItemTx(newNote, "handlers:note.create:saveTx");
       return newNote;
     },
     update: async (noteRef: ItemRef, patch: NotePayload) => {
       const note = resolveItem(noteRef);
       note.setNote(patch.content);
-      await note.saveTx();
+      await saveItemTx(note, "handlers:note.update:saveTx");
       return note;
     },
     remove: async (noteRef: ItemRef) => {
       const note = resolveItem(noteRef);
-      await note.eraseTx();
+      await eraseItemTx(note, "handlers:note.remove:eraseTx");
     },
   },
   attachment: {
     create: async (spec: FileSpec) => {
       const file = await resolveFile(spec);
-      const attachment = await Zotero.Attachments.linkFromFile({ file });
+      const attachment = await measureAsyncTestPerformanceSpan(
+        "handlers:attachment.create:linkFromFile",
+        undefined,
+        () => Zotero.Attachments.linkFromFile({ file }),
+      );
       return attachment;
     },
     createFromPath: async (options: AttachmentPathOptions) => {
       const file = await ensureFileFromPath(options);
       const parent = options.parent ? resolveItem(options.parent) : null;
-      const attachment = parent
-        ? await Zotero.Attachments.linkFromFile({
-            file,
-            parentItemID: parent.id,
-          })
-        : await Zotero.Attachments.linkFromFile({ file });
+      const attachment = await measureAsyncTestPerformanceSpan(
+        "handlers:attachment.createFromPath:linkFromFile",
+        {
+          hasParent: !!parent,
+          hasPath: !!String(options.path || "").trim(),
+          hasDataPath: !!String(options.dataPath || "").trim(),
+        },
+        () =>
+          parent
+            ? Zotero.Attachments.linkFromFile({
+                file,
+                parentItemID: parent.id,
+              })
+            : Zotero.Attachments.linkFromFile({ file }),
+      );
       const patch: FieldPatch = {};
       if (options.title) {
         patch.title = options.title;
@@ -375,18 +465,28 @@ export const handlers = {
         filtered[field] = value;
       }
       if (Object.keys(filtered).length > 0) {
-        await applyFieldPatch(attachment, filtered);
+        await applyFieldPatch(attachment, filtered, {
+          spanName: "handlers:attachment.createFromPath:updateFields:saveTx",
+          labels: {
+            fieldCount: Object.keys(filtered).length,
+          },
+        });
       }
       return attachment;
     },
     update: async (attachmentRef: ItemRef, patch: FieldPatch) => {
       const attachment = resolveItem(attachmentRef);
-      await applyFieldPatch(attachment, patch);
+      await applyFieldPatch(attachment, patch, {
+        spanName: "handlers:attachment.update:saveTx",
+        labels: {
+          fieldCount: Object.keys(patch).length,
+        },
+      });
       return attachment;
     },
     remove: async (attachmentRef: ItemRef) => {
       const attachment = resolveItem(attachmentRef);
-      await attachment.eraseTx();
+      await eraseItemTx(attachment, "handlers:attachment.remove:eraseTx");
     },
   },
   tag: {
@@ -395,7 +495,9 @@ export const handlers = {
       const items = resolveItems(itemRef);
       for (const item of items) {
         tags.forEach((tag) => item.addTag(tag));
-        await item.saveTx();
+        await saveItemTx(item, "handlers:tag.add:saveTx", {
+          tagCount: tags.length,
+        });
       }
     },
     list: async (itemRef: ItemRef) => {
@@ -407,7 +509,9 @@ export const handlers = {
       const items = resolveItems(itemRef);
       for (const item of items) {
         tags.forEach((tag) => item.removeTag(tag));
-        await item.saveTx();
+        await saveItemTx(item, "handlers:tag.remove:saveTx", {
+          tagCount: tags.length,
+        });
       }
     },
     replace: async (itemRef: ItemRef | ItemRef[], tags: string[]) => {
@@ -417,7 +521,10 @@ export const handlers = {
         const current = item.getTags().map((t) => t.tag);
         current.forEach((tag) => item.removeTag(tag));
         tags.forEach((tag) => item.addTag(tag));
-        await item.saveTx();
+        await saveItemTx(item, "handlers:tag.replace:saveTx", {
+          previousTagCount: current.length,
+          nextTagCount: tags.length,
+        });
       }
     },
   },
@@ -427,7 +534,11 @@ export const handlers = {
       collection.name = options.name;
       (collection as any).libraryID =
         options.libraryID ?? Zotero.Libraries.userLibraryID;
-      await collection.saveTx();
+      await measureAsyncTestPerformanceSpan(
+        "handlers:collection.create:saveTx",
+        undefined,
+        () => collection.saveTx(),
+      );
       return collection;
     },
     delete: async (collection: number | string | Zotero.Collection) => {
@@ -436,7 +547,11 @@ export const handlers = {
       if (!resolved) {
         throw new Error(`Collection not found: ${collectionId}`);
       }
-      await resolved.eraseTx();
+      await measureAsyncTestPerformanceSpan(
+        "handlers:collection.delete:eraseTx",
+        undefined,
+        () => resolved.eraseTx(),
+      );
     },
     add: async (
       itemRef: ItemRef | ItemRef[],
@@ -447,7 +562,9 @@ export const handlers = {
       assertCollectionExists(collectionId);
       for (const item of items) {
         item.addToCollection(collectionId);
-        await item.saveTx();
+        await saveItemTx(item, "handlers:collection.add:saveTx", {
+          collectionId,
+        });
       }
     },
     remove: async (
@@ -459,7 +576,9 @@ export const handlers = {
       assertCollectionExists(collectionId);
       for (const item of items) {
         item.removeFromCollection(collectionId);
-        await item.saveTx();
+        await saveItemTx(item, "handlers:collection.remove:saveTx", {
+          collectionId,
+        });
       }
     },
     replace: async (
@@ -473,7 +592,10 @@ export const handlers = {
         const current = item.getCollections();
         current.forEach((id) => item.removeFromCollection(id));
         nextIds.forEach((id) => item.addToCollection(id));
-        await item.saveTx();
+        await saveItemTx(item, "handlers:collection.replace:saveTx", {
+          previousCollectionCount: current.length,
+          nextCollectionCount: nextIds.length,
+        });
       }
     },
   },

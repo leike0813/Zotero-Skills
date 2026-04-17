@@ -149,6 +149,22 @@ const collectionsByKey = new Map<string, MockCollection>();
 const prefsStore = new Map<string, unknown>();
 let notifierCounter = 0;
 
+function initializeZoteroMockState() {
+  nextItemId = 1;
+  nextCollectionId = 1;
+  itemsById.clear();
+  itemsByKey.clear();
+  collectionsById.clear();
+  collectionsByKey.clear();
+  prefsStore.clear();
+  prefsStore.set(`${config.prefsPrefix}.workflowDir`, "");
+  notifierCounter = 0;
+}
+
+export function resetZoteroMockStateForTests() {
+  initializeZoteroMockState();
+}
+
 function generateKey(id: number) {
   return id.toString(36).toUpperCase().padStart(8, "0").slice(-8);
 }
@@ -2206,7 +2222,7 @@ const fieldIdByTypeAndBase = new Map<number, Map<number, number>>([
 ]);
 
 function createZoteroMock(): ZoteroMock {
-  prefsStore.set(`${config.prefsPrefix}.workflowDir`, "");
+  initializeZoteroMockState();
 
   const mock: ZoteroMock = {
     Promise: {
@@ -2385,3 +2401,12 @@ if (!("OS" in globalThis)) {
     configurable: true,
   });
 }
+
+export const mochaHooks = {
+  beforeEach() {
+    resetZoteroMockStateForTests();
+  },
+  afterEach() {
+    resetZoteroMockStateForTests();
+  },
+};

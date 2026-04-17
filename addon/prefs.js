@@ -4,7 +4,7 @@ pref("workflowSettingsJson", "");
 pref("skillRunnerModelCacheJson", "");
 pref("skillRunnerDeferredTasksJson", "");
 pref("skillRunnerRequestLedgerJson", "");
-pref("skillRunnerLocalRuntimeVersion", "v0.5.2");
+pref("skillRunnerLocalRuntimeVersion", "v0.6.0");
 pref("skillRunnerLocalRuntimeStateJson", "");
 pref("tagVocabularyStagedJson", "");
 pref("workflowDir", "");

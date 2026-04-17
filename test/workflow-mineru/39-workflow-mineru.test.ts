@@ -6,6 +6,7 @@ import { executeApplyResult, executeBuildRequests } from "../../src/workflows/ru
 import {
   ensureDir,
   existsPath,
+  isZoteroRuntime,
   joinPath,
   mkTempDir,
   readUtf8,
@@ -91,11 +92,12 @@ async function countAttachmentsByPath(parent: Zotero.Item, targetPath: string) {
 }
 
 const itFullOnly = isFullTestMode() ? it : it.skip;
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
 
 describe("workflow: mineru", function () {
   this.timeout(30000);
 
-  it("loads mineru workflow manifest", async function () {
+  itNodeOnly("loads mineru workflow manifest", async function () {
     const workflow = await getMineruWorkflow();
     assert.equal(workflow.manifest.provider, "generic-http");
     assert.equal(workflow.manifest.request?.kind, "generic-http.steps.v1");
@@ -147,7 +149,7 @@ describe("workflow: mineru", function () {
     assert.deepEqual(names, ["a.pdf", "b.pdf"]);
   });
 
-  it("expands parent selection to child pdf attachments and keeps one task per pdf", async function () {
+  itNodeOnly("expands parent selection to child pdf attachments and keeps one task per pdf", async function () {
     const workflow = await getMineruWorkflow();
     const tempDir = await mkTempDir("zotero-skills-mineru-parent");
     const parent = await handlers.item.create({
@@ -215,7 +217,7 @@ describe("workflow: mineru", function () {
     assert.notEqual(requests[0].sourceAttachmentPaths?.[0], skip.pdfPath);
   });
 
-  it("reports all skipped units when every candidate pdf conflicts with existing markdown", async function () {
+  itNodeOnly("reports all skipped units when every candidate pdf conflicts with existing markdown", async function () {
     const workflow = await getMineruWorkflow();
     const tempDir = await mkTempDir("zotero-skills-mineru-all-conflicts");
     const parent = await handlers.item.create({
@@ -567,7 +569,7 @@ describe("workflow: mineru", function () {
     assert.equal(parent.getAttachments().length, attachmentCountBefore);
   });
 
-  it("does not create duplicate linked markdown attachment for same parent and same path", async function () {
+  itNodeOnly("does not create duplicate linked markdown attachment for same parent and same path", async function () {
     const workflow = await getMineruWorkflow();
     const tempDir = await mkTempDir("zotero-skills-mineru-dedupe-link");
     const bundleDir = await mkTempDir("zotero-skills-mineru-dedupe-bundle");

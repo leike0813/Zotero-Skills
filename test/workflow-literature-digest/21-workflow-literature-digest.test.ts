@@ -12,6 +12,7 @@ import {
   decodeBase64Utf8,
   expectWorkflowSummaryCounter,
   fixturePath,
+  isZoteroRuntime,
   workflowsPath,
 } from "./workflow-test-utils";
 import { isFullTestMode } from "../zotero/testMode";
@@ -45,6 +46,7 @@ function parsePayloadEntryPath(noteContent: string, payloadType: string) {
 }
 
 const itFullOnly = isFullTestMode() ? it : it.skip;
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
 
 describe("workflow: literature-digest", function () {
   async function getLiteratureDigestWorkflow() {
@@ -88,7 +90,7 @@ describe("workflow: literature-digest", function () {
     await handlers.parent.addNote(parent, { content: noteContents.citationAnalysis });
   }
 
-  it("loads literature-digest workflow manifest from workflows directory", async function () {
+  itNodeOnly("loads literature-digest workflow manifest from workflows directory", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
 
     const workflow = loaded.workflows.find(
@@ -157,7 +159,7 @@ describe("workflow: literature-digest", function () {
     assert.match(String(request.input?.source_path || ""), /^inputs\/source_path\//);
   });
 
-  it("builds request from selected pdf attachment when markdown is unavailable", async function () {
+  itNodeOnly("builds request from selected pdf attachment when markdown is unavailable", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Parent PDF Fallback" },
@@ -238,71 +240,75 @@ describe("workflow: literature-digest", function () {
     }
   });
 
-  itFullOnly("skips build for legacy and payload-marker note formats", async function () {
-    const workflow = await getLiteratureDigestWorkflow();
-    const cases = [
-      {
-        label: "payload markers",
-        title: "Workflow Payload Skip Parent",
-        noteContents: {
-          digest:
-            '<div><h1>Literature Digest</h1><span data-zs-block="payload" data-zs-payload="digest-markdown" data-zs-value="e30="></span></div>',
-          references:
-            '<div><h1>References</h1><span data-zs-block="payload" data-zs-payload="references-json" data-zs-value="e30="></span></div>',
-          citationAnalysis:
-            '<div><h1>Citation Analysis</h1><span data-zs-block="payload" data-zs-payload="citation-analysis-json" data-zs-value="e30="></span></div>',
-        },
+  const legacySkipCases = [
+    {
+      label: "payload markers",
+      title: "Workflow Payload Skip Parent",
+      noteContents: {
+        digest:
+          '<div><h1>Literature Digest</h1><span data-zs-block="payload" data-zs-payload="digest-markdown" data-zs-value="e30="></span></div>',
+        references:
+          '<div><h1>References</h1><span data-zs-block="payload" data-zs-payload="references-json" data-zs-value="e30="></span></div>',
+        citationAnalysis:
+          '<div><h1>Citation Analysis</h1><span data-zs-block="payload" data-zs-payload="citation-analysis-json" data-zs-value="e30="></span></div>',
       },
-      {
-        label: "legacy heading-only",
-        title: "Workflow Legacy Skip Parent",
-        noteContents: {
-          digest: "<div><h1>Literature Digest</h1><p>legacy content</p></div>",
-          references: "<div><h1>References JSON</h1><pre>[]</pre></div>",
-          citationAnalysis: "<div><h1>Citation Analysis</h1><pre>{}</pre></div>",
-        },
+    },
+    {
+      label: "legacy heading-only",
+      title: "Workflow Legacy Skip Parent",
+      noteContents: {
+        digest: "<div><h1>Literature Digest</h1><p>legacy content</p></div>",
+        references: "<div><h1>References JSON</h1><pre>[]</pre></div>",
+        citationAnalysis: "<div><h1>Citation Analysis</h1><pre>{}</pre></div>",
       },
-      {
-        label: "legacy paragraph strong headings",
-        title: "Workflow Legacy Paragraph Skip Parent",
-        noteContents: {
-          digest:
-            "<div><p><strong>Literature Digest</strong></p><p>legacy paragraph</p></div>",
-          references:
-            "<div><p><strong>References JSON</strong></p><pre>[]</pre></div>",
-          citationAnalysis:
-            "<div><p><strong>Citation Analysis</strong></p><pre>{}</pre></div>",
-        },
+    },
+    {
+      label: "legacy paragraph strong headings",
+      title: "Workflow Legacy Paragraph Skip Parent",
+      noteContents: {
+        digest:
+          "<div><p><strong>Literature Digest</strong></p><p>legacy paragraph</p></div>",
+        references:
+          "<div><p><strong>References JSON</strong></p><pre>[]</pre></div>",
+        citationAnalysis:
+          "<div><p><strong>Citation Analysis</strong></p><pre>{}</pre></div>",
       },
-    ];
+    },
+  ] as const;
 
-    for (const entry of cases) {
-      const { parent, attachment } = await createDigestAttachmentParent({
-        title: entry.title,
-      });
-      await addGeneratedDigestNotes(parent, entry.noteContents);
-      const context = await buildSelectionContext([attachment]);
-
-      let thrown: unknown = null;
-      try {
-        await executeBuildRequests({
-          workflow,
-          selectionContext: context,
+  for (const entry of legacySkipCases) {
+    itFullOnly(
+      `skips build for legacy and payload-marker note formats (${entry.label})`,
+      async function () {
+        const workflow = await getLiteratureDigestWorkflow();
+        const { parent, attachment } = await createDigestAttachmentParent({
+          title: entry.title,
         });
-      } catch (error) {
-        thrown = error;
-      }
+        await addGeneratedDigestNotes(parent, entry.noteContents);
+        const context = await buildSelectionContext([attachment]);
 
-      assert.isOk(thrown, `${entry.label}: expected build request to skip`);
-      assert.match(
-        String(thrown),
-        /has no valid input units after filtering/,
-        entry.label,
-      );
-    }
-  });
+        let thrown: unknown = null;
+        try {
+          await executeBuildRequests({
+            workflow,
+            selectionContext: context,
+          });
+        } catch (error) {
+          thrown = error;
+        }
+
+        assert.isOk(thrown, `${entry.label}: expected build request to skip`);
+        assert.match(
+          String(thrown),
+          /has no valid input units after filtering/,
+          entry.label,
+        );
+      },
+    );
+  }
 
   it("applies bundle by creating digest/references/citation-analysis child notes", async function () {
+    this.timeout(5000);
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Result Parent" },
@@ -348,7 +354,7 @@ describe("workflow: literature-digest", function () {
     assert.include(parentNotes, thirdNote.id);
   });
 
-  it("applies result when artifact paths are uploads-prefixed bundle-relative paths", async function () {
+  itNodeOnly("applies result when artifact paths are uploads-prefixed bundle-relative paths", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Uploads-Prefixed Paths Parent" },
@@ -410,7 +416,7 @@ describe("workflow: literature-digest", function () {
     );
   });
 
-  it("surfaces missing artifact path details when all entry candidates fail", async function () {
+  itNodeOnly("surfaces missing artifact path details when all entry candidates fail", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Missing Artifact Path Parent" },
@@ -456,7 +462,8 @@ describe("workflow: literature-digest", function () {
     assert.include(message, "artifacts/digest.md");
   });
 
-  it("writes hidden source metadata with markdown attachment itemKey when request is provided", async function () {
+  itNodeOnly("writes hidden source metadata with markdown attachment itemKey when request is provided", async function () {
+    this.timeout(5000);
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Source Metadata Parent" },
@@ -518,6 +525,7 @@ describe("workflow: literature-digest", function () {
   });
 
   itFullOnly("continues apply when source markdown itemKey cannot be resolved", async function () {
+    this.timeout(5000);
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Source Metadata Fallback Parent" },
@@ -560,6 +568,7 @@ describe("workflow: literature-digest", function () {
   });
 
   itFullOnly("upserts existing generated notes and keeps each kind unique", async function () {
+    this.timeout(5000);
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Upsert Parent" },
@@ -622,7 +631,7 @@ describe("workflow: literature-digest", function () {
     );
   });
 
-  it("reports skipped count for mixed parent selection", async function () {
+  itNodeOnly("reports skipped count for mixed parent selection", async function () {
     const parentSkipped = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Workflow Mixed Skip Parent A" },
@@ -674,7 +683,7 @@ describe("workflow: literature-digest", function () {
     assert.equal(requests.__stats?.skippedUnits, 1);
   });
 
-  it("reports skipped counts for core idempotent workflow execution paths", async function () {
+  itNodeOnly("reports skipped counts for core idempotent workflow execution paths", async function () {
     const workflow = await getLiteratureDigestWorkflow();
     const cases = [
       {
@@ -732,108 +741,101 @@ describe("workflow: literature-digest", function () {
     }
   });
 
-  itFullOnly("reports accurate skipped counts for filtered and parent-selected idempotent inputs", async function () {
-    const workflow = await getLiteratureDigestWorkflow();
-    const cases = [
-      {
-        label: "all selected parents are filtered out before backend call",
-        run: async (label: string) => {
-          const parentA = await handlers.item.create({
-            itemType: "journalArticle",
-            fields: { title: "Workflow Execute Skip Parent A" },
-          });
-          const parentB = await handlers.item.create({
-            itemType: "journalArticle",
-            fields: { title: "Workflow Execute Skip Parent B" },
-          });
-          const mdFile = fixturePath("literature-digest", "example.md");
-          await handlers.attachment.createFromPath({
-            parent: parentA,
-            path: mdFile,
-            title: "a.md",
-            mimeType: "text/markdown",
-          });
-          await handlers.attachment.createFromPath({
-            parent: parentB,
-            path: mdFile,
-            title: "b.md",
-            mimeType: "text/markdown",
-          });
-          for (const parent of [parentA, parentB]) {
-            await addGeneratedDigestNotes(parent, {
-              digest: '<div data-zs-note-kind="digest"><h1>Digest</h1></div>',
-              references:
-                '<div data-zs-note-kind="references"><h1>References</h1></div>',
-              citationAnalysis:
-                '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
-            });
-          }
+  itFullOnly(
+    "reports accurate skipped counts for filtered and parent-selected idempotent inputs (all selected parents are filtered out before backend call)",
+    async function () {
+      const workflow = await getLiteratureDigestWorkflow();
+      const parentA = await handlers.item.create({
+        itemType: "journalArticle",
+        fields: { title: "Workflow Execute Skip Parent A" },
+      });
+      const parentB = await handlers.item.create({
+        itemType: "journalArticle",
+        fields: { title: "Workflow Execute Skip Parent B" },
+      });
+      const mdFile = fixturePath("literature-digest", "example.md");
+      await handlers.attachment.createFromPath({
+        parent: parentA,
+        path: mdFile,
+        title: "a.md",
+        mimeType: "text/markdown",
+      });
+      await handlers.attachment.createFromPath({
+        parent: parentB,
+        path: mdFile,
+        title: "b.md",
+        mimeType: "text/markdown",
+      });
+      for (const parent of [parentA, parentB]) {
+        await addGeneratedDigestNotes(parent, {
+          digest: '<div data-zs-note-kind="digest"><h1>Digest</h1></div>',
+          references:
+            '<div data-zs-note-kind="references"><h1>References</h1></div>',
+          citationAnalysis:
+            '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
+        });
+      }
 
-          const runtime = globalThis as { fetch?: typeof fetch };
-          const originalFetch = runtime.fetch;
-          let fetchCalls = 0;
-          runtime.fetch = (async () => {
-            fetchCalls += 1;
-            throw new Error("fetch should not be called when skipped");
-          }) as typeof fetch;
-          const alerts: string[] = [];
-          const fakeWindow = {
-            ZoteroPane: { getSelectedItems: () => [parentA, parentB] },
-            alert: (message: string) => {
-              alerts.push(message);
-            },
-          } as unknown as _ZoteroTypes.MainWindow;
-
-          try {
-            await executeWorkflowFromCurrentSelection({ win: fakeWindow, workflow });
-          } finally {
-            runtime.fetch = originalFetch;
-          }
-
-          assert.equal(fetchCalls, 0, `${label}: backend fetch should be skipped`);
-          assert.lengthOf(alerts, 1, label);
-          expectWorkflowSummaryCounter(alerts[0], "succeeded", 0);
-          expectWorkflowSummaryCounter(alerts[0], "failed", 0);
-          expectWorkflowSummaryCounter(alerts[0], "skipped", 2);
+      const runtime = globalThis as { fetch?: typeof fetch };
+      const originalFetch = runtime.fetch;
+      let fetchCalls = 0;
+      runtime.fetch = (async () => {
+        fetchCalls += 1;
+        throw new Error("fetch should not be called when skipped");
+      }) as typeof fetch;
+      const alerts: string[] = [];
+      const fakeWindow = {
+        ZoteroPane: { getSelectedItems: () => [parentA, parentB] },
+        alert: (message: string) => {
+          alerts.push(message);
         },
-      },
-      {
-        label: "selected parent item is skipped during build",
-        run: async (label: string) => {
-          const { parent } = await createDigestAttachmentParent({
-            title: "Workflow Parent Selection Skip",
-          });
-          await addGeneratedDigestNotes(parent, {
-            digest: '<div data-zs-note-kind="digest"><h1>Digest</h1></div>',
-            references:
-              '<div data-zs-note-kind="references"><h1>References</h1></div>',
-            citationAnalysis:
-              '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
-          });
+      } as unknown as _ZoteroTypes.MainWindow;
 
-          const context = await buildSelectionContext([parent]);
-          let thrown: unknown = null;
-          try {
-            await executeBuildRequests({
-              workflow,
-              selectionContext: context,
-            });
-          } catch (error) {
-            thrown = error;
-          }
+      try {
+        await executeWorkflowFromCurrentSelection({ win: fakeWindow, workflow });
+      } finally {
+        runtime.fetch = originalFetch;
+      }
 
-          assert.isOk(thrown, `${label}: expected parent-selection build request to skip`);
-          assert.match(
-            String(thrown),
-            /has no valid input units after filtering/,
-            label,
-          );
-        },
-      },
-    ];
+      assert.equal(fetchCalls, 0, "backend fetch should be skipped");
+      assert.lengthOf(alerts, 1);
+      expectWorkflowSummaryCounter(alerts[0], "succeeded", 0);
+      expectWorkflowSummaryCounter(alerts[0], "failed", 0);
+      expectWorkflowSummaryCounter(alerts[0], "skipped", 2);
+    },
+  );
 
-    for (const entry of cases) {
-      await entry.run(entry.label);
-    }
-  });
+  itFullOnly(
+    "reports accurate skipped counts for filtered and parent-selected idempotent inputs (selected parent item is skipped during build)",
+    async function () {
+      const workflow = await getLiteratureDigestWorkflow();
+      const { parent } = await createDigestAttachmentParent({
+        title: "Workflow Parent Selection Skip",
+      });
+      await addGeneratedDigestNotes(parent, {
+        digest: '<div data-zs-note-kind="digest"><h1>Digest</h1></div>',
+        references:
+          '<div data-zs-note-kind="references"><h1>References</h1></div>',
+        citationAnalysis:
+          '<div data-zs-note-kind="citation-analysis"><h1>Citation Analysis</h1></div>',
+      });
+
+      const context = await buildSelectionContext([parent]);
+      let thrown: unknown = null;
+      try {
+        await executeBuildRequests({
+          workflow,
+          selectionContext: context,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      assert.isOk(thrown, "expected parent-selection build request to skip");
+      assert.match(
+        String(thrown),
+        /has no valid input units after filtering/,
+      );
+    },
+  );
 });

@@ -1,5 +1,6 @@
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
+import { patchGeneratedZoteroTestRunner } from "./scripts/patch-zotero-test-runner";
 
 type TestDomain = "all" | "core" | "ui" | "workflow";
 
@@ -67,7 +68,13 @@ export default defineConfig({
 
   test: {
     entries: TEST_ENTRIES,
+    startupDelay: 100,
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
+    hooks: {
+      "test:bundleTests": async () => {
+        await patchGeneratedZoteroTestRunner();
+      },
+    },
   },
 
   // If you need to see a more detailed log, uncomment the following line:

@@ -108,6 +108,43 @@ export async function withPackageRuntimeScope(runtime, work) {
 
 export { resolveCurrentWorkflowExecutionRuntime };
 
+function resolvePerformanceProbeHooks() {
+  const hostApi = resolveHostApi();
+  const viaHostApi = hostApi?.logging?.recordPerformanceSpanForTests;
+  if (typeof viaHostApi === "function") {
+    return {
+      recordSpan: viaHostApi,
+    };
+  }
+  const hooks = globalThis?.__zs_test_performance_probe_hooks__;
+  if (
+    hooks &&
+    hooks.enabled === true &&
+    typeof hooks.recordSpan === "function"
+  ) {
+    return hooks;
+  }
+  return null;
+}
+
+export async function measureWorkflowTestSpan(name, labels, work) {
+  const hooks = resolvePerformanceProbeHooks();
+  if (!hooks) {
+    return work();
+  }
+  const startedAt = Date.now();
+  try {
+    return await work();
+  } finally {
+    hooks.recordSpan({
+      name: String(name || "").trim() || "workflow-span",
+      startedAt,
+      durationMs: Date.now() - startedAt,
+      labels: isObjectLike(labels) ? labels : {},
+    });
+  }
+}
+
 export function requireHostApi(runtime, message) {
   const hostApi = resolveHostApi(runtime);
   if (!hostApi) {

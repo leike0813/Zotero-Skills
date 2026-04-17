@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { config } from "../../package.json";
 import { handlers } from "../../src/handlers";
 import { buildSelectionContext } from "../../src/modules/selectionContext";
+import { measureAsyncTestPerformanceSpan } from "../../src/modules/testPerformanceProbeBridge";
 import { installWorkflowEditorSessionOverrideForTests } from "../../src/modules/workflowEditorHost";
 import type { RuntimeLogEntry } from "../../src/modules/runtimeLogManager";
 import { loadWorkflowManifests } from "../../src/workflows/loader";
@@ -25,8 +26,16 @@ import {
   readUtf8,
   workflowsPath,
 } from "../zotero/workflow-test-utils";
+import { isFullTestMode } from "../zotero/testMode";
+import {
+  flushSaveTxLoadProbeReport,
+  isTagRegulatorSaveTxLoadProbeEnabled,
+  recordSaveTxLoadProbeResult,
+  runSaveTxLoadWarmup,
+} from "./tagRegulatorSaveTxLoadProbe";
 
 const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+const itZoteroFullOrNode = isZoteroRuntime() && !isFullTestMode() ? it.skip : it;
 
 type PersistedTagEntry = {
   tag: string;
@@ -375,16 +384,97 @@ function listTags(item: Zotero.Item) {
     );
 }
 
+let cachedTagRegulatorWorkflowPromise: Promise<any> | null = null;
+
 async function getTagRegulatorWorkflow() {
-  const loaded = await loadWorkflowManifests(workflowsPath());
-  const workflow = loaded.workflows.find(
-    (entry) => entry.manifest.id === "tag-regulator",
-  );
-  assert.isOk(
-    workflow,
-    `workflow tag-regulator not found; loaded=${loaded.workflows.map((entry) => entry.manifest.id).join(",")} warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
-  );
-  return workflow!;
+  if (!cachedTagRegulatorWorkflowPromise) {
+    cachedTagRegulatorWorkflowPromise = (async () => {
+      const loaded = await loadWorkflowManifests(workflowsPath());
+      const workflow = loaded.workflows.find(
+        (entry) => entry.manifest.id === "tag-regulator",
+      );
+      assert.isOk(
+        workflow,
+        `workflow tag-regulator not found; loaded=${loaded.workflows.map((entry) => entry.manifest.id).join(",")} warnings=${JSON.stringify(loaded.warnings)} errors=${JSON.stringify(loaded.errors)}`,
+      );
+      return workflow!;
+    })().catch((error) => {
+      cachedTagRegulatorWorkflowPromise = null;
+      throw error;
+    });
+  }
+  return cachedTagRegulatorWorkflowPromise;
+}
+
+async function runSuggestTagsEmptyScenario(args?: { titleSuffix?: string }) {
+  saveTagVocabularyState([
+    {
+      tag: "topic:stable",
+      facet: "topic",
+      source: "manual",
+      note: "",
+      deprecated: false,
+    },
+  ]);
+  const before = loadTagVocabularyState().entries;
+  let dialogCalls = 0;
+  const restoreOpen = installSuggestTagsDialogMock(async () => {
+    dialogCalls += 1;
+    return {
+      saved: true,
+      result: {
+        selectedTags: ["topic:unexpected"],
+      },
+    };
+  });
+  const parent = await handlers.item.create({
+    itemType: "journalArticle",
+    fields: {
+      title: `Tag Regulator Suggest Empty Parent ${String(args?.titleSuffix || "").trim()}`.trim(),
+    },
+  });
+  await handlers.tag.add(parent, ["topic:legacy"]);
+  const workflow = await getTagRegulatorWorkflow();
+
+  try {
+    const applied = (await executeApplyResult({
+      workflow,
+      parent,
+      bundleReader: {
+        readText: async () => "",
+      },
+      runResult: {
+        resultJson: {
+          result: {
+            status: "success",
+            data: {
+              remove_tags: ["topic:legacy"],
+              add_tags: ["topic:tunnel"],
+              suggest_tags: [],
+              warnings: [],
+              error: null,
+            },
+            artifacts: [],
+            validation_warnings: [],
+            error: null,
+          },
+        },
+      },
+    })) as {
+      suggest_intake?: {
+        opened?: boolean;
+        added?: string[];
+      };
+    };
+    return {
+      applied,
+      beforeEntries: before,
+      afterEntries: loadTagVocabularyState().entries,
+      dialogCalls,
+    };
+  } finally {
+    restoreOpen();
+  }
 }
 
 function setupTagRegulatorWorkflowSuite() {
@@ -402,7 +492,7 @@ function setupTagRegulatorWorkflowSuite() {
     resetRuntimeBridgeOverrideForTests();
     clearTagVocabularyState();
   });
-  return { itNodeOnly };
+  return { itNodeOnly, itZoteroFullOrNode };
 }
 
 export function registerTagRegulatorRequestBuildingTests() {
@@ -417,8 +507,8 @@ export function registerTagRegulatorRequestBuildingTests() {
 
 export function registerTagRegulatorApplyIntakeTests() {
   describe("workflow: tag-regulator apply intake", function () {
-    const { itNodeOnly } = setupTagRegulatorWorkflowSuite();
-    registerTagRegulatorApplyIntakeSegment(itNodeOnly);
+    const { itNodeOnly, itZoteroFullOrNode } = setupTagRegulatorWorkflowSuite();
+    registerTagRegulatorApplyIntakeSegment(itNodeOnly, itZoteroFullOrNode);
   });
 }
 
@@ -491,6 +581,12 @@ function registerTagRegulatorRequestBuildingSegmentOne() {
     })) as TagRegulatorRequest[];
 
     assert.lengthOf(requests, 2);
+    const targetParentIds = requests
+      .map((request) => request.targetParentID)
+      .filter((value): value is number => typeof value === "number")
+      .sort((left, right) => left - right);
+    assert.deepEqual(targetParentIds, [parentA.id, parentB.id].sort((left, right) => left - right));
+
     for (const request of requests) {
       assert.equal(request.kind, "skillrunner.job.v1");
       assert.equal(request.skill_id, "tag-regulator");
@@ -503,17 +599,19 @@ function registerTagRegulatorRequestBuildingSegmentOne() {
       assert.isString(request.input?.valid_tags);
       assert.match(String(request.input?.valid_tags || ""), /^inputs\//);
       assert.notMatch(String(request.input?.valid_tags || ""), /^uploads\//);
-      assert.isTrue(await existsPath(String(request.upload_files?.[0].path || "")));
-      const yamlText = await readUtf8(String(request.upload_files?.[0].path || ""));
-      assert.include(yamlText, "- topic:tunnel");
-      assert.include(yamlText, "- field:CE/UG/Tunnel");
-      assert.notInclude(yamlText, "topic:legacy");
       assert.isArray(request.input?.input_tags);
       assert.isString(request.input?.metadata?.key);
     }
+
+    const firstUploadPath = String(requests[0].upload_files?.[0].path || "");
+    assert.isTrue(await existsPath(firstUploadPath));
+    const yamlText = await readUtf8(firstUploadPath);
+    assert.include(yamlText, "- topic:tunnel");
+    assert.include(yamlText, "- field:CE/UG/Tunnel");
+    assert.notInclude(yamlText, "topic:legacy");
   });
 
-  it("fails with deterministic diagnostics when controlled vocabulary is missing", async function () {
+  itNodeOnly("fails with deterministic diagnostics when controlled vocabulary is missing", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Missing Vocabulary Parent" },
@@ -537,7 +635,7 @@ function registerTagRegulatorRequestBuildingSegmentOne() {
     assert.match(String(thrown), /tag-regulator vocabulary missing/i);
   });
 
-  it("uses default tag_note_language zh-CN when workflow param is not provided", async function () {
+  itNodeOnly("uses default tag_note_language zh-CN when workflow param is not provided", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:tunnel",
@@ -566,7 +664,7 @@ function registerTagRegulatorRequestBuildingSegmentOne() {
     assert.equal(requests[0].parameter?.tag_note_language, "zh-CN");
   });
 
-  it("reads remote committed vocabulary in subscription mode when building valid_tags", async function () {
+  itNodeOnly("reads remote committed vocabulary in subscription mode when building valid_tags", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:local-only",
@@ -710,9 +808,18 @@ function registerTagRegulatorRequestBuildingSegmentOne() {
 
 function registerTagRegulatorApplyIntakeSegment(
   itNodeOnly: typeof it,
+  itZoteroFullOrNode: typeof it,
 ) {
+  const itSaveTxLoadProbe =
+    isZoteroRuntime() && isTagRegulatorSaveTxLoadProbeEnabled() ? it : it.skip;
 
-  itNodeOnly("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
+  if (isTagRegulatorSaveTxLoadProbeEnabled() && isZoteroRuntime()) {
+    after(async function () {
+      await flushSaveTxLoadProbeReport();
+    });
+  }
+
+  it("runs parent pipeline from buildRequest to applyResult and mutates tags conservatively", async function () {
     saveTagVocabularyState([
       {
         tag: "topic:tunnel",
@@ -798,73 +905,114 @@ function registerTagRegulatorApplyIntakeSegment(
     assert.deepEqual(listTags(parent), ["status:2-to-read", "topic:tunnel"]);
   });
 
-  itNodeOnly("does not open suggest-tags dialog or write vocabulary when suggest_tags is empty", async function () {
-    saveTagVocabularyState([
-      {
-        tag: "topic:stable",
-        facet: "topic",
-        source: "manual",
-        note: "",
-        deprecated: false,
-      },
-    ]);
-    const before = loadTagVocabularyState().entries;
-    let dialogCalls = 0;
-    const restoreOpen = installSuggestTagsDialogMock(async () => {
-      dialogCalls += 1;
-      return {
-        saved: true,
-        result: {
-          selectedTags: ["topic:unexpected"],
-        },
-      };
-    });
-    const parent = await handlers.item.create({
-      itemType: "journalArticle",
-      fields: { title: "Tag Regulator Suggest Empty Parent" },
-    });
-    await handlers.tag.add(parent, ["topic:legacy"]);
-    const workflow = await getTagRegulatorWorkflow();
-
-    try {
-      const applied = (await executeApplyResult({
-        workflow,
-        parent,
-        bundleReader: {
-          readText: async () => "",
-        },
-        runResult: {
-          resultJson: {
-            result: {
-              status: "success",
-              data: {
-                remove_tags: ["topic:legacy"],
-                add_tags: ["topic:tunnel"],
-                suggest_tags: [],
-                warnings: [],
-                error: null,
-              },
-              artifacts: [],
-              validation_warnings: [],
-              error: null,
-            },
-          },
-        },
-      })) as {
-        suggest_intake?: {
-          opened?: boolean;
-          added?: string[];
-        };
-      };
-      assert.isFalse(Boolean(applied.suggest_intake?.opened));
-      assert.deepEqual(applied.suggest_intake?.added || [], []);
-    } finally {
-      restoreOpen();
-    }
-
-    assert.equal(dialogCalls, 0);
-    assert.deepEqual(loadTagVocabularyState().entries, before);
+  itZoteroFullOrNode("does not open suggest-tags dialog or write vocabulary when suggest_tags is empty", async function () {
+    const result = await runSuggestTagsEmptyScenario();
+    assert.isFalse(Boolean(result.applied.suggest_intake?.opened));
+    assert.deepEqual(result.applied.suggest_intake?.added || [], []);
+    assert.equal(result.dialogCalls, 0);
+    assert.deepEqual(result.afterEntries, result.beforeEntries);
   });
+
+  for (const mode of ["create-only", "create-and-update"] as const) {
+    for (const count of [0, 20, 50, 100]) {
+      itSaveTxLoadProbe(
+        `diagnostic saveTx load probe mode=${mode} count=${count}`,
+        async function () {
+          this.timeout(120000);
+          const title = `mode=${mode};count=${count};test=${this.test?.title || ""}`;
+          const startedAt = new Date().toISOString();
+          const warmup = await measureAsyncTestPerformanceSpan(
+            "saveTxLoadProbe:warmupTotal",
+            { mode, count },
+            async () => runSaveTxLoadWarmup({ count, mode }),
+          );
+          const scenarioStartedAt = Date.now();
+          const result = await measureAsyncTestPerformanceSpan(
+            "saveTxLoadProbe:scenarioTotal",
+            { mode, count },
+            async () =>
+              runSuggestTagsEmptyScenario({
+                titleSuffix: title,
+              }),
+          );
+          const scenarioDurationMs = Date.now() - scenarioStartedAt;
+          assert.isFalse(Boolean(result.applied.suggest_intake?.opened));
+          assert.deepEqual(result.applied.suggest_intake?.added || [], []);
+          assert.equal(result.dialogCalls, 0);
+          assert.deepEqual(result.afterEntries, result.beforeEntries);
+          recordSaveTxLoadProbeResult({
+            title,
+            mode,
+            count,
+            idlePolicy: "none",
+            warmupDurationMs: warmup.durationMs,
+            scenarioDurationMs,
+            startedAt,
+            finishedAt: new Date().toISOString(),
+          });
+        },
+      );
+    }
+  }
+
+  for (const probeCase of [
+    { mode: "create-only" as const, count: 100, idleEvery: 10, idleMs: 50 },
+    { mode: "create-and-update" as const, count: 20, idleEvery: 5, idleMs: 50 },
+    { mode: "create-and-update" as const, count: 50, idleEvery: 5, idleMs: 50 },
+  ]) {
+    itSaveTxLoadProbe(
+      `diagnostic saveTx idle control mode=${probeCase.mode} count=${probeCase.count} every=${probeCase.idleEvery} idleMs=${probeCase.idleMs}`,
+      async function () {
+        this.timeout(180000);
+        const idlePolicy = `every-${probeCase.idleEvery}x${probeCase.idleMs}ms`;
+        const title = `mode=${probeCase.mode};count=${probeCase.count};idle=${idlePolicy};test=${this.test?.title || ""}`;
+        const startedAt = new Date().toISOString();
+        const warmup = await measureAsyncTestPerformanceSpan(
+          "saveTxLoadProbe:warmupTotal",
+          {
+            mode: probeCase.mode,
+            count: probeCase.count,
+            idlePolicy,
+          },
+          async () =>
+            runSaveTxLoadWarmup({
+              count: probeCase.count,
+              mode: probeCase.mode,
+              idleEvery: probeCase.idleEvery,
+              idleMs: probeCase.idleMs,
+            }),
+        );
+        const scenarioStartedAt = Date.now();
+        const result = await measureAsyncTestPerformanceSpan(
+          "saveTxLoadProbe:scenarioTotal",
+          {
+            mode: probeCase.mode,
+            count: probeCase.count,
+            idlePolicy,
+          },
+          async () =>
+            runSuggestTagsEmptyScenario({
+              titleSuffix: title,
+            }),
+        );
+        const scenarioDurationMs = Date.now() - scenarioStartedAt;
+        assert.isFalse(Boolean(result.applied.suggest_intake?.opened));
+        assert.deepEqual(result.applied.suggest_intake?.added || [], []);
+        assert.equal(result.dialogCalls, 0);
+        assert.deepEqual(result.afterEntries, result.beforeEntries);
+        recordSaveTxLoadProbeResult({
+          title,
+          mode: probeCase.mode,
+          count: probeCase.count,
+          idlePolicy,
+          warmupDurationMs: warmup.durationMs,
+          scenarioDurationMs,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+        });
+      },
+    );
+  }
 
   itNodeOnly("reclassifies stale controlled suggest tags before opening join-all dialog", async function () {
     saveTagVocabularyState([
@@ -1666,7 +1814,7 @@ function registerTagRegulatorApplyIntakeSegment(
     assert.isOk(entries.find((entry) => entry.tag === "topic:valid-suggest"));
   });
 
-  it("skips mutation when skill output has non-null error", async function () {
+  itNodeOnly("skips mutation when skill output has non-null error", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Error Parent" },
@@ -1713,7 +1861,7 @@ function registerTagRegulatorApplyIntakeSegment(
     assert.deepEqual(listTags(parent), before);
   });
 
-  it("skips mutation when skill output is malformed", async function () {
+  itNodeOnly("skips mutation when skill output is malformed", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Malformed Parent" },
@@ -1757,7 +1905,7 @@ function registerTagRegulatorApplyIntakeSegment(
     assert.deepEqual(listTags(parent), before);
   });
 
-  it("treats legacy string-array suggest_tags as malformed and skips mutation", async function () {
+  itNodeOnly("treats legacy string-array suggest_tags as malformed and skips mutation", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Legacy Suggest Tags Parent" },
@@ -1928,7 +2076,7 @@ function registerTagRegulatorApplyIntakeSegment(
 
 function registerTagRegulatorRequestBuildingSegmentTwo() {
 
-  it("reads latest exported vocabulary on each execution", async function () {
+  itNodeOnly("reads latest exported vocabulary on each execution", async function () {
     const parent = await handlers.item.create({
       itemType: "journalArticle",
       fields: { title: "Tag Regulator Vocabulary Refresh Parent" },
@@ -2110,7 +2258,7 @@ function registerTagRegulatorDialogRenderingSegment(
 
 function registerTagRegulatorRequestBuildingSegmentThree() {
 
-  it("keeps language option declarations aligned with literature-digest workflow", async function () {
+  itNodeOnly("keeps language option declarations aligned with literature-digest workflow", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
     const tagRegulator = loaded.workflows.find(
       (entry) => entry.manifest.id === "tag-regulator",

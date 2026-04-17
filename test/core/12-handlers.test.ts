@@ -1,41 +1,10 @@
 import { assert } from "chai";
 import { handlers } from "../../src/handlers";
+import { registerZoteroTestObjectForCleanup } from "../zotero/objectCleanupHarness";
+import { shouldKeepZoteroTestObjects } from "../zotero/testObjectKeepFlag";
 import { isFullTestMode } from "./testMode";
 
-const KEEP_TEST_OBJECTS = (() => {
-  const parseFlag = (raw?: string | null) => {
-    if (raw === undefined || raw === null) {
-      return undefined;
-    }
-    return !["0", "false", "off"].includes(raw.toLowerCase());
-  };
-  if (typeof process !== "undefined" && process.env) {
-    const parsed = parseFlag(process.env.ZOTERO_KEEP_TEST_OBJECTS);
-    if (parsed !== undefined) {
-      return parsed;
-    }
-  }
-  const services = globalThis.Services as
-    | { env?: { get?: (key: string) => string } }
-    | undefined;
-  if (services?.env?.get) {
-    try {
-      const parsed = parseFlag(services.env.get("ZOTERO_KEEP_TEST_OBJECTS"));
-      if (parsed !== undefined) {
-        return parsed;
-      }
-    } catch {
-      // ignore missing env var in Zotero sandbox
-    }
-  }
-  const globalFlag = (globalThis as { ZOTERO_KEEP_TEST_OBJECTS?: string })
-    .ZOTERO_KEEP_TEST_OBJECTS;
-  const parsedGlobal = parseFlag(globalFlag);
-  if (parsedGlobal !== undefined) {
-    return parsedGlobal;
-  }
-  return false;
-})();
+const KEEP_TEST_OBJECTS = shouldKeepZoteroTestObjects();
 
 function isZoteroEnv() {
   return (
@@ -50,6 +19,7 @@ async function createParentItem(title: string) {
   const item = new Zotero.Item("journalArticle");
   item.setField("title", title);
   await item.saveTx();
+  registerZoteroTestObjectForCleanup(item);
   return item;
 }
 
@@ -161,6 +131,7 @@ describeHandlersSuite("handlers", function () {
     const book = new Zotero.Item("book");
     book.setField("title", "Handler Book Parent");
     await book.saveTx();
+    registerZoteroTestObjectForCleanup(book);
     try {
       await handlers.parent.updateFields(book, {
         numPages: 120,
@@ -232,6 +203,7 @@ describeHandlersSuite("handlers", function () {
     const note = new Zotero.Item("note");
     note.setNote("<div><p>before</p></div>");
     await note.saveTx();
+    registerZoteroTestObjectForCleanup(note);
     try {
       await handlers.note.update(note, { content: "<div><p>after</p></div>" });
       assert.include(note.getNote(), "after");
@@ -247,6 +219,7 @@ describeHandlersSuite("handlers", function () {
     const note = new Zotero.Item("note");
     note.setNote("<div><p>remove me</p></div>");
     await note.saveTx();
+    registerZoteroTestObjectForCleanup(note);
     await handlers.note.remove(note);
     const maybe = Zotero.Items.get(note.id);
     assert.isFalse(!!maybe);
@@ -300,6 +273,7 @@ describeHandlersSuite("handlers", function () {
       "remove attachment",
     );
     const attachment = await Zotero.Attachments.linkFromFile({ file });
+    registerZoteroTestObjectForCleanup(attachment);
     await handlers.attachment.remove(attachment);
     const maybe = Zotero.Items.get(attachment.id);
     assert.isFalse(!!maybe);
@@ -413,10 +387,12 @@ describeHandlersSuite("handlers", function () {
     col1.name = "Handler Collection 1";
     col1.libraryID = Zotero.Libraries.userLibraryID;
     const col1Id = await col1.saveTx();
+    registerZoteroTestObjectForCleanup(col1);
     const col2 = new Zotero.Collection();
     col2.name = "Handler Collection 2";
     col2.libraryID = Zotero.Libraries.userLibraryID;
     const col2Id = await col2.saveTx();
+    registerZoteroTestObjectForCleanup(col2);
     try {
       await handlers.collection.add(parent, col1Id);
       assert.include(parent.getCollections(), col1Id);
@@ -439,10 +415,12 @@ describeHandlersSuite("handlers", function () {
     col1.name = "Handler Collection Multi 1";
     col1.libraryID = Zotero.Libraries.userLibraryID;
     const col1Id = await col1.saveTx();
+    registerZoteroTestObjectForCleanup(col1);
     const col2 = new Zotero.Collection();
     col2.name = "Handler Collection Multi 2";
     col2.libraryID = Zotero.Libraries.userLibraryID;
     const col2Id = await col2.saveTx();
+    registerZoteroTestObjectForCleanup(col2);
     try {
       await handlers.collection.add(parent, col1Id);
       await handlers.collection.add(parent, col2Id);
@@ -463,6 +441,7 @@ describeHandlersSuite("handlers", function () {
     col1.name = "Handler Collection Object 1";
     col1.libraryID = Zotero.Libraries.userLibraryID;
     await col1.saveTx();
+    registerZoteroTestObjectForCleanup(col1);
     try {
       await handlers.collection.add(parent, col1);
       assert.include(parent.getCollections(), col1.id);
@@ -482,6 +461,7 @@ describeHandlersSuite("handlers", function () {
     col1.name = "Handler Collection Multi Item";
     col1.libraryID = Zotero.Libraries.userLibraryID;
     const col1Id = await col1.saveTx();
+    registerZoteroTestObjectForCleanup(col1);
     try {
       await handlers.collection.add([parentA, parentB], col1Id);
       assert.include(parentA.getCollections(), col1Id);

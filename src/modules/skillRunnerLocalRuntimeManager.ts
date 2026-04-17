@@ -43,7 +43,7 @@ const MANAGED_PROFILE_ID = MANAGED_LOCAL_BACKEND_ID;
 const DEFAULT_MANAGED_LOCAL_HOST = "127.0.0.1";
 const DEFAULT_MANAGED_LOCAL_PORT = 29813;
 const DEFAULT_MANAGED_LOCAL_PORT_FALLBACK_SPAN = 10;
-const DEFAULT_LOCAL_RUNTIME_VERSION = "v0.5.2";
+export const DEFAULT_LOCAL_RUNTIME_VERSION = "v0.6.0";
 const DEFAULT_SKILL_RUNNER_RELEASE_REPO = "leike0813/Skill-Runner";
 const STATE_PREF_KEY = "skillRunnerLocalRuntimeStateJson";
 const VERSION_PREF_KEY = "skillRunnerLocalRuntimeVersion";
@@ -434,6 +434,57 @@ export function setSuppressManagedRuntimeAutoEnsureTriggerForTests(
   suppress: boolean,
 ) {
   suppressAutoEnsureTriggerForTests = suppress === true;
+}
+
+export function resetManagedLocalRuntimeLoopsForTests() {
+  if (pendingAutoEnsureTickTimer) {
+    clearTimeout(pendingAutoEnsureTickTimer);
+  }
+  pendingAutoEnsureTickTimer = undefined;
+  if (autoEnsureTimer) {
+    clearInterval(autoEnsureTimer);
+  }
+  autoEnsureTimer = undefined;
+  if (statusReconcileTimer) {
+    clearInterval(statusReconcileTimer);
+  }
+  statusReconcileTimer = undefined;
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+  }
+  heartbeatTimer = undefined;
+  heartbeatRunning = false;
+  statusReconcileRunning = false;
+  autoEnsureRunning = false;
+  heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_SECONDS * 1000;
+  runtimeControlLock = Promise.resolve();
+  monitoringState = "inactive";
+  runtimeActionInFlight = "";
+  backgroundInFlightAction = "";
+  actionProgressState = null;
+  autoStartEnabledInSession = false;
+  suppressAutoEnsureTriggerForTests = false;
+}
+
+export function getManagedLocalRuntimeLoopStateForTests() {
+  return {
+    pendingAutoEnsureTickScheduled: !!pendingAutoEnsureTickTimer,
+    autoEnsureTimerActive: !!autoEnsureTimer,
+    heartbeatTimerActive: !!heartbeatTimer,
+    statusReconcileTimerActive: !!statusReconcileTimer,
+    heartbeatRunning,
+    statusReconcileRunning,
+    autoEnsureRunning,
+    heartbeatIntervalMs,
+    monitoringState,
+    runtimeActionInFlight,
+    backgroundInFlightAction,
+    actionProgressActive: actionProgressState !== null,
+    autoStartEnabledInSession,
+    suppressAutoEnsureTriggerForTests,
+    stateChangeListenerCount: managedLocalRuntimeStateChangeListeners.size,
+    toastDedupCount: localRuntimeToastDedup.size,
+  };
 }
 
 export function resetLocalRuntimeAutoStartSessionState() {
@@ -1484,7 +1535,7 @@ function clearManagedLocalRuntimeState() {
 }
 
 function getConfiguredVersionTag() {
-  return DEFAULT_LOCAL_RUNTIME_VERSION;
+  return getPref(VERSION_PREF_KEY) || DEFAULT_LOCAL_RUNTIME_VERSION;
 }
 
 function setConfiguredVersionTag(versionTag: string) {

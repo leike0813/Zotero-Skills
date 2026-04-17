@@ -19,6 +19,7 @@ import {
   workflowsPath,
   writeUtf8,
 } from "../zotero/workflow-test-utils";
+import { isFullTestMode } from "../zotero/testMode";
 
 type LoadedWorkflow = Awaited<ReturnType<typeof loadWorkflowManifests>>["workflows"][number];
 
@@ -164,6 +165,8 @@ function parsePayload(noteContent: string, payloadType: string) {
 }
 
 const describeImportEditorSuite = isZoteroRuntime() ? describe.skip : describe;
+const itNodeOnly = isZoteroRuntime() ? it.skip : it;
+const itZoteroFullOrNode = isZoteroRuntime() && !isFullTestMode() ? it.skip : it;
 
 describe("workflow: literature-workbench import/export notes", function () {
   this.timeout(30000);
@@ -172,7 +175,7 @@ describe("workflow: literature-workbench import/export notes", function () {
     installWorkflowEditorSessionOverrideForTests(null);
   });
 
-  it("maps citation-analysis UI state to citationAnalysis selection slot", function () {
+  itNodeOnly("maps citation-analysis UI state to citationAnalysis selection slot", function () {
     const digest = { sourcePath: "D:/imports/digest.md" };
     const references = { sourcePath: "D:/imports/references.json" };
     const citationAnalysis = { sourcePath: "D:/imports/citation_analysis.json" };
@@ -199,13 +202,13 @@ describe("workflow: literature-workbench import/export notes", function () {
     );
   });
 
-  it("loads export-notes and import-notes from literature-workbench-package", async function () {
+  itNodeOnly("loads export-notes and import-notes from literature-workbench-package", async function () {
     const loaded = await loadWorkflowManifests(workflowsPath());
     assert.isOk(loaded.workflows.find((entry) => entry.manifest.id === "export-notes"));
     assert.isOk(loaded.workflows.find((entry) => entry.manifest.id === "import-notes"));
   });
 
-  it("builds a single aggregated export request across multiple selected units", async function () {
+  itNodeOnly("builds a single aggregated export request across multiple selected units", async function () {
     const workflow = await getWorkflow("export-notes");
     const parentA = await handlers.item.create({
       itemType: "journalArticle",
@@ -309,7 +312,7 @@ describe("workflow: literature-workbench import/export notes", function () {
     );
   });
 
-  it("exports conversation notes through the unified markdown-backed note codec", async function () {
+  itZoteroFullOrNode("exports conversation notes through the unified markdown-backed note codec", async function () {
     const workflow = await getWorkflow("export-notes");
     const parent = await handlers.item.create({
       itemType: "journalArticle",
@@ -360,7 +363,7 @@ describe("workflow: literature-workbench import/export notes", function () {
     );
   });
 
-  it("sanitizes title-derived export file names for conversation and custom notes", async function () {
+  itNodeOnly("sanitizes title-derived export file names for conversation and custom notes", async function () {
     const workflow = await getWorkflow("export-notes");
     const parent = await handlers.item.create({
       itemType: "journalArticle",

@@ -1,5 +1,9 @@
 import { assert } from "chai";
-import { inferDomainFromFilePath } from "../zotero/domainFilter";
+import {
+  inferDomainFromFilePath,
+  isZoteroRoutineAllowedFile,
+  isZoteroRoutineAllowedTitle,
+} from "../zotero/domainFilter";
 
 describe("domain filter path inference", function () {
   it("infers core domain from relative path", function () {
@@ -36,5 +40,200 @@ describe("domain filter path inference", function () {
   it("returns all for unknown path", function () {
     const domain = inferDomainFromFilePath("test/misc/unknown.test.ts");
     assert.equal(domain, "all");
+  });
+
+  it("allows retained Zotero core smoke files", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile(
+        "test/core/41-workflow-scan-registration.test.ts",
+        "lite",
+      ),
+      true,
+    );
+  });
+
+  it("prunes non-retained Zotero core files from routine suite", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile(
+        "test/core/73a-skillrunner-deploy-lifecycle.test.ts",
+        "lite",
+      ),
+      false,
+    );
+  });
+
+  it("allows thickened Zotero lite core parity files", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile(
+        "test/core/11-selection-context-rebuild.test.ts",
+        "lite",
+      ),
+      true,
+    );
+  });
+
+  it("allows full-only core parity files only in Zotero full", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile("test/core/63-job-queue-progress.test.ts", "lite"),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedFile("test/core/63-job-queue-progress.test.ts", "full"),
+      true,
+    );
+  });
+
+  it("allows stable Zotero full coverage-gate core files only in full", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile("test/core/42-task-runtime.test.ts", "lite"),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedFile("test/core/42-task-runtime.test.ts", "full"),
+      true,
+    );
+  });
+
+  it("allows retained Zotero workflow smoke files", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile(
+        "test/workflow-reference-matching/24-workflow-reference-matching.test.ts",
+        "lite",
+      ),
+      true,
+    );
+  });
+
+  it("prunes non-retained workflow files from Zotero routine suite", function () {
+    assert.equal(
+      isZoteroRoutineAllowedFile(
+        "test/workflow-tag-manager/63-tag-manager-import-protocol.test.ts",
+        "lite",
+      ),
+      false,
+    );
+  });
+
+  it("allows retained Zotero workflow smoke titles", function () {
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: mineru materializes full.md/images, rewrites image paths, and attaches markdown to parent",
+        mode: "lite",
+      }),
+      true,
+    );
+  });
+
+  it("allows thickened Zotero lite workflow parity titles", function () {
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: literature-digest skips build for core idempotent note shapes",
+        mode: "lite",
+      }),
+      true,
+    );
+  });
+
+  it("allows full-only parity titles only in Zotero full", function () {
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: reference-matching keeps parent related updates idempotent and only fills missing links",
+        mode: "lite",
+      }),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: reference-matching keeps parent related updates idempotent and only fills missing links",
+        mode: "full",
+      }),
+      true,
+    );
+  });
+
+  it("allows stable suite-wide full coverage titles only in Zotero full", function () {
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "core",
+        testDomain: "all",
+        fullTitle: "task runtime captures provider requestId from job execution result",
+        mode: "lite",
+      }),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "core",
+        testDomain: "all",
+        fullTitle: "task runtime captures provider requestId from job execution result",
+        mode: "full",
+      }),
+      true,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: literature-digest upserts existing generated notes and keeps each kind unique",
+        mode: "lite",
+      }),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: literature-digest upserts existing generated notes and keeps each kind unique",
+        mode: "full",
+      }),
+      true,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "ui",
+        testDomain: "all",
+        fullTitle:
+          "gui: preference scripts renders inline progressmeter from runtime snapshot actionProgress",
+        mode: "lite",
+      }),
+      false,
+    );
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "ui",
+        testDomain: "all",
+        fullTitle:
+          "gui: preference scripts renders inline progressmeter from runtime snapshot actionProgress",
+        mode: "full",
+      }),
+      true,
+    );
+  });
+
+  it("prunes non-retained Zotero workflow titles", function () {
+    assert.equal(
+      isZoteroRoutineAllowedTitle({
+        selectedDomain: "workflow",
+        testDomain: "all",
+        fullTitle:
+          "workflow: tag-manager panel usability builds deterministic export text and excludes deprecated tags",
+        mode: "full",
+      }),
+      false,
+    );
   });
 });

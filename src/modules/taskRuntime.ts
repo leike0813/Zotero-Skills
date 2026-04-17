@@ -319,11 +319,8 @@ export function subscribeWorkflowTasks(listener: TaskListener) {
 
 export function resetWorkflowTasks() {
   ensureHydratedFromStore();
-  if (taskRecords.size === 0) {
-    replacePluginTaskRowEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER, "active", []);
-    return;
-  }
   taskRecords.clear();
-  persistTaskRecordsToStore();
-  emitTasksChanged();
+  listeners.clear();
+  hydratedFromStore = false;
+  replacePluginTaskRowEntries(PLUGIN_TASK_DOMAIN_SKILLRUNNER, "active", []);
 }

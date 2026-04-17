@@ -178,6 +178,17 @@ export type WorkflowHostApi = {
     appendRuntimeLog: (
       input: import("../modules/runtimeLogManager").RuntimeLogInput,
     ) => ReturnType<typeof import("../modules/runtimeLogManager").appendRuntimeLog>;
+    recordPerformanceSpanForTests?: (args: {
+      name: string;
+      startedAt: number;
+      durationMs: number;
+      labels?: Record<string, unknown>;
+    }) => void;
+    recordLeakProbeTempArtifactForTests?: (args: {
+      kind: "zip-extracted-dir" | "tag-regulator-valid-tags-yaml";
+      path: string;
+    }) => void;
+    releaseLeakProbeTempArtifactForTests?: (path: string) => void;
   };
   file: {
     pathToFile: (path: string) => unknown;

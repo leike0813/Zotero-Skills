@@ -599,6 +599,46 @@ function buildDecoratedSnapshot(args: {
           "No related runs were found. Showing the global workspace.",
         )
       : "";
+  const selectionTasks = context
+    ? (() => {
+        const tasks = args.snapshot.workspace.groups.flatMap((group) => {
+          if (group.disabled) {
+            return [];
+          }
+          return group.activeTasks
+            .filter((task) => {
+              return (
+                task.selectable === true &&
+                String(task.requestId || "").trim().length > 0 &&
+                isSkillRunnerTaskRelatedToContext({
+                  targetParentID: task.targetParentID,
+                  context,
+                })
+              );
+            })
+            .map((task) => ({
+              key: task.key,
+              label:
+                String(task.workflowLabel || "").trim() ||
+                String(task.title || "").trim() ||
+                String(task.requestId || "").trim() ||
+                localize(
+                  "task-dashboard-run-waiting-request-id",
+                  "Waiting for requestId",
+                ),
+              selected:
+                String(task.key || "").trim() ===
+                String(args.snapshot.workspace.selectedTaskKey || "").trim(),
+            }));
+        });
+        return tasks.length > 0
+          ? {
+              itemLabel: context.itemLabel,
+              tasks,
+            }
+          : undefined;
+      })()
+    : undefined;
   return {
     ...args.snapshot,
     hostMode: "sidebar" as const,
@@ -624,6 +664,7 @@ function buildDecoratedSnapshot(args: {
     badges: {
       waitingCount: countWaitingSkillRunnerTasks(args.snapshot.workspace.groups),
     },
+    selectionTasks: selectionTasks,
     contextHint: context && hasRelated
       ? {
           itemLabel: context.itemLabel,

@@ -2,6 +2,26 @@ import { assert } from "chai";
 import { SkillRunnerCtlBridge } from "../../../src/modules/skillRunnerCtlBridge";
 import { DEFAULT_LOCAL_RUNTIME_VERSION } from "../../../src/modules/skillRunnerLocalRuntimeManager";
 
+function redefineGlobalProperty(key: string, value: unknown) {
+  const runtime = globalThis as Record<string, unknown>;
+  const previous = Object.getOwnPropertyDescriptor(runtime, key);
+  Object.defineProperty(runtime, key, {
+    value,
+    writable: true,
+    configurable: true,
+  });
+  return previous;
+}
+
+function restoreGlobalProperty(key: string, descriptor?: PropertyDescriptor) {
+  const runtime = globalThis as Record<string, unknown>;
+  if (!descriptor) {
+    delete runtime[key];
+    return;
+  }
+  Object.defineProperty(runtime, key, descriptor);
+}
+
 describe("skillrunner ctl bridge", function () {
   it("normalizes ctl --json response payload", async function () {
     const bridge = new SkillRunnerCtlBridge({
@@ -226,12 +246,13 @@ describe("skillrunner ctl bridge", function () {
       ...(prevCi || {}),
       nsIServerSocket: {},
     };
+    let prevComponentsDescriptor: PropertyDescriptor | undefined;
     if (prevComponents) {
-      runtime.Components = {
+      prevComponentsDescriptor = redefineGlobalProperty("Components", {
         ...prevComponents,
         classes: runtime.Cc,
         interfaces: runtime.Ci,
-      };
+      });
     }
     try {
       const bridge = new SkillRunnerCtlBridge({
@@ -266,8 +287,8 @@ describe("skillrunner ctl bridge", function () {
       }
       if (typeof prevComponents === "undefined") {
         delete runtime.Components;
-      } else {
-        runtime.Components = prevComponents;
+      } else if (prevComponentsDescriptor) {
+        restoreGlobalProperty("Components", prevComponentsDescriptor);
       }
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -429,11 +450,11 @@ describe("skillrunner ctl bridge", function () {
     const runtime = globalThis as {
       Zotero?: { isWin?: boolean };
     };
-    const prevZotero = runtime.Zotero;
-    runtime.Zotero = {
-      ...(prevZotero || {}),
-      isWin: true,
-    };
+    const prevIsWin = runtime.Zotero?.isWin;
+    if (!runtime.Zotero) {
+      throw new Error("zotero runtime unavailable");
+    }
+    runtime.Zotero.isWin = true;
     const commands: Array<{ command: string; args: string[] }> = [];
     try {
       const bridge = new SkillRunnerCtlBridge({
@@ -460,10 +481,8 @@ describe("skillrunner ctl bridge", function () {
         port: 8000,
       });
     } finally {
-      if (typeof prevZotero === "undefined") {
-        delete runtime.Zotero;
-      } else {
-        runtime.Zotero = prevZotero;
+      if (runtime.Zotero) {
+        runtime.Zotero.isWin = prevIsWin;
       }
     }
 
@@ -779,11 +798,11 @@ describe("skillrunner ctl bridge", function () {
     const runtime = globalThis as {
       Zotero?: { isWin?: boolean };
     };
-    const previousZotero = runtime.Zotero;
-    runtime.Zotero = {
-      ...(runtime.Zotero || {}),
-      isWin: true,
-    };
+    const previousIsWin = runtime.Zotero?.isWin;
+    if (!runtime.Zotero) {
+      throw new Error("zotero runtime unavailable");
+    }
+    runtime.Zotero.isWin = true;
     const commands: Array<{ command: string; args: string[] }> = [];
     try {
       const bridge = new SkillRunnerCtlBridge({
@@ -819,10 +838,8 @@ describe("skillrunner ctl bridge", function () {
       assert.notInclude(script, "'-LocalRoot'");
       assert.notInclude(script, "@scriptArgs");
     } finally {
-      if (typeof previousZotero === "undefined") {
-        delete runtime.Zotero;
-      } else {
-        runtime.Zotero = previousZotero;
+      if (runtime.Zotero) {
+        runtime.Zotero.isWin = previousIsWin;
       }
     }
   });
@@ -831,11 +848,11 @@ describe("skillrunner ctl bridge", function () {
     const runtime = globalThis as {
       Zotero?: { isWin?: boolean };
     };
-    const previousZotero = runtime.Zotero;
-    runtime.Zotero = {
-      ...(runtime.Zotero || {}),
-      isWin: true,
-    };
+    const previousIsWin = runtime.Zotero?.isWin;
+    if (!runtime.Zotero) {
+      throw new Error("zotero runtime unavailable");
+    }
+    runtime.Zotero.isWin = true;
     const commands: Array<{ command: string; args: string[] }> = [];
     try {
       const bridge = new SkillRunnerCtlBridge({
@@ -866,10 +883,8 @@ describe("skillrunner ctl bridge", function () {
       assert.notInclude(script, "-LocalRoot");
       assert.notInclude(script, "@scriptArgs");
     } finally {
-      if (typeof previousZotero === "undefined") {
-        delete runtime.Zotero;
-      } else {
-        runtime.Zotero = previousZotero;
+      if (runtime.Zotero) {
+        runtime.Zotero.isWin = previousIsWin;
       }
     }
   });
@@ -878,11 +893,10 @@ describe("skillrunner ctl bridge", function () {
     const runtime = globalThis as {
       Zotero?: { isWin?: boolean };
     };
-    const previousZotero = runtime.Zotero;
+    const previousIsWin = runtime.Zotero?.isWin;
     if (!runtime.Zotero) {
-      runtime.Zotero = {};
+      throw new Error("zotero runtime unavailable");
     }
-    const previousIsWin = runtime.Zotero.isWin;
     runtime.Zotero.isWin = false;
     const commands: Array<{ command: string; args: string[] }> = [];
     try {
@@ -914,10 +928,7 @@ describe("skillrunner ctl bridge", function () {
       assert.equal(commands[0].args[0], "/tmp/skill-runner-uninstall.sh");
       assert.include(commands[0].args, "--json");
     } finally {
-      if (typeof previousZotero === "undefined") {
-        delete runtime.Zotero;
-      } else {
-        runtime.Zotero = previousZotero;
+      if (runtime.Zotero) {
         runtime.Zotero.isWin = previousIsWin;
       }
     }

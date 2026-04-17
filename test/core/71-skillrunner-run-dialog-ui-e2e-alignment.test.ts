@@ -14,6 +14,9 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(html, 'id="workspace-global-actions"');
     assert.include(html, 'id="sessions-toggle-btn"');
     assert.include(html, 'id="close-sidebar-btn"');
+    assert.include(html, 'id="selection-task-strip"');
+    assert.include(html, 'id="selection-task-title"');
+    assert.include(html, 'id="selection-task-list"');
     assert.include(html, 'id="chat-panel"');
     assert.include(html, 'id="chat-mode-plain"');
     assert.include(html, 'id="chat-mode-bubble"');
@@ -97,6 +100,9 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "drawer.notice");
     assert.include(js, "contextIndicatorEl");
     assert.include(js, "closeSidebarBtnEl");
+    assert.include(js, "selectionTaskStripEl");
+    assert.include(js, "selectionTaskTitleEl");
+    assert.include(js, "selectionTaskListEl");
     assert.include(js, "hint.hasRelated !== true");
     assert.notInclude(js, "function renderSidebarModeRail");
   });
@@ -174,6 +180,10 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, 'sendAction("toggle-drawer"');
     assert.include(js, 'sendAction("close-sidebar"');
     assert.include(js, 'sendAction("toggle-drawer-section"');
+    assert.include(js, "selectionTasks.tasks");
+    assert.include(js, "workspaceLabels().tasksToggle");
+    assert.include(js, "workspaceLabels().selectionTasksTitle");
+    assert.include(js, 'itemLabel ? `${itemLabel} · ${selectionTitle}` : selectionTitle');
     assert.notInclude(js, 'sendAction("switch-shell-mode"');
     assert.include(js, 'section.id === "completed"');
     assert.include(js, "section.collapsed === true");
@@ -200,7 +210,11 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(html, 'id="run-subtitle"');
     assert.include(html, 'id="conversation-title"');
     assert.include(html, 'id="close-sidebar-btn"');
+    assert.include(html, 'id="selection-task-strip"');
     assert.include(css, ".workspace-main");
+    assert.include(css, ".selection-task-strip");
+    assert.include(css, ".selection-task-list");
+    assert.include(css, ".selection-task-btn");
     assert.include(css, ".meta-strip");
     assert.include(css, ".context-indicator");
     assert.include(css, ".btn.btn-danger");
@@ -214,7 +228,7 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(css, "#chat-panel");
     assert.include(css, "grid-template-rows: auto minmax(0, 1fr)");
     assert.include(css, ".workspace-root.layout-sidebar .workspace-main");
-    assert.include(css, "grid-template-rows: auto auto minmax(0, 1fr)");
+    assert.include(css, "grid-template-rows: auto auto auto minmax(0, 1fr)");
     assert.include(css, ".workspace-root.layout-sidebar .banner-top-row");
     assert.include(css, ".workspace-root:not(.layout-sidebar)");
     assert.notInclude(css, ".conversation-body");
@@ -224,6 +238,7 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "function syncSidebarLayoutHeights");
     assert.include(js, "workspaceLabels().conversationTitle");
     assert.include(js, "workspaceLabels().closeSidebar");
+    assert.include(js, "workspaceLabels().tasksToggle");
     assert.include(js, "window.addEventListener(\"resize\"");
     assert.include(js, "document.addEventListener(\"visibilitychange\"");
     assert.include(js, "window.addEventListener(\"focus\"");

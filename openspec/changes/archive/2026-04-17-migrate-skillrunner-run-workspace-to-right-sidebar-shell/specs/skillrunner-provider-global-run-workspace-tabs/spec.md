@@ -1,8 +1,5 @@
-# skillrunner-provider-global-run-workspace-tabs Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change skillrunner-provider-global-run-workspace-tabs. Update Purpose after archive.
-## Requirements
 ### Requirement: SkillRunner run details SHALL be routed to a global singleton workspace
 All “open run details” actions for SkillRunner tasks SHALL target one global run workspace hosted primarily inside the Zotero right sidebar shell.
 
@@ -22,20 +19,6 @@ All “open run details” actions for SkillRunner tasks SHALL target one global
 - **THEN** the system SHALL fall back to the existing run-details dialog
 - **AND** the fallback dialog SHALL select and focus the target task session
 
-### Requirement: Run workspace left panel SHALL group tasks by backend profile
-SkillRunner tasks SHALL be grouped by backend profile with collapsible group bubbles.
-
-#### Scenario: non-terminal and terminal buckets
-- **WHEN** workspace renders tasks for a backend profile
-- **THEN** non-terminal tasks SHALL render directly in the profile bubble
-- **AND** terminal tasks SHALL render inside a child bubble titled “已结束任务 / Completed Tasks”
-- **AND** child bubble SHALL be collapsed by default
-
-#### Scenario: task title fallback and no-requestId behavior
-- **WHEN** task tab title is resolved
-- **THEN** system SHALL use `taskName`, fallback to `workflowLabel`, then `requestId`
-- **AND** tasks without requestId SHALL be visible but disabled with “等待 requestId / Waiting for requestId”
-
 ### Requirement: Workspace right panel SHALL preserve existing run-detail interaction model
 The run workspace detail panel SHALL preserve the existing run-detail interaction model while operating inside the sidebar shell.
 
@@ -48,6 +31,8 @@ The run workspace detail panel SHALL preserve the existing run-detail interactio
 - **WHEN** user closes SkillRunner from the sidebar workspace global toolbar
 - **THEN** the system SHALL close the sidebar workspace
 - **AND** the system SHALL restore the native right-shell mode that was active before SkillRunner opened
+
+## ADDED Requirements
 
 ### Requirement: Run workspace task navigation SHALL use sidebar-oriented task surfaces grouped by backend profile
 SkillRunner tasks SHALL be exposed through sidebar-oriented navigation surfaces that fit a narrow right shell while preserving backend grouping.
@@ -69,4 +54,3 @@ SkillRunner tasks SHALL be exposed through sidebar-oriented navigation surfaces 
 - **WHEN** a sidebar task label is resolved
 - **THEN** the system SHALL use `taskName`, fallback to `workflowLabel`, then `requestId`
 - **AND** only selectable tasks with requestId SHALL be interactive in sidebar navigation
-

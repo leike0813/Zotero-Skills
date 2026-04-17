@@ -50,6 +50,7 @@ describe("skillrunner sidebar host runtime", function () {
 
   it("keeps no-match copy out of the main hint and lets the completed section collapse at the drawer level", async function () {
     const ts = await readProjectFile("src/modules/skillRunnerSidebar.ts");
+    const workspaceTs = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
     const en = await readProjectFile("addon/locale/en-US/addon.ftl");
     const zh = await readProjectFile("addon/locale/zh-CN/addon.ftl");
     assert.include(ts, "drawer: {");
@@ -67,6 +68,11 @@ describe("skillrunner sidebar host runtime", function () {
     assert.include(zh, "task-dashboard-run-backend = 后端");
     assert.include(en, "task-dashboard-run-running-tasks-title = Running");
     assert.include(zh, "task-dashboard-run-running-tasks-title = 正在运行");
+    assert.include(ts, "selectionTasks:");
+    assert.include(ts, "return group.activeTasks");
+    assert.notInclude(ts, "return [...group.activeTasks, ...group.finishedTasks]");
+    assert.include(workspaceTs, "task-dashboard-run-selection-tasks-title");
+    assert.include(workspaceTs, "task-dashboard-run-tasks-toggle");
   });
 
   it("locks pane containers and frames into a vertical stretch chain for the sidebar browser host", async function () {

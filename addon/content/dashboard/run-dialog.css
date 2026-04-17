@@ -82,6 +82,50 @@ body {
   margin-inline-start: auto;
 }
 
+.selection-task-strip {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d6e0ee;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f8fbff 0%, #f2f7ff 100%);
+}
+
+.selection-task-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #35506f;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.selection-task-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.selection-task-btn {
+  border: 1px solid #c9d7eb;
+  background: #ffffff;
+  color: #1e3a5f;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: 600 12px/1.3 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+
+.selection-task-btn:hover {
+  background: #edf5ff;
+  border-color: #9bbcf3;
+}
+
+.selection-task-btn.active {
+  background: #dbeafe;
+  border-color: #60a5fa;
+  color: #1d4ed8;
+}
+
 .workspace-empty {
   color: var(--muted);
   font-size: 12px;
@@ -1019,7 +1063,7 @@ body {
 }
 
 .workspace-root.layout-sidebar .workspace-main {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .workspace-root.layout-sidebar .banner-top-row {

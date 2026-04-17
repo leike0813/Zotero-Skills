@@ -45,6 +45,28 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 | **Note Editor**   | Host-based renderer for structured data editing (e.g. reference notes)                                     |
 | **Log Viewer**        | Filterable runtime logs with NDJSON export for diagnostics                                             |
 
+## ✨ Why Zotero Skills?
+
+### Use Your Subscriptions & Coding Plans, Not Per-Token Billing
+
+Literature analysis tasks are **token burners** — digesting papers, generating references, running citation analysis, and interactive Q&A all consume massive amounts of tokens. Per-token API billing gets expensive fast.
+
+This plugin lets you leverage your existing **coding plans** and **subscription quotas** (OpenAI, Google, Alibaba, Zhipu, etc.) to run AI-powered workflows at a fraction of the cost. No markup, no intermediary — your credentials go directly to the backend.
+
+### Pluggable Workflows & Skills
+
+The plugin is a **framework**, not a feature monolith. Everything is pluggable:
+
+- **Bring your own workflows**: Drop a workflow package into the workflows directory and it's immediately available. No plugin rebuild needed.
+- **Custom Skill-Runner skills**: Define your own AI skills with Skill-Runner's skill packaging system and run them through the same execution pipeline.
+- **Shareable packages**: Workflow packages support shared `lib/` modules, making it easy to build cohesive workflow suites.
+
+### Multi-Backend Flexibility
+
+- Route different workflows to different backends — some tasks through Skill-Runner, others through direct HTTP APIs or local pass-through logic.
+- Switch backends without changing workflow definitions — the provider layer handles the translation.
+- A stable, reliable agentic execution framework with a developer-friendly interface. The built-in workflows are just the starting point — the execution pipeline is the real asset.
+
 ## 💡 Engine Recommendations
 
 ### Codex (Top Recommendation)
@@ -59,11 +81,11 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 - **Cons**: Speed can be inconsistent. DeepSeek API integration is usable but V3.2 model performance significantly lags behind; using "reasoner" tier helps but may require patience. Third-party Antigravity quota support exists but carries account ban risk.
 - **Verdict**: Best free/low-cost option if you have access to qualifying API keys or compatible subscriptions.
 
-### Qwen Code (Best Free Tier for High-Volume Usage)
+### Qwen Code
 
-- **Pros**: Official OAuth login grants **1,000 free daily calls** to Qwen3.6-Plus — one of the most generous free tiers available. Excellent performance on literature tasks.
-- **Cons**: Requires Alibaba Cloud account for OAuth authentication.
-- **Verdict**: **Top recommendation for free-tier users** who need high-volume quota without paying.
+- **Pros**: Official OAuth login grants ~~**1,000 free daily calls**~~ to Qwen3.6-Plus — the free quota ended on April 15, 2026, but future official promotions may bring it back. Paired with Alibaba's Coding Plan, the Qwen series models deliver solid performance on literature tasks.
+- **Cons**: Relatively less mature compared to other engines.
+- **Verdict**: A solid choice when paired with Alibaba's Coding Plan.
 
 ### Gemini-CLI
 
@@ -71,15 +93,10 @@ Zotero Skills is a **framework-style plugin** for Zotero 7 that provides a unive
 - **Cons**: Slow startup, poor experience for interactive tasks. **Google has significantly reduced Pro subscription quotas**, making the cost-performance ratio generally poor.
 - **Verdict**: Gemini-3-Flash remains a decent choice for simple tasks only.
 
-### iFlow-CLI (Deprecated)
-
-- **Notice**: **iFlow-CLI will be discontinued on April 17, 2026.** No longer recommended for new deployments.
-- **Pros**: Completely free (while service lasts).
-- **Cons**: Poor skill understanding, execution, and structured output stability. Interactive mode tasks often fail to complete reliably.
-- **Verdict**: Service sunsetting — migrate to alternative engines.
-
 ### Claude Code
 
+- **Pros**: Excellent instruction execution quality, stable output.
+- **Cons**: Lower execution efficiency, more suited for code-related work.
 - **Note**: Official Claude Code integration (official authentication + official models) has not been tested by the author — simply put, **no Anthropic subscription purchased**. Let's just say Anthropic is perhaps *too* "legally compliant" for certain regions 🤷.
 - **Workaround**: This project provides convenient configuration entry points for third-party providers. Users with their own API keys or alternative provider access can configure accordingly.
 - **BTW**: Using such an expensive subscription for this project feels a bit like overkill — official subscription recommended for **generous donors only**.
@@ -187,14 +204,6 @@ The plugin cleanly separates:
 - **Core Runtime** — lifecycle, execution pipeline, UI shell
 - **Pluggable Layer** — workflow manifests, hook scripts, backend profiles
 - **Result Handling** — handler API for Zotero item/note/tag/attachment operations
-
-## 💰 Cost Advantage
-
-This architecture helps optimize LLM usage costs:
-
-- Route calls through backends aligned with your existing subscriptions.
-- Leverage periodically refreshed subscription quotas (e.g. OpenAI/Gemini plans) instead of per-token API billing.
-- Keep the plugin provider-agnostic while backend strategy evolves independently.
 
 ## 🧑‍💻 Development
 

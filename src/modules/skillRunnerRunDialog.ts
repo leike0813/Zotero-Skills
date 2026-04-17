@@ -301,6 +301,8 @@ export type RunWorkspaceSnapshot = {
     completedTasksTitle: string;
     conversationTitle: string;
     closeSidebar: string;
+    tasksToggle: string;
+    selectionTasksTitle: string;
     waitingRequestId: string;
     emptyTasks: string;
     backendUnavailable: string;
@@ -322,6 +324,14 @@ export type RunWorkspaceSnapshot = {
   };
   badges?: {
     waitingCount: number;
+  };
+  selectionTasks?: {
+    itemLabel?: string;
+    tasks: Array<{
+      key: string;
+      label: string;
+      selected: boolean;
+    }>;
   };
   contextHint?: {
     itemLabel?: string;
@@ -1815,6 +1825,11 @@ function buildRunWorkspaceSnapshot(
         "Conversation",
       ),
       closeSidebar: localize("task-manager-close", "Close"),
+      tasksToggle: localize("task-dashboard-run-tasks-toggle", "Tasks"),
+      selectionTasksTitle: localize(
+        "task-dashboard-run-selection-tasks-title",
+        "Related Tasks",
+      ),
       waitingRequestId: localize(
         "task-dashboard-run-waiting-request-id",
         "Waiting for requestId",

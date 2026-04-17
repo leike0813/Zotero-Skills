@@ -99,6 +99,9 @@
   const workspaceGlobalActionsEl = document.getElementById("workspace-global-actions");
   const sessionsToggleBtnEl = document.getElementById("sessions-toggle-btn");
   const closeSidebarBtnEl = document.getElementById("close-sidebar-btn");
+  const selectionTaskStripEl = document.getElementById("selection-task-strip");
+  const selectionTaskTitleEl = document.getElementById("selection-task-title");
+  const selectionTaskListEl = document.getElementById("selection-task-list");
   const workspaceMainEl =
     (runRootEl && runRootEl.querySelector(".workspace-main")) || document.querySelector(".workspace-main");
   const conversationCardEl =
@@ -176,6 +179,7 @@
     workspaceGlobalActionsEl.classList.toggle("hidden", hostMode !== "sidebar");
     sessionsToggleBtnEl.classList.toggle("hidden", hostMode !== "sidebar");
     closeSidebarBtnEl.classList.toggle("hidden", hostMode !== "sidebar");
+    selectionTaskStripEl.classList.toggle("hidden", hostMode !== "sidebar");
     workspaceDrawerCloseEl.classList.toggle("hidden", hostMode !== "sidebar");
     if (hostMode !== "sidebar") {
       workspaceSidebarEl.classList.remove("drawer-open");
@@ -241,6 +245,46 @@
     contextIndicatorEl.setAttribute("title", title);
     contextIndicatorEl.setAttribute("aria-label", title || "Related to current selection");
     contextIndicatorEl.classList.remove("hidden");
+  }
+
+  function renderSelectionTasks(selectionTasks) {
+    if (!selectionTaskStripEl || !selectionTaskTitleEl || !selectionTaskListEl) {
+      return;
+    }
+    const normalizedSelectionTasks =
+      selectionTasks && typeof selectionTasks === "object"
+        ? selectionTasks
+        : null;
+    const tasks =
+      normalizedSelectionTasks && Array.isArray(selectionTasks.tasks)
+        ? selectionTasks.tasks
+        : null;
+    const normalizedTasks = Array.isArray(tasks) ? tasks : [];
+    selectionTaskListEl.textContent = "";
+    if (state.hostMode !== "sidebar" || normalizedTasks.length === 0) {
+      selectionTaskTitleEl.textContent = "";
+      selectionTaskStripEl.classList.add("hidden");
+      return;
+    }
+    const selectionTitle =
+      safeText(workspaceLabels().selectionTasksTitle).trim() ||
+      "Running Tasks";
+    const itemLabel = safeText(normalizedSelectionTasks.itemLabel).trim();
+    selectionTaskTitleEl.textContent =
+      itemLabel ? `${itemLabel} · ${selectionTitle}` : selectionTitle;
+    normalizedTasks.forEach(function (task) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `selection-task-btn${task && task.selected === true ? " active" : ""}`;
+      button.textContent = safeText(task && task.label).trim() || "-";
+      button.addEventListener("click", function () {
+        sendAction("select-task", {
+          taskKey: safeText(task && task.key).trim(),
+        });
+      });
+      selectionTaskListEl.appendChild(button);
+    });
+    selectionTaskStripEl.classList.remove("hidden");
   }
 
   function setMetaChipVisibility(chip, visible) {
@@ -1591,8 +1635,11 @@
     renderWorkspace();
     conversationTitleEl.textContent =
       safeText(workspaceLabels().conversationTitle).trim() || "Conversation";
+    sessionsToggleBtnEl.textContent =
+      safeText(workspaceLabels().tasksToggle).trim() || "Tasks";
     closeSidebarBtnEl.textContent =
       safeText(workspaceLabels().closeSidebar).trim() || "Close";
+    renderSelectionTasks(envelope && envelope.selectionTasks);
     queueLayoutSync();
     if (!state.snapshot) {
       document.title = workspaceTitle;

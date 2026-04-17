@@ -20,12 +20,12 @@ function toResponse(bytes: Uint8Array, status = 200): FakeResponse {
 describe("skillrunner release installer", function () {
   let prevFetch: unknown;
   let prevIOUtils: unknown;
-  let prevZotero: unknown;
+  let prevIsWin: unknown;
 
   beforeEach(function () {
     prevFetch = (globalThis as { fetch?: unknown }).fetch;
     prevIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
-    prevZotero = (globalThis as { Zotero?: unknown }).Zotero;
+    prevIsWin = (globalThis as { Zotero?: { isWin?: unknown } }).Zotero?.isWin;
   });
 
   afterEach(function () {
@@ -39,10 +39,9 @@ describe("skillrunner release installer", function () {
     } else {
       (globalThis as { IOUtils?: unknown }).IOUtils = prevIOUtils;
     }
-    if (typeof prevZotero === "undefined") {
-      delete (globalThis as { Zotero?: unknown }).Zotero;
-    } else {
-      (globalThis as { Zotero?: unknown }).Zotero = prevZotero;
+    const zoteroRuntime = (globalThis as { Zotero?: { isWin?: unknown } }).Zotero;
+    if (zoteroRuntime) {
+      zoteroRuntime.isWin = prevIsWin;
     }
   });
 
@@ -50,7 +49,11 @@ describe("skillrunner release installer", function () {
     const files = new Map<string, Uint8Array>();
     const dirs = new Set<string>();
     const removedPaths: string[] = [];
-    (globalThis as { Zotero?: unknown }).Zotero = { isWin: true };
+    const zoteroRuntime = (globalThis as { Zotero?: { isWin?: boolean } }).Zotero;
+    if (!zoteroRuntime) {
+      throw new Error("zotero runtime unavailable");
+    }
+    zoteroRuntime.isWin = true;
     (globalThis as { IOUtils?: unknown }).IOUtils = {
       makeDirectory: async (path: string) => {
         dirs.add(path);
@@ -115,7 +118,11 @@ describe("skillrunner release installer", function () {
 
   it("fails when checksum does not match artifact hash", async function () {
     const dirs = new Set<string>();
-    (globalThis as { Zotero?: unknown }).Zotero = { isWin: true };
+    const zoteroRuntime = (globalThis as { Zotero?: { isWin?: boolean } }).Zotero;
+    if (!zoteroRuntime) {
+      throw new Error("zotero runtime unavailable");
+    }
+    zoteroRuntime.isWin = true;
     (globalThis as { IOUtils?: unknown }).IOUtils = {
       makeDirectory: async (path: string) => {
         dirs.add(path);
@@ -161,7 +168,11 @@ describe("skillrunner release installer", function () {
   });
 
   it("fails when tar extraction exits non-zero", async function () {
-    (globalThis as { Zotero?: unknown }).Zotero = { isWin: true };
+    const zoteroRuntime = (globalThis as { Zotero?: { isWin?: boolean } }).Zotero;
+    if (!zoteroRuntime) {
+      throw new Error("zotero runtime unavailable");
+    }
+    zoteroRuntime.isWin = true;
     (globalThis as { IOUtils?: unknown }).IOUtils = {
       makeDirectory: async () => {},
       write: async () => {},
@@ -203,4 +214,3 @@ describe("skillrunner release installer", function () {
     assert.isNotEmpty(result.tempDir || "");
   });
 });
-

@@ -45,6 +45,28 @@ Zotero Skills est un **plugin-cadre** (framework) pour Zotero 7, offrant un mote
 | **Éditeur de notes**         | Rendu basé sur un hôte pour l'édition de données structurées (ex. notes de références)                    |
 | **Visualiseur de journaux**  | Journaux filtrables avec export NDJSON pour le diagnostic                                                 |
 
+## ✨ Pourquoi Zotero Skills ?
+
+### Utilisez vos abonnements et Coding Plans, pas la facturation au token
+
+Les tâches d'analyse de littérature sont des **brûleuses de tokens** — résumés de papiers, extraction de références, analyse de citations et Q&A interactif consomment tous des quantités massives de tokens. La facturation API au token devient chère très vite.
+
+Ce plugin vous permet d'utiliser directement vos **Coding Plans** et **quotas d'abonnement** existants (OpenAI, Google, Alibaba, Zhipu, etc.) pour exécuter des workflows IA sans intermédiaire. Vos identifiants vont directement au backend, sans surcoût.
+
+### Workflows et Skills modulaires
+
+Le plugin est un **framework**, pas un monolithe fonctionnel. Tout est modulaire :
+
+- **Apportez vos propres workflows** : Déposez un package de workflow dans le répertoire workflows et il est immédiatement disponible. Aucun rebuild du plugin nécessaire.
+- **Skills Skill-Runner personnalisés** : Définissez vos propres skills IA avec le système de packaging Skill-Runner et exécutez-les via la même chaîne d'exécution.
+- **Packages partageables** : Les packages de workflow supportent des modules `lib/` partagés, facilitant la création de suites de workflows cohérentes.
+
+### Flexibilité multi-backends
+
+- Routez différents workflows vers différents backends — certains via Skill-Runner, d'autres via APIs HTTP directes ou logique locale pass-through.
+- Changez de backend sans modifier les définitions de workflow — la couche provider gère la traduction.
+- Un cadre d'exécution agentic stable et fiable avec une interface conviviale pour les développeurs. Les workflows intégrés ne sont que le point de départ — le pipeline d'exécution est le véritable atout.
+
 ## 💡 Recommandations de moteur
 
 ### Codex (Recommandation principale)
@@ -59,11 +81,11 @@ Zotero Skills est un **plugin-cadre** (framework) pour Zotero 7, offrant un mote
 - **Inconvénients** : La vitesse peut être incohérente. L'intégration DeepSeek API est utilisable mais le modèle V3.2 est significativement en retard ; utiliser "reasoner" aide mais peut nécessiter de la patience. Le support Antigravity tiers existe mais comporte un risque de bannissement.
 - **Verdict** : Meilleure option gratuite/faible coût si vous avez accès à des clés API ou abonnements compatibles.
 
-### Qwen Code (Recommandé pour les utilisateurs gratuits à fort volume)
+### Qwen Code
 
-- **Avantages** : La connexion OAuth officielle offre **1000 appels gratuits par jour à Qwen3.6-Plus** — l'un des quotas gratuits les plus généreux disponibles. Excellentes performances sur les tâches de littérature.
-- **Inconvénients** : Nécessite un compte Alibaba Cloud pour l'authentification OAuth.
-- **Verdict** : **Choix n°1 pour les utilisateurs gratuits** qui ont besoin d'un quota élevé sans payer.
+- **Avantages** : La connexion OAuth officielle offre ~~**1000 appels gratuits par jour**~~ à Qwen3.6-Plus — le quota gratuit s'est terminé le 15 avril 2026, mais de futures promotions officielles pourraient le ramener. Associé au Coding Plan d'Alibaba, les modèles Qwen offrent de bonnes performances sur les tâches de littérature.
+- **Inconvénients** : Relativement moins mature que les autres moteurs.
+- **Verdict** : Un bon choix lorsqu'il est associé au Coding Plan d'Alibaba.
 
 ### Gemini-CLI
 
@@ -71,15 +93,10 @@ Zotero Skills est un **plugin-cadre** (framework) pour Zotero 7, offrant un mote
 - **Inconvénients** : Démarrage lent, mauvaise expérience pour les tâches interactives. **Google a considérablement réduit les quotas d'abonnement Pro**, ce qui rend le rapport qualité-prix généralement mauvais.
 - **Verdict** : Gemini-3-Flash reste un bon choix pour les tâches simples uniquement.
 
-### iFlow-CLI (Obsolète)
-
-- **Avis** : **iFlow-CLI sera arrêté le 17 avril 2026.** Non recommandé pour les nouveaux déploiements.
-- **Avantages** : Entièrement gratuit (tant que le service dure).
-- **Inconvénients** : Mauvaise compréhension des skills, exécution et stabilité de sortie structurée. Les tâches en mode interactif échouent souvent à se terminer de manière fiable.
-- **Verdict** : Service en cours d'arrêt — migrez vers d'autres moteurs.
-
 ### Claude Code
 
+- **Avantages** : Excellente qualité d'exécution des instructions, sortie stable.
+- **Inconvénients** : Efficacité d'exécution plus faible, plus adapté au travail lié au code.
 - **Note** : L'intégration officielle Claude Code (authentification officielle + modèles officiels) n'a **pas été testée par l'auteur** — pour être franc, **pas d'abonnement Anthropic acheté**. Disons simplement qu'Anthropic est peut-être *trop* "conforme légalement" pour certaines régions 🤷.
 - **Solution** : Ce projet fournit des points d'entrée de configuration pratiques pour les providers tiers. Les utilisateurs ayant leurs propres clés API ou un accès alternatif peuvent configurer en conséquence.
 - **BTW** : Utiliser un abonnement si cher pour ce projet ressemble un peu à un gaspillage — abonnement officiel recommandé aux **utilisateurs généreux uniquement**.
@@ -181,12 +198,6 @@ Contexte de sélection ──► Moteur de workflows ──► Registre de provi
                                                                    note / tag /
                                                                    pièce jointe / élément
 ```
-
-## 💰 Avantage coût
-
-- Routez les appels via des backends alignés sur vos abonnements existants.
-- Exploitez les quotas d'abonnement renouvelés périodiquement (par ex. plans OpenAI/Gemini) plutôt que la facturation API par token.
-- Le plugin reste agnostique au provider côté UI/workflow, tandis que la stratégie backend évolue indépendamment.
 
 ## 🧑‍💻 Développement
 

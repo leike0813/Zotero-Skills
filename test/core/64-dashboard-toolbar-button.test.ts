@@ -152,18 +152,29 @@ describe("dashboard toolbar button", function () {
     const executeButton = host.children.find(
       (entry) => entry.id === "zotero-skills-tb-execute-workflow",
     );
+    const skillRunnerButton = host.children.find(
+      (entry) => entry.id === "zotero-skills-tb-skillrunner",
+    );
     const dashboardButton = host.children.find(
       (entry) => entry.id === "zotero-skills-tb-dashboard",
     );
     assert.isOk(executeButton);
+    assert.isOk(skillRunnerButton);
     assert.isOk(dashboardButton);
     assert.equal(executeButton!.getAttribute("class"), "zotero-tb-button");
+    assert.include(skillRunnerButton!.getAttribute("class") || "", "zotero-tb-button");
+    assert.include(skillRunnerButton!.getAttribute("image") || "", "icon_backend.png");
     assert.equal(dashboardButton!.getAttribute("class"), "zotero-tb-button");
 
-    dashboardButton!.dispatch("command");
+    skillRunnerButton!.dispatch("command");
     assert.lengthOf(calls, 1);
-    assert.equal(calls[0].type, "openDashboard");
+    assert.equal(calls[0].type, "toggleSkillRunnerSidebar");
     assert.deepEqual(calls[0].data, { window: win });
+
+    dashboardButton!.dispatch("command");
+    assert.lengthOf(calls, 2);
+    assert.equal(calls[1].type, "openDashboard");
+    assert.deepEqual(calls[1].data, { window: win });
   });
 
   it("removes existing toolbar button", function () {
@@ -175,13 +186,13 @@ describe("dashboard toolbar button", function () {
     } as unknown as _ZoteroTypes.MainWindow;
 
     ensureDashboardToolbarButton(win);
-    assert.lengthOf(host.children, 2);
+    assert.lengthOf(host.children, 3);
 
     removeDashboardToolbarButton(win);
     assert.lengthOf(host.children, 0);
   });
 
-  it("inserts execute and dashboard buttons before search anchor when note anchor is missing", function () {
+  it("keeps execute and dashboard before search while skillrunner moves to the right of search when note anchor is missing", function () {
     const document = new FakeDocument();
     const host = document.createXULElement("hbox");
     host.id = "zotero-toolbar-item-tree";
@@ -194,13 +205,14 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    assert.lengthOf(host.children, 3);
+    assert.lengthOf(host.children, 4);
     assert.equal(host.children[0].id, "zotero-skills-tb-execute-workflow");
     assert.equal(host.children[1].id, "zotero-skills-tb-dashboard");
     assert.equal(host.children[2].id, "zotero-tb-search");
+    assert.equal(host.children[3].id, "zotero-skills-tb-skillrunner");
   });
 
-  it("inserts execute and dashboard buttons before nested search container", function () {
+  it("inserts skillrunner after a nested search container", function () {
     const document = new FakeDocument();
     const host = document.createXULElement("hbox");
     host.id = "zotero-toolbar-item-tree";
@@ -216,10 +228,11 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    assert.lengthOf(host.children, 3);
+    assert.lengthOf(host.children, 4);
     assert.equal(host.children[0].id, "zotero-skills-tb-execute-workflow");
     assert.equal(host.children[1].id, "zotero-skills-tb-dashboard");
     assert.equal(host.children[2].id, "zotero-search-wrap");
+    assert.equal(host.children[3].id, "zotero-skills-tb-skillrunner");
   });
 
   it("prefers zotero-items-toolbar as host to avoid left-edge insertion", function () {
@@ -240,13 +253,14 @@ describe("dashboard toolbar button", function () {
 
     assert.lengthOf(toolbar.children, 1);
     assert.equal(toolbar.children[0].id, "zotero-items-toolbar");
-    assert.lengthOf(itemsToolbar.children, 3);
+    assert.lengthOf(itemsToolbar.children, 4);
     assert.equal(itemsToolbar.children[0].id, "zotero-skills-tb-execute-workflow");
     assert.equal(itemsToolbar.children[1].id, "zotero-skills-tb-dashboard");
     assert.equal(itemsToolbar.children[2].id, "zotero-tb-search");
+    assert.equal(itemsToolbar.children[3].id, "zotero-skills-tb-skillrunner");
   });
 
-  it("places execute button right after note button while dashboard stays before search", function () {
+  it("keeps execute after note, dashboard before search, and moves skillrunner after search", function () {
     const document = new FakeDocument();
     const host = document.createXULElement("hbox");
     host.id = "zotero-items-toolbar";
@@ -262,11 +276,12 @@ describe("dashboard toolbar button", function () {
 
     ensureDashboardToolbarButton(win);
 
-    assert.lengthOf(host.children, 4);
+    assert.lengthOf(host.children, 5);
     assert.equal(host.children[0].id, "zotero-tb-note-add");
     assert.equal(host.children[1].id, "zotero-skills-tb-execute-workflow");
     assert.equal(host.children[2].id, "zotero-skills-tb-dashboard");
     assert.equal(host.children[3].id, "zotero-tb-search");
+    assert.equal(host.children[4].id, "zotero-skills-tb-skillrunner");
   });
 
   it("rebuilds execute popup without dashboard shortcut and shows empty disabled item", async function () {

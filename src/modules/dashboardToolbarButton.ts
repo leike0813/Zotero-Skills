@@ -1,23 +1,18 @@
 import { config } from "../../package.json";
-import { getString } from "../utils/locale";
+import { getStringOrFallback } from "../utils/locale";
 import { rebuildWorkflowActionPopup } from "./workflowMenu";
 
 const DASHBOARD_BUTTON_ID = `${config.addonRef}-tb-dashboard`;
+const SKILLRUNNER_BUTTON_ID = `${config.addonRef}-tb-skillrunner`;
 const EXECUTE_WORKFLOW_BUTTON_ID = `${config.addonRef}-tb-execute-workflow`;
 const EXECUTE_WORKFLOW_POPUP_ID = `${config.addonRef}-tb-execute-workflow-popup`;
 const NOTE_ADD_BUTTON_ID = "zotero-tb-note-add";
 const PRIMARY_ICON_URI = `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`;
 const FALLBACK_ICON_URI = `chrome://${config.addonRef}/content/icons/favicon.png`;
 const EXECUTE_ICON_URI = `chrome://${config.addonRef}/content/icons/icon_play.png`;
+export const SKILLRUNNER_ICON_URI = `chrome://${config.addonRef}/content/icons/icon_backend.png`;
 
-function localize(key: string, fallback: string) {
-  try {
-    const resolved = String(getString(key as any)).trim();
-    return resolved || fallback;
-  } catch {
-    return fallback;
-  }
-}
+const localize = getStringOrFallback;
 
 function resolveToolbarHost(win: _ZoteroTypes.MainWindow) {
   const doc = win.document;
@@ -104,28 +99,38 @@ function resolveInsertAnchor(host: Element, doc: Document) {
   return null;
 }
 
-function applyButtonStyling(
+function resolveInsertAfterSearchAnchor(host: Element, doc: Document) {
+  const searchAnchor = resolveInsertAnchor(host, doc);
+  if (!searchAnchor) {
+    return null;
+  }
+  return resolveNextSiblingInHost(host, searchAnchor);
+}
+
+export function applyToolbarButtonStyling(
   button: Element & { style?: CSSStyleDeclaration },
   iconUri: string,
+  sizePx = 24,
 ) {
   button.style?.setProperty("list-style-image", `url("${iconUri}")`);
-  button.style?.setProperty("width", "24px");
-  button.style?.setProperty("height", "24px");
-  button.style?.setProperty("min-width", "24px");
-  button.style?.setProperty("min-height", "24px");
+  button.style?.setProperty("width", `${sizePx}px`);
+  button.style?.setProperty("height", `${sizePx}px`);
+  button.style?.setProperty("min-width", `${sizePx}px`);
+  button.style?.setProperty("min-height", `${sizePx}px`);
   button.style?.setProperty("padding-inline", "0");
   button.style?.setProperty("padding-block", "0");
   button.style?.setProperty("margin-inline", "2px");
   button.style?.setProperty("--toolbarbutton-inner-padding", "0");
 }
 
-function syncButtonIconFill(
+export function syncToolbarButtonIconFill(
   button: Element & {
     style?: CSSStyleDeclaration;
     querySelector?: (selector: string) => Element | null;
     getBoundingClientRect?: () => { width: number; height: number };
   },
   win: _ZoteroTypes.MainWindow,
+  options: { minIconPx?: number; insetPx?: number } = {},
 ) {
   const apply = () => {
     const rect = button.getBoundingClientRect?.();
@@ -133,7 +138,13 @@ function syncButtonIconFill(
       rect && Number.isFinite(rect.width) && Number.isFinite(rect.height)
         ? Math.max(16, Math.floor(Math.min(rect.width, rect.height)))
         : 24;
-    const iconSize = `${Math.max(14, side - 2)}px`;
+    const minIconPx = Number.isFinite(options.minIconPx)
+      ? Math.max(0, Math.floor(options.minIconPx as number))
+      : 14;
+    const insetPx = Number.isFinite(options.insetPx)
+      ? Math.max(0, Math.floor(options.insetPx as number))
+      : 2;
+    const iconSize = `${Math.max(minIconPx, side - insetPx)}px`;
     button.style?.setProperty("--toolbarbutton-icon-fill-size", iconSize);
     const icon = button.querySelector?.(".toolbarbutton-icon") as
       | (Element & { style?: CSSStyleDeclaration })
@@ -184,7 +195,7 @@ function ensureExecuteWorkflowToolbarButton(
   button.setAttribute("type", "menu");
   button.setAttribute("wantdropmarker", "false");
   button.setAttribute("image", EXECUTE_ICON_URI);
-  applyButtonStyling(
+  applyToolbarButtonStyling(
     button as Element & { style?: CSSStyleDeclaration },
     EXECUTE_ICON_URI,
   );
@@ -196,6 +207,7 @@ function ensureExecuteWorkflowToolbarButton(
       return;
     }
     void rebuildWorkflowActionPopup(win, popup, {
+      includeSkillRunnerSidebarItem: false,
       includeTaskManagerItem: false,
     });
   });
@@ -221,7 +233,7 @@ function ensureExecuteWorkflowToolbarButton(
     );
   }
 
-  syncButtonIconFill(
+  syncToolbarButtonIconFill(
     button as Element & {
       style?: CSSStyleDeclaration;
       querySelector?: (selector: string) => Element | null;
@@ -248,10 +260,10 @@ function ensureDashboardOnlyToolbarButton(
   button.setAttribute("tooltiptext", tooltip);
   button.setAttribute("aria-label", tooltip);
   button.setAttribute("image", PRIMARY_ICON_URI);
-  applyButtonStyling(button as Element & { style?: CSSStyleDeclaration }, PRIMARY_ICON_URI);
+  applyToolbarButtonStyling(button as Element & { style?: CSSStyleDeclaration }, PRIMARY_ICON_URI);
   button.addEventListener("error", () => {
     button.setAttribute("image", FALLBACK_ICON_URI);
-    applyButtonStyling(
+    applyToolbarButtonStyling(
       button as Element & { style?: CSSStyleDeclaration },
       FALLBACK_ICON_URI,
     );
@@ -265,7 +277,57 @@ function ensureDashboardOnlyToolbarButton(
     button as Element & { style?: CSSStyleDeclaration },
     anchor,
   );
-  syncButtonIconFill(
+  syncToolbarButtonIconFill(
+    button as Element & {
+      style?: CSSStyleDeclaration;
+      querySelector?: (selector: string) => Element | null;
+      getBoundingClientRect?: () => { width: number; height: number };
+    },
+    win,
+  );
+}
+
+function ensureSkillRunnerToolbarButton(
+  win: _ZoteroTypes.MainWindow,
+  host: Element,
+) {
+  const doc = win.document;
+  const existing = doc.getElementById(SKILLRUNNER_BUTTON_ID);
+  if (existing) {
+    return;
+  }
+
+  const button = doc.createXULElement("toolbarbutton");
+  const tooltip = localize(
+    "task-dashboard-toolbar-open-skillrunner",
+    "Open/Close Skill-Runner Sidebar",
+  );
+  button.id = SKILLRUNNER_BUTTON_ID;
+  button.setAttribute("class", "zotero-tb-button zs-skillrunner-toolbar-button");
+  button.setAttribute("tooltiptext", tooltip);
+  button.setAttribute("aria-label", tooltip);
+  button.setAttribute("image", SKILLRUNNER_ICON_URI);
+  applyToolbarButtonStyling(
+    button as Element & { style?: CSSStyleDeclaration },
+    SKILLRUNNER_ICON_URI,
+  );
+  button.addEventListener("error", () => {
+    button.setAttribute("image", FALLBACK_ICON_URI);
+    applyToolbarButtonStyling(
+      button as Element & { style?: CSSStyleDeclaration },
+      FALLBACK_ICON_URI,
+    );
+  });
+  button.addEventListener("command", () => {
+    void addon.hooks.onPrefsEvent("toggleSkillRunnerSidebar", { window: win });
+  });
+  const anchor = resolveInsertAfterSearchAnchor(host, doc);
+  insertWithAnchor(
+    host,
+    button as Element & { style?: CSSStyleDeclaration },
+    anchor,
+  );
+  syncToolbarButtonIconFill(
     button as Element & {
       style?: CSSStyleDeclaration;
       querySelector?: (selector: string) => Element | null;
@@ -282,6 +344,28 @@ export function ensureDashboardToolbarButton(win: _ZoteroTypes.MainWindow) {
   }
   ensureExecuteWorkflowToolbarButton(win, host);
   ensureDashboardOnlyToolbarButton(win, host);
+  ensureSkillRunnerToolbarButton(win, host);
+}
+
+export function updateSkillRunnerToolbarButtonBadge(
+  win: Window | _ZoteroTypes.MainWindow,
+  waitingCount: number,
+) {
+  const doc = (win as _ZoteroTypes.MainWindow)?.document;
+  const button = doc?.getElementById(SKILLRUNNER_BUTTON_ID) as
+    | (Element & {
+        setAttribute: (name: string, value: string) => void;
+        removeAttribute: (name: string) => void;
+      })
+    | null;
+  if (!button) {
+    return;
+  }
+  if (waitingCount > 0) {
+    button.setAttribute("data-badge", String(waitingCount));
+  } else {
+    button.removeAttribute("data-badge");
+  }
 }
 
 export function removeDashboardToolbarButton(win: Window | _ZoteroTypes.MainWindow) {
@@ -291,6 +375,8 @@ export function removeDashboardToolbarButton(win: Window | _ZoteroTypes.MainWind
   }
   const execute = doc.getElementById(EXECUTE_WORKFLOW_BUTTON_ID);
   execute?.remove();
+  const skillRunner = doc.getElementById(SKILLRUNNER_BUTTON_ID);
+  skillRunner?.remove();
   const existing = doc.getElementById(DASHBOARD_BUTTON_ID);
   existing?.remove();
 }

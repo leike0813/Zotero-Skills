@@ -17,6 +17,7 @@ const ROOT_POPUP_ID = `${config.addonRef}-workflows-popup`;
 const MENU_ICON_URI = `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`;
 
 export type WorkflowActionPopupBuildOptions = {
+  includeSkillRunnerSidebarItem?: boolean;
   includeTaskManagerItem?: boolean;
 };
 
@@ -55,6 +56,24 @@ function appendTaskManagerItem(win: _ZoteroTypes.MainWindow, popup: XULElement) 
   );
   item.addEventListener("command", () => {
     void addon.hooks.onPrefsEvent("openDashboard", { window: win });
+  });
+  popup.appendChild(item);
+}
+
+function appendSkillRunnerSidebarItem(
+  win: _ZoteroTypes.MainWindow,
+  popup: XULElement,
+) {
+  const item = win.document.createXULElement("menuitem");
+  item.setAttribute(
+    "label",
+    getMenuLabel(
+      "menu-workflows-open-skillrunner-sidebar",
+      "Open SkillRunner Sidebar...",
+    ),
+  );
+  item.addEventListener("command", () => {
+    void addon.hooks.onPrefsEvent("openSkillRunnerSidebar", { window: win });
   });
   popup.appendChild(item);
 }
@@ -147,10 +166,17 @@ export async function rebuildWorkflowActionPopup(
   options?: WorkflowActionPopupBuildOptions,
 ) {
   const includeTaskManagerItem = options?.includeTaskManagerItem !== false;
+  const includeSkillRunnerSidebarItem =
+    options?.includeSkillRunnerSidebarItem !== false;
   clearPopupChildren(popup);
   const workflows = getVisibleLoadedWorkflowEntries();
+  if (includeSkillRunnerSidebarItem) {
+    appendSkillRunnerSidebarItem(win, popup);
+  }
   if (includeTaskManagerItem) {
     appendTaskManagerItem(win, popup);
+  }
+  if (includeSkillRunnerSidebarItem || includeTaskManagerItem) {
     appendMenuSeparator(win, popup);
   }
   if (workflows.length === 0) {

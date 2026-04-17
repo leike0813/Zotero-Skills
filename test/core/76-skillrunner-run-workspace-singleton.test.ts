@@ -9,8 +9,9 @@ async function readProjectFile(relativePath: string) {
 describe("skillrunner run workspace singleton", function () {
   it("routes openSkillRunnerRunDialog to one global workspace window", async function () {
     const ts = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
-    assert.include(ts, "isWindowAlive(runWorkspaceState.dialog?.window)");
-    assert.include(ts, "runWorkspaceState.dialog?.window?.focus()");
+    assert.include(ts, "isRunWorkspaceHostAlive()");
+    assert.include(ts, "runWorkspaceState.focusHost?.()");
+    assert.include(ts, 'runWorkspaceState.hostMode === "dialog"');
     assert.include(ts, "runWorkspaceState.latestOpenTarget");
     assert.include(ts, "refreshWorkspaceSnapshot({");
   });
@@ -31,5 +32,15 @@ describe("skillrunner run workspace singleton", function () {
     assert.include(ts, "workspace: {");
     assert.include(ts, "selectedTaskKey: runWorkspaceState.selectedTaskKey");
     assert.include(ts, "session,");
+  });
+
+  it("aborts the previous SSE observer before switching tasks in the singleton workspace", async function () {
+    const ts = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
+    assert.include(ts, "let chatStreamAbortController: AbortController | null = null;");
+    assert.include(ts, "chatStreamAbortController?.abort();");
+    assert.include(ts, "signal: chatStreamAbortController?.signal");
+    assert.include(ts, "isAbortErrorLike(error)");
+    assert.include(ts, "await stopRunDialogEntryObserver(runWorkspaceState.currentEntry);");
+    assert.notInclude(ts, "await Promise.allSettled([\n        runLoopTask ?? Promise.resolve(),\n        refreshChain.catch(() => {}),\n      ]);");
   });
 });

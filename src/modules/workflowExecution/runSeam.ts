@@ -4,7 +4,7 @@ import { appendRuntimeLog } from "../runtimeLogManager";
 import { recordWorkflowTaskUpdate } from "../taskRuntime";
 import { recordTaskDashboardHistoryFromJob } from "../taskDashboardHistory";
 import { ensureSkillRunnerRecoverableContext } from "../skillRunnerTaskReconciler";
-import { openSkillRunnerRunDialog } from "../skillRunnerRunDialog";
+import { openSkillRunnerSidebar } from "../skillRunnerSidebar";
 import type { PreparedWorkflowExecution, WorkflowRunState } from "./contracts";
 import {
   resolveInputUnitIdentityFromRequest,
@@ -23,7 +23,7 @@ type RunSeamDeps = {
   recordWorkflowTaskUpdate: typeof recordWorkflowTaskUpdate;
   recordTaskDashboardHistoryFromJob: typeof recordTaskDashboardHistoryFromJob;
   ensureSkillRunnerRecoverableContext: typeof ensureSkillRunnerRecoverableContext;
-  openSkillRunnerRunDialog: typeof openSkillRunnerRunDialog;
+  openSkillRunnerSidebar: typeof openSkillRunnerSidebar;
 };
 
 const defaultRunSeamDeps: RunSeamDeps = {
@@ -33,7 +33,7 @@ const defaultRunSeamDeps: RunSeamDeps = {
   recordWorkflowTaskUpdate,
   recordTaskDashboardHistoryFromJob,
   ensureSkillRunnerRecoverableContext,
-  openSkillRunnerRunDialog,
+  openSkillRunnerSidebar,
 };
 
 export function runWorkflowExecutionSeam(
@@ -100,7 +100,7 @@ export function runWorkflowExecutionSeam(
           skillrunnerMode === "interactive" &&
           requestId
         ) {
-          resolved.openSkillRunnerRunDialog({
+          resolved.openSkillRunnerSidebar({
             backend: executionContext.backend,
             requestId,
           });

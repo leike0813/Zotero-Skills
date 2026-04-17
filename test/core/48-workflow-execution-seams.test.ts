@@ -583,4 +583,89 @@ describe("workflow execution seams", function () {
 
     assert.equal(capturedConcurrency, 1);
   });
+
+  it("routes interactive skillrunner request-created openings to the sidebar entry", function () {
+    let capturedQueueConfig: Record<string, unknown> | undefined;
+    const sidebarCalls: Array<Record<string, unknown>> = [];
+    let legacyDialogCalls = 0;
+    const queueStub = {
+      enqueue() {
+        return "job-1";
+      },
+      waitForIdle() {
+        return Promise.resolve();
+      },
+    };
+
+    runWorkflowExecutionSeam(
+      {
+        prepared: {
+          workflow: {
+            manifest: {
+              id: "seam-skillrunner-interactive-sidebar",
+              label: "Seam SkillRunner Interactive Sidebar",
+              execution: {
+                skillrunner_mode: "interactive",
+              },
+            },
+          } as any,
+          requests: [{ targetParentID: 3 }],
+          skippedByFilter: 0,
+          executionContext: {
+            providerId: "skillrunner",
+            requestKind: "skillrunner.job.v1",
+            providerOptions: {},
+            backend: {
+              id: "backend-1",
+              type: "skillrunner",
+              baseUrl: "http://127.0.0.1:8030",
+            },
+          },
+        },
+      },
+      {
+        createQueue: (config) => {
+          capturedQueueConfig = config as unknown as Record<string, unknown>;
+          return queueStub as any;
+        },
+        openSkillRunnerSidebar: (args) => {
+          sidebarCalls.push(args as unknown as Record<string, unknown>);
+          return Promise.resolve();
+        },
+        openSkillRunnerRunDialog: () => {
+          legacyDialogCalls += 1;
+          return Promise.resolve();
+        },
+      } as any,
+    );
+
+    assert.isOk(capturedQueueConfig);
+    const onJobProgress = capturedQueueConfig?.onJobProgress as
+      | ((job: Record<string, unknown>, event: Record<string, unknown>) => void)
+      | undefined;
+    assert.isFunction(onJobProgress);
+    onJobProgress?.(
+      {
+        id: "job-1",
+        workflowId: "seam-skillrunner-interactive-sidebar",
+        request: { targetParentID: 3 },
+        meta: { index: 0 },
+        state: "running",
+        createdAt: "2026-04-17T00:00:00.000Z",
+        updatedAt: "2026-04-17T00:00:00.000Z",
+      },
+      {
+        type: "request-created",
+        requestId: "req-1",
+      },
+    );
+
+    assert.lengthOf(sidebarCalls, 1);
+    assert.equal(sidebarCalls[0].requestId, "req-1");
+    assert.equal(
+      (sidebarCalls[0].backend as { id?: string }).id,
+      "backend-1",
+    );
+    assert.equal(legacyDialogCalls, 0);
+  });
 });

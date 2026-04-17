@@ -15,6 +15,7 @@ function makeJob(args: {
   backendId?: string;
   engine?: string;
   requestId?: string;
+  targetParentID?: number;
   updatedAt: string;
 }) {
   const job: JobRecord = {
@@ -30,6 +31,7 @@ function makeJob(args: {
       backendType: args.backendType || "skillrunner",
       backendBaseUrl: "http://127.0.0.1:8030",
       engine: args.engine || "",
+      targetParentID: args.targetParentID,
     },
     state: args.state,
     createdAt: "2026-03-08T00:00:00.000Z",
@@ -70,6 +72,22 @@ describe("task dashboard history", function () {
     assert.equal(history[0].requestId, "req-1");
     assert.equal(history[0].backendId, "skillrunner-local");
     assert.equal(history[0].engine, "gemini");
+  });
+
+  it("preserves targetParentID in persisted history records", function () {
+    recordTaskDashboardHistoryFromJob(
+      makeJob({
+        id: "job-parent",
+        state: "running",
+        requestId: "req-parent",
+        targetParentID: 456,
+        updatedAt: "2026-03-08T00:00:03.000Z",
+      }),
+    );
+
+    const history = listTaskDashboardHistory();
+    assert.lengthOf(history, 1);
+    assert.equal(history[0].targetParentID, 456);
   });
 
   it("accepts waiting_user state in persisted history records", function () {

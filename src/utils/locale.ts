@@ -2,7 +2,7 @@ import { config } from "../../package.json";
 import { FluentMessageId } from "../../typings/i10n";
 import { createZToolkit } from "./ztoolkit";
 
-export { initLocale, getString, getLocaleID };
+export { initLocale, getString, getLocaleID, getStringOrFallback };
 
 /**
  * Initialize locale data
@@ -69,6 +69,24 @@ function getString(...inputs: any[]) {
   }
 }
 
+function getStringOrFallback(
+  localeString: FluentMessageId | string,
+  fallback: string,
+  options: { branch?: string | undefined; args?: Record<string, unknown> } = {},
+) {
+  try {
+    const resolved = String(
+      _getString(localeString as FluentMessageId, options),
+    ).trim();
+    if (!resolved || resolved === getLocaleID(localeString)) {
+      return fallback;
+    }
+    return resolved;
+  } catch {
+    return fallback;
+  }
+}
+
 interface Pattern {
   value: string | null;
   attributes: Array<{
@@ -107,7 +125,7 @@ function _getString(
   }
 }
 
-function getLocaleID(id: FluentMessageId) {
+function getLocaleID(id: FluentMessageId | string) {
   return `${config.addonRef}-${id}`;
 }
 

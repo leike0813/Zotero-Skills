@@ -49,6 +49,12 @@ import { isDebugModeEnabled } from "./modules/debugMode";
 import { untrackSkillRunnerBackendHealth } from "./modules/skillRunnerBackendHealthRegistry";
 import { shutdownSkillRunnerAsyncLifecycle } from "./modules/skillRunnerAsyncLifecycle";
 import { flushRuntimeLogsPersistence } from "./modules/runtimeLogManager";
+import {
+  installSkillRunnerSidebarShell,
+  openSkillRunnerSidebar,
+  removeSkillRunnerSidebarShell,
+  toggleSkillRunnerSidebar,
+} from "./modules/skillRunnerSidebar";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -234,6 +240,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   await ensureWorkflowRegistryAndMenu(win);
   ensureDashboardToolbarButton(win);
+  installSkillRunnerSidebarShell(win);
 
   const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
   const popupWin = ProgressWindow
@@ -275,6 +282,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
 async function onMainWindowUnload(win: Window): Promise<void> {
   removeDashboardToolbarButton(win);
+  removeSkillRunnerSidebarShell(win as _ZoteroTypes.MainWindow);
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
 }
@@ -284,6 +292,7 @@ async function onShutdown(): Promise<void> {
   await flushRuntimeLogsPersistence();
   for (const win of Zotero.getMainWindows?.() || []) {
     removeDashboardToolbarButton(win);
+    removeSkillRunnerSidebarShell(win);
   }
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
@@ -413,6 +422,16 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "openTaskManager":
     case "openDashboard":
       await openTaskManagerDialog();
+      break;
+    case "openSkillRunnerSidebar":
+      await openSkillRunnerSidebar({
+        window: data.window,
+      });
+      break;
+    case "toggleSkillRunnerSidebar":
+      await toggleSkillRunnerSidebar({
+        window: data.window,
+      });
       break;
     case "openLogViewer":
       await openTaskManagerDialog({

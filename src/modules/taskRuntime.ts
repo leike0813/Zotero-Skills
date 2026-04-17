@@ -12,6 +12,7 @@ export type WorkflowTaskRecord = {
   jobId: string;
   requestId?: string;
   engine?: string;
+  targetParentID?: number;
   workflowId: string;
   workflowLabel: string;
   taskName: string;
@@ -58,6 +59,13 @@ function resolveRequestIdFromJob(job: JobRecord) {
   return "";
 }
 
+function resolveTargetParentIDFromJob(job: JobRecord) {
+  const candidate = job.meta.targetParentID;
+  return typeof candidate === "number" && Number.isFinite(candidate)
+    ? Math.floor(candidate)
+    : undefined;
+}
+
 export function buildWorkflowTaskRecordFromJob(
   job: JobRecord,
 ): WorkflowTaskRecord {
@@ -82,6 +90,7 @@ export function buildWorkflowTaskRecordFromJob(
     jobId: job.id,
     requestId: requestId || undefined,
     engine: engine || undefined,
+    targetParentID: resolveTargetParentIDFromJob(job),
     workflowId: job.workflowId,
     workflowLabel,
     taskName,
@@ -141,6 +150,10 @@ function parsePersistedTaskRecord(raw: unknown): WorkflowTaskRecord | null {
     jobId,
     requestId: String(raw.requestId || "").trim() || undefined,
     engine: String(raw.engine || "").trim() || undefined,
+    targetParentID:
+      typeof raw.targetParentID === "number" && Number.isFinite(raw.targetParentID)
+        ? Math.floor(raw.targetParentID)
+        : undefined,
     workflowId,
     workflowLabel,
     taskName,

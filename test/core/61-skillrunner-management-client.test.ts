@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   SkillRunnerManagementClient,
+  isAbortErrorLike,
   type SkillRunnerManagementSseFrame,
 } from "../../src/providers/skillrunner/managementClient";
 
@@ -150,6 +151,57 @@ describe("skillrunner management client", function () {
       urls[0],
       "http://127.0.0.1:8030/v1/jobs/req-1/events?cursor=8",
     );
+  });
+
+  it("passes abort signals into stream requests and classifies canceled SSE reads as AbortError", async function () {
+    const requests: Array<{ url: string; signal?: AbortSignal }> = [];
+    const controller = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({
+      start(bodyController) {
+        controller.signal.addEventListener(
+          "abort",
+          () => {
+            bodyController.error(new Error("stream canceled"));
+          },
+          { once: true },
+        );
+      },
+    });
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      requests.push({
+        url,
+        signal: init?.signal as AbortSignal | undefined,
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      });
+    };
+    const client = new SkillRunnerManagementClient({
+      baseUrl: "http://127.0.0.1:8030",
+      fetchImpl,
+    });
+    const task = client.streamRunChat({
+      requestId: "req-1",
+      signal: controller.signal,
+      onFrame: () => {},
+    });
+    await Promise.resolve();
+    controller.abort();
+    let rejected: unknown;
+    try {
+      await task;
+    } catch (error) {
+      rejected = error;
+    }
+    assert.equal(requests[0]?.signal, controller.signal);
+    assert.equal(
+      requests[0]?.url,
+      "http://127.0.0.1:8030/v1/jobs/req-1/chat?cursor=0",
+    );
+    assert.isTrue(isAbortErrorLike(rejected));
   });
 
   it("uses jobs endpoints for run state, pending and history", async function () {

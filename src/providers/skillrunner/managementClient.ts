@@ -129,6 +129,10 @@ export type SkillRunnerManagementSseFrame = {
   data: unknown;
 };
 
+type AbortLikeError = Error & {
+  name: string;
+};
+
 function ensureLeadingSlash(path: string) {
   return path.startsWith("/") ? path : `/${path}`;
 }
@@ -186,6 +190,35 @@ function normalizeUrl(baseUrl: string, path: string, query?: URLSearchParams) {
   return `${url}?${query.toString()}`;
 }
 
+function createAbortError(): AbortLikeError {
+  const runtime = globalThis as {
+    DOMException?: new (message?: string, name?: string) => Error;
+  };
+  if (typeof runtime.DOMException === "function") {
+    return new runtime.DOMException(
+      "The operation was aborted.",
+      "AbortError",
+    ) as AbortLikeError;
+  }
+  const error = new Error("The operation was aborted.") as AbortLikeError;
+  error.name = "AbortError";
+  return error;
+}
+
+export function isAbortErrorLike(error: unknown) {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    String((error as { name?: unknown }).name || "").trim() === "AbortError"
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal | null) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
 function decodeBase64ToBytes(input: string) {
   const normalized = String(input || "").trim();
   if (!normalized) {
@@ -214,7 +247,9 @@ function decodeBase64ToBytes(input: string) {
 async function streamSseResponse(args: {
   response: Response;
   onFrame: (frame: SkillRunnerManagementSseFrame) => void;
+  signal?: AbortSignal;
 }) {
+  throwIfAborted(args.signal);
   const body = args.response.body;
   if (!body || typeof body.getReader !== "function") {
     throw new Error("SSE stream is unavailable in current runtime");
@@ -241,8 +276,10 @@ async function streamSseResponse(args: {
   const decoder = new textDecoderCtor("utf-8");
   const reader = body.getReader() as {
     read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+    cancel?: (reason?: unknown) => Promise<void>;
   };
   let buffer = "";
+  let aborted = false;
 
   const emitFrame = (rawFrame: string) => {
     const lines = rawFrame.split(/\r?\n/);
@@ -276,26 +313,51 @@ async function streamSseResponse(args: {
     });
   };
 
-  while (true) {
-    const next = await reader.read();
-    if (next.done) {
-      buffer += decoder.decode(new Uint8Array());
-      break;
+  const abortListener = () => {
+    aborted = true;
+    if (typeof reader.cancel === "function") {
+      void reader.cancel(createAbortError()).catch(() => {});
     }
-    buffer += decoder.decode(next.value || new Uint8Array(), { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary).trim();
-      buffer = buffer.slice(boundary + 2);
-      if (frame) {
-        emitFrame(frame);
+  };
+  args.signal?.addEventListener("abort", abortListener, { once: true });
+  try {
+    throwIfAborted(args.signal);
+    while (true) {
+      throwIfAborted(args.signal);
+      let next: { done: boolean; value?: Uint8Array };
+      try {
+        next = await reader.read();
+      } catch (error) {
+        if (aborted || isAbortErrorLike(error)) {
+          throw createAbortError();
+        }
+        throw error;
       }
-      boundary = buffer.indexOf("\n\n");
+      if (aborted) {
+        throw createAbortError();
+      }
+      if (next.done) {
+        buffer += decoder.decode(new Uint8Array());
+        break;
+      }
+      buffer += decoder.decode(next.value || new Uint8Array(), { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        if (frame) {
+          emitFrame(frame);
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
     }
-  }
-  const tail = buffer.trim();
-  if (tail) {
-    emitFrame(tail);
+    throwIfAborted(args.signal);
+    const tail = buffer.trim();
+    if (tail) {
+      emitFrame(tail);
+    }
+  } finally {
+    args.signal?.removeEventListener("abort", abortListener);
   }
 }
 
@@ -357,9 +419,11 @@ export class SkillRunnerManagementClient {
     body?: BodyInit;
     expectJson?: boolean;
     allowUnauthorizedRetry?: boolean;
+    signal?: AbortSignal;
   }) {
     const url = normalizeUrl(this.baseUrl, args.path, args.query);
     let credentials = this.resolveStoredCredentials();
+    throwIfAborted(args.signal);
     let response = await this.fetchImpl(url, {
       method: args.method,
       headers: this.buildHeaders({
@@ -367,6 +431,7 @@ export class SkillRunnerManagementClient {
         auth: credentials,
       }),
       body: args.body,
+      signal: args.signal,
     });
 
     if (
@@ -384,6 +449,7 @@ export class SkillRunnerManagementClient {
           username: prompted.username,
           password: prompted.password,
         });
+        throwIfAborted(args.signal);
         response = await this.fetchImpl(url, {
           method: args.method,
           headers: this.buildHeaders({
@@ -391,6 +457,7 @@ export class SkillRunnerManagementClient {
             auth: credentials,
           }),
           body: args.body,
+          signal: args.signal,
         });
       }
     }
@@ -659,6 +726,7 @@ export class SkillRunnerManagementClient {
     requestId: string;
     cursor?: number;
     onFrame: (frame: SkillRunnerManagementSseFrame) => void;
+    signal?: AbortSignal;
   }) {
     const requestId = String(args.requestId || "").trim();
     if (!requestId) {
@@ -675,10 +743,12 @@ export class SkillRunnerManagementClient {
         accept: "text/event-stream",
       },
       expectJson: false,
+      signal: args.signal,
     })) as Response;
     await streamSseResponse({
       response,
       onFrame: args.onFrame,
+      signal: args.signal,
     });
   }
 
@@ -686,6 +756,7 @@ export class SkillRunnerManagementClient {
     requestId: string;
     cursor?: number;
     onFrame: (frame: SkillRunnerManagementSseFrame) => void;
+    signal?: AbortSignal;
   }) {
     const requestId = String(args.requestId || "").trim();
     if (!requestId) {
@@ -702,10 +773,12 @@ export class SkillRunnerManagementClient {
         accept: "text/event-stream",
       },
       expectJson: false,
+      signal: args.signal,
     })) as Response;
     await streamSseResponse({
       response,
       onFrame: args.onFrame,
+      signal: args.signal,
     });
   }
 }

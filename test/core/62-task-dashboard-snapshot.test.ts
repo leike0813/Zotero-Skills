@@ -25,6 +25,7 @@ function makeTask(args: {
   state: WorkflowTaskRecord["state"];
   updatedAt: string;
   requestId?: string;
+  targetParentID?: number;
 }): WorkflowTaskRecord {
   return {
     id: args.id,
@@ -38,6 +39,7 @@ function makeTask(args: {
     backendId: args.backendId,
     backendType: args.backendType,
     backendBaseUrl: "http://127.0.0.1:8030",
+    targetParentID: args.targetParentID,
     state: args.state,
     createdAt: "2026-03-09T00:00:00.000Z",
     updatedAt: args.updatedAt,
@@ -50,6 +52,7 @@ function makeHistory(args: {
   backendType: string;
   state: WorkflowTaskRecord["state"];
   updatedAt: string;
+  targetParentID?: number;
 }): TaskDashboardHistoryRecord {
   return {
     ...makeTask({
@@ -58,6 +61,7 @@ function makeHistory(args: {
       backendType: args.backendType,
       state: args.state,
       updatedAt: args.updatedAt,
+      targetParentID: args.targetParentID,
     }),
     archivedAt: args.updatedAt,
   };
@@ -118,6 +122,35 @@ describe("task dashboard snapshot", function () {
     assert.lengthOf(rows, 1);
     assert.equal(rows[0].state, "running");
     assert.equal(rows[0].requestId, "req-1");
+  });
+
+  it("preserves targetParentID when merging active and history rows", function () {
+    const rows = mergeDashboardTaskRows({
+      backendId: "skillrunner-primary",
+      history: [
+        makeHistory({
+          id: "task-1",
+          backendId: "skillrunner-primary",
+          backendType: "skillrunner",
+          state: "queued",
+          updatedAt: "2026-03-09T00:00:01.000Z",
+          targetParentID: 111,
+        }),
+      ],
+      active: [
+        makeTask({
+          id: "task-1",
+          backendId: "skillrunner-primary",
+          backendType: "skillrunner",
+          state: "running",
+          updatedAt: "2026-03-09T00:00:05.000Z",
+          requestId: "req-1",
+          targetParentID: 222,
+        }),
+      ],
+    });
+    assert.lengthOf(rows, 1);
+    assert.equal(rows[0].targetParentID, 222);
   });
 
   it("normalizes invalid tab key back to home", function () {

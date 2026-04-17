@@ -1,3 +1,46 @@
 .makeItRed {
   background-color: tomato;
 }
+
+.zs-skillrunner-toolbar-button[data-badge] {
+  position: relative;
+}
+
+.zs-skillrunner-toolbar-button[data-badge]::after,
+.zs-skillrunner-sidebar-button[data-badge]::after {
+  content: attr(data-badge);
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.zs-skillrunner-sidebar-button[data-zs-selected="true"] {
+  filter: saturate(1.2);
+}
+
+#zotero-view-item-sidenav .zs-skillrunner-sidebar-button,
+#zotero-context-pane-sidenav .zs-skillrunner-sidebar-button {
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  padding: 4px !important;
+}
+
+#zotero-view-item-sidenav .zs-skillrunner-sidebar-button > .toolbarbutton-icon,
+#zotero-context-pane-sidenav .zs-skillrunner-sidebar-button > .toolbarbutton-icon {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+}

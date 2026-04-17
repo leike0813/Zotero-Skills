@@ -30,7 +30,6 @@ import { refreshSkillRunnerModelCacheForBackend } from "../providers/skillrunner
 import { config } from "../../package.json";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
-import { openSkillRunnerRunDialog } from "./skillRunnerRunDialog";
 import { joinPath } from "../utils/path";
 import {
   buildWorkflowSettingsUiDescriptor,
@@ -48,6 +47,7 @@ import {
   subscribeSkillRunnerBackendHealth,
 } from "./skillRunnerBackendHealthRegistry";
 import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
+import { openSkillRunnerSidebar } from "./skillRunnerSidebar";
 
 type DashboardState = {
   backends: BackendInstance[];
@@ -1620,7 +1620,8 @@ export async function openTaskManagerDialog(args?: {
         if (!backend || !isSkillRunnerBackend(backend)) {
           return;
         }
-        await openSkillRunnerRunDialog({
+        await openSkillRunnerSidebar({
+          window: Zotero.getMainWindow?.() as _ZoteroTypes.MainWindow | undefined,
           backend,
           requestId,
         });
@@ -1712,7 +1713,8 @@ export async function openTaskManagerDialog(args?: {
       if (backendId && requestId) {
         const backend = state.backends.find((entry) => entry.id === backendId);
         if (backend && isSkillRunnerBackend(backend)) {
-          await openSkillRunnerRunDialog({
+          await openSkillRunnerSidebar({
+            window: Zotero.getMainWindow?.() as _ZoteroTypes.MainWindow | undefined,
             backend,
             requestId,
           });

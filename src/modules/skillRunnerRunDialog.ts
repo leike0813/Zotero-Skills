@@ -3,7 +3,7 @@ import { config } from "../../package.json";
 import { resolveBackendDisplayName } from "../backends/displayName";
 import { loadBackendsRegistry } from "../backends/registry";
 import type { BackendInstance } from "../backends/types";
-import { getString } from "../utils/locale";
+import { getStringOrFallback as localize } from "../utils/locale";
 import { resolveAddonRef } from "../utils/runtimeBridge";
 import { isWindowAlive } from "../utils/window";
 import {
@@ -11,6 +11,7 @@ import {
   type SkillRunnerManagementAuthSession,
   type SkillRunnerManagementPending,
   type SkillRunnerManagementSseFrame,
+  isAbortErrorLike,
 } from "../providers/skillrunner/managementClient";
 import { buildSkillRunnerManagementClient } from "./skillRunnerManagementClientFactory";
 import { appendRuntimeLog } from "./runtimeLogManager";
@@ -46,6 +47,11 @@ import {
   subscribeSkillRunnerSessionState,
 } from "./skillRunnerSessionSyncManager";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
+import {
+  pickSkillRunnerSidebarFocusedTaskKey,
+  type SkillRunnerSidebarContext,
+  type SkillRunnerSidebarRelationState,
+} from "./skillRunnerSidebarModel";
 
 export type RunDialogMessageRole = "assistant" | "user" | "system";
 export type RunDialogMessageKind =
@@ -166,13 +172,12 @@ type RunDialogSnapshot = {
     correlation?: Record<string, unknown>;
   }>;
   labels: {
+    backend: string;
     requestId: string;
     status: string;
     engine: string;
     model: string;
     updatedAt: string;
-    pendingOwner: string;
-    pendingInteractionId: string;
     pendingKind: string;
     pendingPrompt: string;
     loading: string;
@@ -238,8 +243,10 @@ export type RunDialogChoiceOption = {
   value: unknown;
 };
 
+export type RightShellMode = "item" | "notes" | "skillrunner";
+
 type RunDialogActionEnvelope = {
-  type: "run-dialog:action";
+  type: "run-dialog:action" | "skillrunner-sidebar:action";
   action: string;
   payload?: Record<string, unknown>;
 };
@@ -248,19 +255,17 @@ type RunDialogEntry = {
   key: string;
   backend: BackendInstance;
   requestId: string;
-  dialog: DialogHelper;
-  frameWindow: Window | null;
+  alertWindow: Window | null;
   stopObserver?: () => Promise<void>;
   refreshState?: () => Promise<void>;
   refreshDisplay?: () => Promise<void>;
-  removeMessageListener?: () => void;
   unsubscribeSessionState?: () => void;
   session: RunSessionState;
 };
 
 const WAITING_AUTH_OBSERVER_INTERVAL_MS = 1500;
 
-type RunWorkspaceTaskItem = {
+export type RunWorkspaceTaskItem = {
   key: string;
   backendId: string;
   backendDisplayName: string;
@@ -272,9 +277,12 @@ type RunWorkspaceTaskItem = {
   title: string;
   selectable: boolean;
   terminal: boolean;
+  inputUnitIdentity?: string;
+  targetParentID?: number;
+  relationState?: SkillRunnerSidebarRelationState;
 };
 
-type RunWorkspaceGroup = {
+export type RunWorkspaceGroup = {
   backendId: string;
   backendDisplayName: string;
   disabled: boolean;
@@ -286,10 +294,13 @@ type RunWorkspaceGroup = {
   latestUpdatedAt: string;
 };
 
-type RunWorkspaceSnapshot = {
+export type RunWorkspaceSnapshot = {
   title: string;
+  hostMode?: "dialog" | "sidebar";
   labels: {
     completedTasksTitle: string;
+    conversationTitle: string;
+    closeSidebar: string;
     waitingRequestId: string;
     emptyTasks: string;
     backendUnavailable: string;
@@ -299,14 +310,48 @@ type RunWorkspaceSnapshot = {
     groups: RunWorkspaceGroup[];
   };
   session: RunDialogSnapshot | null;
+  drawer?: {
+    open: boolean;
+    notice?: string;
+    sections: Array<{
+      id: "running" | "completed";
+      title: string;
+      collapsed: boolean;
+      groups: RunWorkspaceGroup[];
+    }>;
+  };
+  badges?: {
+    waitingCount: number;
+  };
+  contextHint?: {
+    itemLabel?: string;
+    hasRelated: boolean;
+    tooltip?: string;
+  };
+  navigation?: {
+    activeMode: RightShellMode;
+    canSwitchToItem: boolean;
+    canSwitchToNotes: boolean;
+  };
 };
 
 type RunWorkspaceState = {
-  dialog?: DialogHelper;
+  hostMode: "dialog" | "sidebar";
+  bridgeType: "run-dialog" | "skillrunner-sidebar";
+  hostWindow: Window | null;
   frameWindow: Window | null;
+  alertWindow: Window | null;
+  focusHost?: () => void;
+  closeHost?: () => void;
+  isHostAlive?: () => boolean;
   removeMessageListener?: () => void;
   unsubscribeTasks?: () => void;
   unsubscribeBackendHealth?: () => void;
+  decorateSnapshot?: (snapshot: RunWorkspaceSnapshot) => RunWorkspaceSnapshot;
+  resolveSidebarSelectionContext?: () => SkillRunnerSidebarContext | null;
+  handleHostAction?: (
+    envelope: RunDialogActionEnvelope,
+  ) => Promise<boolean> | boolean;
   refreshChain: Promise<void>;
   selectedTaskKey: string;
   requestedTaskKey: string;
@@ -332,7 +377,11 @@ type RunWorkspaceState = {
 const SKILLRUNNER_BACKEND_TYPE = "skillrunner";
 
 const runWorkspaceState: RunWorkspaceState = {
+  hostMode: "dialog",
+  bridgeType: "run-dialog",
+  hostWindow: null,
   frameWindow: null,
+  alertWindow: null,
   refreshChain: Promise.resolve(),
   selectedTaskKey: "",
   requestedTaskKey: "",
@@ -358,21 +407,6 @@ function trackRunDialogObserverTask<T>(task: Promise<T>) {
     );
   });
   return task;
-}
-
-function localize(
-  key: string,
-  fallback: string,
-  options?: { args?: Record<string, unknown> },
-) {
-  try {
-    const resolved = String(
-      options ? getString(key as any, options) : getString(key as any),
-    ).trim();
-    return resolved || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function compactError(error: unknown) {
@@ -1082,6 +1116,23 @@ function resolveRunWorkspaceTaskTitle(args: {
   return args.waitingRequestIdLabel;
 }
 
+function resolveRunWorkspaceTitle() {
+  return localize(
+    "task-dashboard-run-workspace-title",
+    "SkillRunner Workspace",
+  );
+}
+
+function isVisibleRunWorkspaceTaskForSelection(task: RunWorkspaceTaskItem) {
+  if (!task.selectable || !String(task.requestId || "").trim()) {
+    return false;
+  }
+  if (!task.terminal) {
+    return true;
+  }
+  return normalizeStatus(task.status, "running") === "succeeded";
+}
+
 function resolveRunWorkspaceStatusLabel(value: string) {
   const normalized = normalizeStatus(value, "running");
   if (normalized === "queued") {
@@ -1295,6 +1346,15 @@ async function buildRunWorkspaceModel() {
         }),
         selectable: requestId.length > 0,
         terminal: isTerminal(normalizedStatus),
+        inputUnitIdentity:
+          String((row as { inputUnitIdentity?: unknown }).inputUnitIdentity || "").trim() ||
+          undefined,
+        targetParentID: (() => {
+          const targetParentID = (row as { targetParentID?: unknown }).targetParentID;
+          return typeof targetParentID === "number"
+            ? Math.floor(targetParentID)
+            : undefined;
+        })(),
       };
       group.rows.push(task);
       index.set(key, {
@@ -1331,6 +1391,8 @@ async function buildRunWorkspaceModel() {
       title: target.requestId,
       selectable: true,
       terminal: false,
+      inputUnitIdentity: undefined,
+      targetParentID: undefined,
     };
     const existing = groupsMap.get(target.backend.id);
     if (existing) {
@@ -1399,14 +1461,14 @@ function pickRunWorkspaceSelectedTaskKey(args: {
   const requested = String(args.requestedTaskKey || "").trim();
   if (requested) {
     const row = args.index.get(requested);
-    if (row?.item.selectable) {
+    if (row && isVisibleRunWorkspaceTaskForSelection(row.item)) {
       return requested;
     }
   }
   const current = String(args.currentTaskKey || "").trim();
   if (current) {
     const row = args.index.get(current);
-    if (row?.item.selectable) {
+    if (row && isVisibleRunWorkspaceTaskForSelection(row.item)) {
       return current;
     }
   }
@@ -1415,12 +1477,12 @@ function pickRunWorkspaceSelectedTaskKey(args: {
       continue;
     }
     for (const task of group.activeTasks) {
-      if (task.selectable) {
+      if (isVisibleRunWorkspaceTaskForSelection(task)) {
         return task.key;
       }
     }
     for (const task of group.finishedTasks) {
-      if (task.selectable) {
+      if (isVisibleRunWorkspaceTaskForSelection(task)) {
         return task.key;
       }
     }
@@ -1428,27 +1490,57 @@ function pickRunWorkspaceSelectedTaskKey(args: {
   return "";
 }
 
-function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
+function pickRunWorkspaceSelectedTaskKeyForSidebar(args: {
+  groups: RunWorkspaceGroup[];
+  index: RunWorkspaceState["taskIndex"];
+  requestedTaskKey: string;
+  currentTaskKey: string;
+  selectionChanged?: boolean;
+  context?: SkillRunnerSidebarContext | null;
+}) {
+  const requested = String(args.requestedTaskKey || "").trim();
+  if (requested) {
+    const row = args.index.get(requested);
+    if (row && isVisibleRunWorkspaceTaskForSelection(row.item)) {
+      return requested;
+    }
+  }
+  if (args.selectionChanged) {
+    const nextFromSelection = pickSkillRunnerSidebarFocusedTaskKey({
+      groups: args.groups,
+      currentTaskKey: args.currentTaskKey,
+      context: args.context,
+    });
+    if (nextFromSelection) {
+      const row = args.index.get(nextFromSelection);
+      if (row && isVisibleRunWorkspaceTaskForSelection(row.item)) {
+        return nextFromSelection;
+      }
+    }
+  }
+  return pickRunWorkspaceSelectedTaskKey({
+    groups: args.groups,
+    index: args.index,
+    requestedTaskKey: "",
+    currentTaskKey: args.currentTaskKey,
+  });
+}
+
+function buildRunDialogSnapshot(
+  entry: RunDialogEntry,
+  displayTitle?: string,
+): RunDialogSnapshot {
   const pending = entry.session.pendingInteraction;
   const pendingAuth = entry.session.pendingAuth;
   const displayMessages = buildRunDialogDisplayMessages(entry.session.messages);
   const normalizedStatus = normalizeStatus(entry.session.status, "running");
+  const backendDisplayName = resolveBackendDisplayName(
+    entry.backend.id,
+    entry.backend.displayName,
+  );
   return {
-    title: localize(
-      "task-dashboard-run-dialog-title",
-      "Run Details: {requestId}",
-      {
-        args: { requestId: entry.requestId },
-      },
-    ),
-    backendTitle: localize("task-dashboard-skillrunner-title", "SkillRunner Backend: {id}", {
-      args: {
-        id: resolveBackendDisplayName(
-          entry.backend.id,
-          entry.backend.displayName,
-        ),
-      },
-    }),
+    title: String(displayTitle || "").trim() || resolveRunWorkspaceTitle(),
+    backendTitle: backendDisplayName,
     requestId: entry.requestId,
     status: normalizedStatus,
     statusSemantics: {
@@ -1499,16 +1591,12 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
         : {},
     })),
     labels: {
+      backend: localize("task-dashboard-run-backend", "Backend"),
       requestId: localize("task-dashboard-run-request-id", "Request ID"),
       status: localize("task-manager-column-status", "Status"),
       engine: localize("task-dashboard-run-engine", "Engine"),
       model: localize("task-dashboard-run-model", "Model"),
       updatedAt: localize("task-dashboard-run-updated-at", "Updated At"),
-      pendingOwner: localize("task-dashboard-run-pending-owner", "Pending Owner"),
-      pendingInteractionId: localize(
-        "task-dashboard-run-pending-interaction-id",
-        "Pending Interaction ID",
-      ),
       pendingKind: localize("task-dashboard-run-pending-kind", "Pending Kind"),
       pendingPrompt: localize("task-dashboard-run-pending-prompt", "Prompt"),
       loading: localize("task-dashboard-run-loading", "Loading"),
@@ -1708,18 +1796,25 @@ function buildRunDialogSnapshot(entry: RunDialogEntry): RunDialogSnapshot {
   };
 }
 
-function buildRunWorkspaceSnapshot(session: RunDialogSnapshot | null): RunWorkspaceSnapshot {
+function buildRunWorkspaceSnapshot(
+  session: RunDialogSnapshot | null,
+  selectedTask?: RunWorkspaceTaskItem,
+): RunWorkspaceSnapshot {
   return {
-    title: localize("task-dashboard-run-dialog-title", "Run Details: {requestId}", {
-      args: {
-        requestId: session?.requestId || "",
-      },
-    }),
+    title:
+      String(selectedTask?.title || "").trim() ||
+      session?.title ||
+      resolveRunWorkspaceTitle(),
     labels: {
       completedTasksTitle: localize(
         "task-dashboard-run-completed-tasks-title",
         "Completed Tasks",
       ),
+      conversationTitle: localize(
+        "task-dashboard-run-conversation-title",
+        "Conversation",
+      ),
+      closeSidebar: localize("task-manager-close", "Close"),
       waitingRequestId: localize(
         "task-dashboard-run-waiting-request-id",
         "Waiting for requestId",
@@ -1741,23 +1836,127 @@ function buildRunWorkspaceSnapshot(session: RunDialogSnapshot | null): RunWorksp
   };
 }
 
-function pushSnapshot(messageType: "run-dialog:init" | "run-dialog:snapshot") {
+function resolveRunWorkspaceBridgeMessageType(
+  phase: "init" | "snapshot" | "action",
+) {
+  return `${runWorkspaceState.bridgeType}:${phase}` as
+    | "run-dialog:init"
+    | "run-dialog:snapshot"
+    | "run-dialog:action"
+    | "skillrunner-sidebar:init"
+    | "skillrunner-sidebar:snapshot"
+    | "skillrunner-sidebar:action";
+}
+
+function isRunWorkspaceHostAlive() {
+  if (typeof runWorkspaceState.isHostAlive === "function") {
+    return runWorkspaceState.isHostAlive();
+  }
+  return isWindowAlive(runWorkspaceState.hostWindow);
+}
+
+function pushSnapshot(messageType: "init" | "snapshot") {
   if (!runWorkspaceState.frameWindow) {
     return;
   }
   if (runWorkspaceState.currentEntry) {
     syncSessionStateFromLedger(runWorkspaceState.currentEntry);
   }
+  const selectedTask =
+    runWorkspaceState.taskIndex.get(runWorkspaceState.selectedTaskKey)?.item;
   const session = runWorkspaceState.currentEntry
-    ? buildRunDialogSnapshot(runWorkspaceState.currentEntry)
+    ? buildRunDialogSnapshot(runWorkspaceState.currentEntry, selectedTask?.title)
     : null;
+  const snapshot = runWorkspaceState.decorateSnapshot
+    ? runWorkspaceState.decorateSnapshot(
+        buildRunWorkspaceSnapshot(session, selectedTask),
+      )
+    : buildRunWorkspaceSnapshot(session, selectedTask);
   runWorkspaceState.frameWindow.postMessage(
     {
-      type: messageType,
-      payload: buildRunWorkspaceSnapshot(session),
+      type: resolveRunWorkspaceBridgeMessageType(messageType),
+      payload: snapshot,
     },
     "*",
   );
+}
+
+function clearRunWorkspaceHostState() {
+  if (runWorkspaceState.removeMessageListener) {
+    runWorkspaceState.removeMessageListener();
+    runWorkspaceState.removeMessageListener = undefined;
+  }
+  runWorkspaceState.hostWindow = null;
+  runWorkspaceState.frameWindow = null;
+  runWorkspaceState.alertWindow = null;
+  runWorkspaceState.focusHost = undefined;
+  runWorkspaceState.closeHost = undefined;
+  runWorkspaceState.isHostAlive = undefined;
+  runWorkspaceState.decorateSnapshot = undefined;
+  runWorkspaceState.resolveSidebarSelectionContext = undefined;
+  runWorkspaceState.handleHostAction = undefined;
+  runWorkspaceState.hostMode = "dialog";
+  runWorkspaceState.bridgeType = "run-dialog";
+}
+
+function ensureRunWorkspaceSubscriptions() {
+  if (!runWorkspaceState.unsubscribeTasks) {
+    runWorkspaceState.unsubscribeTasks = subscribeWorkflowTasks(() => {
+      void refreshWorkspaceSnapshot();
+    });
+  }
+  if (!runWorkspaceState.unsubscribeBackendHealth) {
+    runWorkspaceState.unsubscribeBackendHealth =
+      subscribeSkillRunnerBackendHealth(() => {
+        void refreshWorkspaceSnapshot();
+      });
+  }
+}
+
+function attachRunWorkspaceHost(args: {
+  hostMode: "dialog" | "sidebar";
+  bridgeType: "run-dialog" | "skillrunner-sidebar";
+  hostWindow: Window;
+  frameWindow: Window | null;
+  alertWindow?: Window | null;
+  focusHost?: () => void;
+  closeHost?: () => void;
+  isHostAlive?: () => boolean;
+  decorateSnapshot?: (snapshot: RunWorkspaceSnapshot) => RunWorkspaceSnapshot;
+  resolveSelectionContext?: () => SkillRunnerSidebarContext | null;
+  handleHostAction?: (
+    envelope: RunDialogActionEnvelope,
+  ) => Promise<boolean> | boolean;
+}) {
+  if (runWorkspaceState.removeMessageListener) {
+    runWorkspaceState.removeMessageListener();
+    runWorkspaceState.removeMessageListener = undefined;
+  }
+  runWorkspaceState.hostMode = args.hostMode;
+  runWorkspaceState.bridgeType = args.bridgeType;
+  runWorkspaceState.hostWindow = args.hostWindow;
+  runWorkspaceState.frameWindow = args.frameWindow;
+  runWorkspaceState.alertWindow = args.alertWindow || args.hostWindow;
+  runWorkspaceState.focusHost = args.focusHost;
+  runWorkspaceState.closeHost = args.closeHost;
+  runWorkspaceState.isHostAlive = args.isHostAlive;
+  runWorkspaceState.decorateSnapshot = args.decorateSnapshot;
+  runWorkspaceState.resolveSidebarSelectionContext = args.resolveSelectionContext;
+  runWorkspaceState.handleHostAction = args.handleHostAction;
+
+  const expectedType = resolveRunWorkspaceBridgeMessageType("action");
+  const onMessage = (event: MessageEvent) => {
+    const data = event.data as { type?: unknown };
+    if (!data || data.type !== expectedType) {
+      return;
+    }
+    void handleRunWorkspaceAction(data as RunDialogActionEnvelope);
+  };
+  args.hostWindow.addEventListener("message", onMessage);
+  runWorkspaceState.removeMessageListener = () => {
+    args.hostWindow.removeEventListener("message", onMessage);
+  };
+  ensureRunWorkspaceSubscriptions();
 }
 
 function resolveBackendUnavailableMessage(backendDisplayName: string) {
@@ -1778,21 +1977,28 @@ async function startRunObserver(entry: RunDialogEntry) {
   let stopPromise: Promise<void> | undefined;
   let refreshChain: Promise<void> = Promise.resolve();
   let runLoopTask: Promise<void> | undefined;
+  let chatStreamAbortController: AbortController | null = null;
   let chatRetryDelayMs = 800;
   let waitingAuthObserverTimer: ReturnType<typeof setInterval> | undefined;
   let waitingAuthObserverInFlight = false;
   let restartingSessionSync = false;
+  const supportsAbortController = typeof AbortController === "function";
   const client = buildSkillRunnerManagementClient({
     backend: entry.backend,
-    alertWindow: entry.dialog.window,
+    alertWindow: entry.alertWindow || undefined,
     localize,
   });
   entry.session.loading = true;
   entry.session.error = undefined;
-  pushSnapshot("run-dialog:snapshot");
+  pushSnapshot("snapshot");
 
   const isObserverActive = (generation: number) =>
     !stopped && generation === observerGeneration;
+
+  const abortCurrentChatStream = () => {
+    chatStreamAbortController?.abort();
+    chatStreamAbortController = null;
+  };
 
   const syncHistory = async () => {
     const generation = observerGeneration;
@@ -1953,7 +2159,7 @@ async function startRunObserver(entry: RunDialogEntry) {
     } finally {
       restartingSessionSync = false;
       if (!stopped) {
-        pushSnapshot("run-dialog:snapshot");
+        pushSnapshot("snapshot");
       }
     }
   };
@@ -1997,10 +2203,10 @@ async function startRunObserver(entry: RunDialogEntry) {
             await restartSessionSyncAfterWaitingExit();
             return;
           }
-          pushSnapshot("run-dialog:snapshot");
+          pushSnapshot("snapshot");
         } catch (error) {
           entry.session.error = compactError(error);
-          pushSnapshot("run-dialog:snapshot");
+          pushSnapshot("snapshot");
         } finally {
           waitingAuthObserverInFlight = false;
         }
@@ -2031,7 +2237,7 @@ async function startRunObserver(entry: RunDialogEntry) {
       if (!stopped) {
         entry.session.loading = false;
         syncWaitingAuthObserver();
-        pushSnapshot("run-dialog:snapshot");
+        pushSnapshot("snapshot");
       }
     }
   };
@@ -2051,7 +2257,7 @@ async function startRunObserver(entry: RunDialogEntry) {
       await syncRunMeta();
       await syncPendingState();
       await syncHistory();
-      pushSnapshot("run-dialog:snapshot");
+      pushSnapshot("snapshot");
     });
     return refreshChain;
   };
@@ -2081,7 +2287,7 @@ async function startRunObserver(entry: RunDialogEntry) {
           entry.session.error = undefined;
         }
         syncWaitingAuthObserver();
-        pushSnapshot("run-dialog:snapshot");
+        pushSnapshot("snapshot");
       });
     },
   });
@@ -2140,7 +2346,7 @@ async function startRunObserver(entry: RunDialogEntry) {
     if (entry.session.messages.length > 500) {
       entry.session.messages = entry.session.messages.slice(-500);
     }
-    pushSnapshot("run-dialog:snapshot");
+    pushSnapshot("snapshot");
   };
 
   const runLoop = async () => {
@@ -2158,22 +2364,34 @@ async function startRunObserver(entry: RunDialogEntry) {
         } finally {
           initialized = true;
           entry.session.loading = false;
-          pushSnapshot("run-dialog:snapshot");
+          pushSnapshot("snapshot");
         }
       }
       try {
+        if (supportsAbortController) {
+          chatStreamAbortController = new AbortController();
+        }
         await client.streamRunChat({
           requestId: entry.requestId,
           cursor: entry.session.lastSeq,
           onFrame: handleSseFrame,
+          signal: chatStreamAbortController?.signal,
         });
+        chatStreamAbortController = null;
         chatRetryDelayMs = 800;
         if (!stopped && !isTerminalStatus(entry.session.status)) {
           await syncHistory();
         }
       } catch (error) {
+        chatStreamAbortController = null;
+        if (isAbortErrorLike(error)) {
+          if (stopped) {
+            break;
+          }
+          continue;
+        }
         entry.session.error = compactError(error);
-        pushSnapshot("run-dialog:snapshot");
+        pushSnapshot("snapshot");
         if (stopped) {
           break;
         }
@@ -2190,15 +2408,20 @@ async function startRunObserver(entry: RunDialogEntry) {
     stopPromise = (async () => {
       stopped = true;
       observerGeneration += 1;
+      abortCurrentChatStream();
       stopWaitingAuthObserver();
       entry.unsubscribeSessionState?.();
       entry.unsubscribeSessionState = undefined;
       entry.refreshState = undefined;
       entry.refreshDisplay = undefined;
-      await Promise.allSettled([
-        runLoopTask ?? Promise.resolve(),
-        refreshChain.catch(() => {}),
-      ]);
+      if (supportsAbortController) {
+        await Promise.allSettled([
+          runLoopTask ?? Promise.resolve(),
+          refreshChain.catch(() => {}),
+        ]);
+        return;
+      }
+      await refreshChain.catch(() => {});
     })();
     await stopPromise;
   };
@@ -2214,29 +2437,29 @@ async function handleRunDialogActionForEntry(
     return;
   }
   if (action === "ready") {
-    pushSnapshot("run-dialog:init");
+    pushSnapshot("init");
     return;
   }
   if (action === "close-dialog") {
-    entry.dialog.window?.close();
+    runWorkspaceState.closeHost?.();
     return;
   }
   if (action === "cancel-run") {
     if (isTerminalStatus(entry.session.status)) {
-      pushSnapshot("run-dialog:snapshot");
+      pushSnapshot("snapshot");
       return;
     }
     try {
       const client = buildSkillRunnerManagementClient({
         backend: entry.backend,
-        alertWindow: entry.dialog.window,
+        alertWindow: entry.alertWindow || undefined,
         localize,
       });
       await client.cancelRun({
         requestId: entry.requestId,
       });
     } catch (error) {
-      entry.dialog.window?.alert?.(
+      entry.alertWindow?.alert?.(
         localize(
           "task-dashboard-skillrunner-cancel-failed",
           "Failed to cancel run: {error}",
@@ -2248,7 +2471,7 @@ async function handleRunDialogActionForEntry(
         ),
       );
     }
-    pushSnapshot("run-dialog:snapshot");
+    pushSnapshot("snapshot");
     return;
   }
   if (action === "reply-run") {
@@ -2272,7 +2495,7 @@ async function handleRunDialogActionForEntry(
       try {
         const client = buildSkillRunnerManagementClient({
           backend: entry.backend,
-          alertWindow: entry.dialog.window,
+          alertWindow: entry.alertWindow || undefined,
           localize,
         });
         await client.submitReply({
@@ -2295,7 +2518,7 @@ async function handleRunDialogActionForEntry(
         });
         submitted = true;
       } catch (error) {
-        entry.dialog.window?.alert?.(
+        entry.alertWindow?.alert?.(
           localize(
             "task-dashboard-skillrunner-reply-failed",
             "Failed to submit reply: {error}",
@@ -2311,7 +2534,7 @@ async function handleRunDialogActionForEntry(
         await restartRunDialogEntrySessionSyncAfterWaitingExit(entry);
         await entry.refreshDisplay();
       } else {
-        pushSnapshot("run-dialog:snapshot");
+        pushSnapshot("snapshot");
       }
       return;
     }
@@ -2340,7 +2563,7 @@ async function handleRunDialogActionForEntry(
         ? String(resolvedResponse.response.text || "").trim()
         : "";
     if (!resolvedResponse.hasResponse && !responseText) {
-      entry.dialog.window?.alert?.(
+      entry.alertWindow?.alert?.(
         localize(
           "task-dashboard-skillrunner-reply-required",
           "Reply text is required.",
@@ -2352,7 +2575,7 @@ async function handleRunDialogActionForEntry(
     try {
       const client = buildSkillRunnerManagementClient({
         backend: entry.backend,
-        alertWindow: entry.dialog.window,
+        alertWindow: entry.alertWindow || undefined,
         localize,
       });
       await client.submitReply({
@@ -2365,7 +2588,7 @@ async function handleRunDialogActionForEntry(
       });
       submitted = true;
     } catch (error) {
-      entry.dialog.window?.alert?.(
+      entry.alertWindow?.alert?.(
         localize(
           "task-dashboard-skillrunner-reply-failed",
           "Failed to submit reply: {error}",
@@ -2384,7 +2607,7 @@ async function handleRunDialogActionForEntry(
       });
       await entry.refreshDisplay();
     } else {
-      pushSnapshot("run-dialog:snapshot");
+      pushSnapshot("snapshot");
     }
     return;
   }
@@ -2412,7 +2635,7 @@ async function handleRunDialogActionForEntry(
     try {
       const client = buildSkillRunnerManagementClient({
         backend: entry.backend,
-        alertWindow: entry.dialog.window,
+        alertWindow: entry.alertWindow || undefined,
         localize,
       });
       await client.submitAuthImport({
@@ -2424,7 +2647,7 @@ async function handleRunDialogActionForEntry(
       });
       imported = true;
     } catch (error) {
-      entry.dialog.window?.alert?.(
+      entry.alertWindow?.alert?.(
         localize(
           "task-dashboard-run-auth-import-failed",
           "Failed to import auth files: {error}",
@@ -2440,7 +2663,7 @@ async function handleRunDialogActionForEntry(
       await restartRunDialogEntrySessionSyncAfterWaitingExit(entry);
       await entry.refreshDisplay();
     } else {
-      pushSnapshot("run-dialog:snapshot");
+      pushSnapshot("snapshot");
     }
   }
 }
@@ -2462,12 +2685,8 @@ async function stopRunDialogEntryObserver(entry: RunDialogEntry | undefined) {
 }
 
 async function shutdownRunDialogRuntime() {
-  if (isWindowAlive(runWorkspaceState.dialog?.window)) {
-    runWorkspaceState.dialog?.window?.close();
-  }
-  if (runWorkspaceState.removeMessageListener) {
-    runWorkspaceState.removeMessageListener();
-    runWorkspaceState.removeMessageListener = undefined;
+  if (isRunWorkspaceHostAlive()) {
+    runWorkspaceState.closeHost?.();
   }
   if (runWorkspaceState.unsubscribeTasks) {
     runWorkspaceState.unsubscribeTasks();
@@ -2487,7 +2706,7 @@ async function shutdownRunDialogRuntime() {
   runWorkspaceState.taskIndex.clear();
   runWorkspaceState.groupCollapsed.clear();
   runWorkspaceState.finishedCollapsed.clear();
-  runWorkspaceState.dialog = undefined;
+  clearRunWorkspaceHostState();
   runDialogMap.clear();
 }
 
@@ -2497,13 +2716,11 @@ function buildRunDialogEntry(args: {
   requestId: string;
   initialStatus?: string;
 }): RunDialogEntry {
-  const dialog = runWorkspaceState.dialog as DialogHelper;
   return {
     key: args.key,
     backend: args.backend,
     requestId: args.requestId,
-    dialog,
-    frameWindow: runWorkspaceState.frameWindow,
+    alertWindow: runWorkspaceState.alertWindow,
     session: {
       requestId: args.requestId,
       status: normalizeStatus(args.initialStatus, "running"),
@@ -2521,7 +2738,7 @@ async function selectWorkspaceTask(taskKey: string) {
     await stopRunDialogEntryObserver(runWorkspaceState.currentEntry);
     runWorkspaceState.currentEntry = undefined;
     runWorkspaceState.selectedTaskKey = "";
-    pushSnapshot("run-dialog:snapshot");
+    pushSnapshot("snapshot");
     return;
   }
   const target = runWorkspaceState.taskIndex.get(key);
@@ -2551,18 +2768,18 @@ async function selectWorkspaceTask(taskKey: string) {
       requestId,
       initialStatus: target.item.status,
     });
-  entry.dialog = runWorkspaceState.dialog as DialogHelper;
-  entry.frameWindow = runWorkspaceState.frameWindow;
+  entry.alertWindow = runWorkspaceState.alertWindow;
   runDialogMap.set(key, entry);
   runWorkspaceState.currentEntry = entry;
   runWorkspaceState.selectedTaskKey = key;
-  pushSnapshot("run-dialog:snapshot");
+  pushSnapshot("snapshot");
   entry.stopObserver = await startRunObserver(entry);
 }
 
 async function refreshWorkspaceSnapshot(args?: {
   forceInit?: boolean;
   requestedTaskKey?: string;
+  selectionChanged?: boolean;
 }) {
   if (args?.requestedTaskKey) {
     runWorkspaceState.requestedTaskKey = String(args.requestedTaskKey || "").trim();
@@ -2577,15 +2794,29 @@ async function refreshWorkspaceSnapshot(args?: {
     ) {
       runWorkspaceState.latestOpenTarget = undefined;
     }
-    const nextSelected = pickRunWorkspaceSelectedTaskKey({
-      groups: model.groups,
-      index: model.index,
-      requestedTaskKey: runWorkspaceState.requestedTaskKey,
-      currentTaskKey: runWorkspaceState.selectedTaskKey,
-    });
+    const selectionContext =
+      runWorkspaceState.hostMode === "sidebar"
+        ? runWorkspaceState.resolveSidebarSelectionContext?.() || null
+        : null;
+    const nextSelected =
+      runWorkspaceState.hostMode === "sidebar"
+        ? pickRunWorkspaceSelectedTaskKeyForSidebar({
+            groups: model.groups,
+            index: model.index,
+            requestedTaskKey: runWorkspaceState.requestedTaskKey,
+            currentTaskKey: runWorkspaceState.selectedTaskKey,
+            selectionChanged: args?.selectionChanged === true,
+            context: selectionContext,
+          })
+        : pickRunWorkspaceSelectedTaskKey({
+            groups: model.groups,
+            index: model.index,
+            requestedTaskKey: runWorkspaceState.requestedTaskKey,
+            currentTaskKey: runWorkspaceState.selectedTaskKey,
+          });
     runWorkspaceState.requestedTaskKey = "";
     await selectWorkspaceTask(nextSelected);
-    pushSnapshot(args?.forceInit ? "run-dialog:init" : "run-dialog:snapshot");
+    pushSnapshot(args?.forceInit ? "init" : "snapshot");
   });
   await runWorkspaceState.refreshChain;
 }
@@ -2635,6 +2866,21 @@ async function handleRunWorkspaceAction(envelope: RunDialogActionEnvelope) {
     }
     return;
   }
+  if (action === "toggle-drawer-section") {
+    if (runWorkspaceState.handleHostAction) {
+      const handled = await runWorkspaceState.handleHostAction(envelope);
+      if (handled) {
+        return;
+      }
+    }
+    return;
+  }
+  if (runWorkspaceState.handleHostAction) {
+    const handled = await runWorkspaceState.handleHostAction(envelope);
+    if (handled) {
+      return;
+    }
+  }
   const entry = runWorkspaceState.currentEntry;
   if (!entry) {
     return;
@@ -2642,36 +2888,102 @@ async function handleRunWorkspaceAction(envelope: RunDialogActionEnvelope) {
   await handleRunDialogActionForEntry(entry, envelope);
 }
 
-export async function openSkillRunnerRunDialog(args: {
-  backend: BackendInstance;
-  requestId: string;
-}) {
-  const backendId = String(args.backend.id || "").trim();
-  const requestId = String(args.requestId || "").trim();
-  if (!backendId || !requestId) {
-    return;
-  }
-  if (isSkillRunnerBackendReconcileFlagged(backendId)) {
-    showWorkflowToast({
-      text: resolveBackendUnavailableMessage(
-        resolveBackendDisplayName(backendId, args.backend.displayName),
-      ),
-      type: "error",
-    });
-    return;
-  }
-  const dialogKey = resolveRunDialogKey(backendId, requestId);
-  runWorkspaceState.latestOpenTarget = {
-    key: dialogKey,
-    backend: args.backend,
-    requestId,
-  };
-  runWorkspaceState.requestedTaskKey = dialogKey;
+export async function dispatchRunWorkspaceAction(
+  envelope: RunDialogActionEnvelope,
+) {
+  await handleRunWorkspaceAction(envelope);
+}
 
-  if (isWindowAlive(runWorkspaceState.dialog?.window)) {
-    runWorkspaceState.dialog?.window?.focus();
+export async function attachSkillRunnerSidebarHost(args: {
+  hostWindow: Window;
+  frameWindow: Window | null;
+  alertWindow?: Window | null;
+  focusHost?: () => void;
+  isHostAlive?: () => boolean;
+  decorateSnapshot?: (snapshot: RunWorkspaceSnapshot) => RunWorkspaceSnapshot;
+  resolveSelectionContext?: () => SkillRunnerSidebarContext | null;
+  handleHostAction?: (
+    envelope: RunDialogActionEnvelope,
+  ) => Promise<boolean> | boolean;
+}) {
+  attachRunWorkspaceHost({
+    hostMode: "sidebar",
+    bridgeType: "skillrunner-sidebar",
+    hostWindow: args.hostWindow,
+    frameWindow: args.frameWindow,
+    alertWindow: args.alertWindow,
+    focusHost: args.focusHost,
+    isHostAlive: args.isHostAlive,
+    decorateSnapshot: args.decorateSnapshot,
+    resolveSelectionContext: args.resolveSelectionContext,
+    handleHostAction: args.handleHostAction,
+  });
+  await refreshWorkspaceSnapshot({
+    forceInit: true,
+    selectionChanged: true,
+  });
+}
+
+export async function focusSkillRunnerWorkspace(args?: {
+  backend?: BackendInstance;
+  requestId?: string;
+  selectionChanged?: boolean;
+}) {
+  const backendId = String(args?.backend?.id || "").trim();
+  const requestId = String(args?.requestId || "").trim();
+  if (backendId && requestId && args?.backend) {
+    runWorkspaceState.latestOpenTarget = {
+      key: resolveRunDialogKey(backendId, requestId),
+      backend: args.backend,
+      requestId,
+    };
+    runWorkspaceState.requestedTaskKey = resolveRunDialogKey(
+      backendId,
+      requestId,
+    );
+  }
+  if (isRunWorkspaceHostAlive()) {
+    runWorkspaceState.focusHost?.();
     await refreshWorkspaceSnapshot({
-      requestedTaskKey: dialogKey,
+      requestedTaskKey: runWorkspaceState.requestedTaskKey || undefined,
+      selectionChanged: args?.selectionChanged === true,
+    });
+  }
+}
+
+export async function openSkillRunnerRunDialog(args?: {
+  backend?: BackendInstance;
+  requestId?: string;
+}) {
+  const backend = args?.backend;
+  const backendId = String(backend?.id || "").trim();
+  const requestId = String(args?.requestId || "").trim();
+  if (backendId && requestId) {
+    if (isSkillRunnerBackendReconcileFlagged(backendId)) {
+      showWorkflowToast({
+        text: resolveBackendUnavailableMessage(
+          resolveBackendDisplayName(backendId, backend?.displayName),
+        ),
+        type: "error",
+      });
+      return;
+    }
+    const dialogKey = resolveRunDialogKey(backendId, requestId);
+    runWorkspaceState.latestOpenTarget = {
+      key: dialogKey,
+      backend: backend as BackendInstance,
+      requestId,
+    };
+    runWorkspaceState.requestedTaskKey = dialogKey;
+  }
+
+  if (isRunWorkspaceHostAlive() && runWorkspaceState.hostMode === "dialog") {
+    runWorkspaceState.focusHost?.();
+    await refreshWorkspaceSnapshot({
+      requestedTaskKey:
+        backendId && requestId
+          ? resolveRunDialogKey(backendId, requestId)
+          : undefined,
     });
     return;
   }
@@ -2698,11 +3010,10 @@ export async function openSkillRunnerRunDialog(args: {
       root.innerHTML = "";
       const frame = createRunDialogFrame(doc, pageUrl);
       root.appendChild(frame);
-      runWorkspaceState.frameWindow = resolveFrameWindow(frame);
       frame.addEventListener("load", () => {
-        runWorkspaceState.frameWindow = resolveFrameWindow(frame);
-        if (!runWorkspaceState.frameWindow) {
-          runWorkspaceState.dialog?.window?.alert?.(
+        const frameWindow = resolveFrameWindow(frame);
+        if (!frameWindow) {
+          dialogWindow.alert?.(
             localize(
               "task-dashboard-open-management-failed",
               "Run dialog host failed to resolve frame window.",
@@ -2713,54 +3024,40 @@ export async function openSkillRunnerRunDialog(args: {
           );
           return;
         }
+        attachRunWorkspaceHost({
+          hostMode: "dialog",
+          bridgeType: "run-dialog",
+          hostWindow: dialogWindow,
+          frameWindow,
+          alertWindow: dialogWindow,
+          focusHost: () => {
+            dialogWindow.focus();
+          },
+          closeHost: () => {
+            dialogWindow.close();
+          },
+          isHostAlive: () => isWindowAlive(dialogWindow),
+        });
         void refreshWorkspaceSnapshot({
           forceInit: true,
-          requestedTaskKey: dialogKey,
+          requestedTaskKey:
+            backendId && requestId
+              ? resolveRunDialogKey(backendId, requestId)
+              : undefined,
         });
       });
-
-      const onMessage = (event: MessageEvent) => {
-        const data = event.data as { type?: unknown };
-        if (!data || data.type !== "run-dialog:action") {
-          return;
-        }
-        void handleRunWorkspaceAction(data as RunDialogActionEnvelope);
-      };
-      dialogWindow.addEventListener("message", onMessage);
-      runWorkspaceState.removeMessageListener = () => {
-        dialogWindow.removeEventListener("message", onMessage);
-      };
-      runWorkspaceState.unsubscribeTasks = subscribeWorkflowTasks(() => {
-        void refreshWorkspaceSnapshot();
-      });
-      runWorkspaceState.unsubscribeBackendHealth = subscribeSkillRunnerBackendHealth(() => {
-        void refreshWorkspaceSnapshot();
-      });
-      pushSnapshot("run-dialog:snapshot");
+      pushSnapshot("snapshot");
     },
     unloadCallback: () => {
-      if (runWorkspaceState.removeMessageListener) {
-        runWorkspaceState.removeMessageListener();
-        runWorkspaceState.removeMessageListener = undefined;
-      }
-      if (runWorkspaceState.unsubscribeTasks) {
-        runWorkspaceState.unsubscribeTasks();
-        runWorkspaceState.unsubscribeTasks = undefined;
-      }
-      if (runWorkspaceState.unsubscribeBackendHealth) {
-        runWorkspaceState.unsubscribeBackendHealth();
-        runWorkspaceState.unsubscribeBackendHealth = undefined;
-      }
       void stopRunDialogEntryObserver(runWorkspaceState.currentEntry);
       runWorkspaceState.currentEntry = undefined;
-      runWorkspaceState.frameWindow = null;
       runWorkspaceState.selectedTaskKey = "";
       runWorkspaceState.requestedTaskKey = "";
       runWorkspaceState.latestOpenTarget = undefined;
       runWorkspaceState.groups = [];
       runWorkspaceState.taskIndex.clear();
       runDialogMap.clear();
-      runWorkspaceState.dialog = undefined;
+      clearRunWorkspaceHostState();
     },
   };
 
@@ -2780,7 +3077,6 @@ export async function openSkillRunnerRunDialog(args: {
     .addButton(localize("task-manager-close", "Close"), "close")
     .setDialogData(dialogData);
   dialogHelper = dialogBuilder.open(title);
-  runWorkspaceState.dialog = dialogHelper;
 
   await (dialogData as { unloadLock?: { promise?: Promise<void> } }).unloadLock
     ?.promise;

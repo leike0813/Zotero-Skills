@@ -3,39 +3,71 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Run Details</title>
+    <title>SkillRunner Workspace</title>
     <link rel="stylesheet" href="./run-dialog.css" />
     <link rel="stylesheet" href="./vendor/katex/katex.min.css" />
   </head>
   <body>
     <div id="run-root" class="workspace-root">
-      <aside class="workspace-sidebar">
+      <div id="workspace-backdrop" class="workspace-backdrop hidden"></div>
+      <aside id="workspace-sidebar" class="workspace-sidebar">
+        <div class="workspace-sidebar-header">
+          <div class="section-title">Sessions</div>
+          <button id="workspace-drawer-close" class="btn hidden" type="button">Close</button>
+        </div>
         <div id="workspace-empty" class="workspace-empty hidden">No SkillRunner tasks.</div>
+        <div id="workspace-context-note" class="workspace-context-note hidden"></div>
         <div id="workspace-groups" class="workspace-groups"></div>
       </aside>
 
       <main class="workspace-main">
-        <section class="card">
-          <div class="header-row">
-            <div>
-              <h1 id="run-title" class="title">Run Details</h1>
-              <div id="run-subtitle" class="subtitle"></div>
+        <section id="workspace-global-actions" class="workspace-global-actions hidden">
+          <button id="sessions-toggle-btn" class="btn hidden" type="button">Sessions</button>
+          <button id="close-sidebar-btn" class="btn hidden" type="button">Close</button>
+        </section>
+        <section class="card banner-card">
+          <div class="banner-top-row">
+            <div class="title-cluster">
+              <h1 id="run-title" class="title">SkillRunner Workspace</h1>
+              <span
+                id="context-indicator"
+                class="context-indicator hidden"
+                aria-label="Related to current selection"
+                title=""
+              ></span>
             </div>
-            <button id="cancel-run-btn" class="btn" type="button">Cancel Run</button>
+            <div class="header-actions">
+              <button id="cancel-run-btn" class="btn btn-danger" type="button">Cancel Run</button>
+            </div>
           </div>
-          <div class="meta-grid">
-            <div><strong id="meta-label-status">Status</strong> <span id="run-status">-</span></div>
-            <div><strong id="meta-label-engine">Engine</strong> <span id="run-engine">-</span></div>
-            <div><strong id="meta-label-model">Model</strong> <span id="run-model">-</span></div>
-            <div><strong id="meta-label-pending-id">Pending Interaction ID</strong> <span id="pending-id">-</span></div>
-            <div><strong id="meta-label-updated-at">Updated At</strong> <span id="run-updated-at">-</span></div>
-            <div><strong id="meta-label-pending-owner">Pending Owner</strong> <span id="run-pending-owner">-</span></div>
+          <div id="run-subtitle" class="subtitle"></div>
+          <div id="run-meta" class="meta-strip">
+            <div id="meta-backend-chip" class="meta-chip hidden">
+              <strong id="meta-label-backend">Backend</strong>
+              <span id="run-backend">-</span>
+            </div>
+            <div id="meta-status-chip" class="meta-chip">
+              <strong id="meta-label-status">Status</strong>
+              <span id="run-status" class="status-badge">-</span>
+            </div>
+            <div id="meta-engine-chip" class="meta-chip hidden">
+              <strong id="meta-label-engine">Engine</strong>
+              <span id="run-engine">-</span>
+            </div>
+            <div id="meta-model-chip" class="meta-chip hidden">
+              <strong id="meta-label-model">Model</strong>
+              <span id="run-model">-</span>
+            </div>
+            <div id="meta-updated-chip" class="meta-chip hidden">
+              <strong id="meta-label-updated-at">Updated At</strong>
+              <span id="run-updated-at">-</span>
+            </div>
           </div>
         </section>
 
         <section class="card conversation-card">
           <div class="header-row chat-view-header">
-            <div class="section-title">Conversation</div>
+            <div id="conversation-title" class="section-title">Conversation</div>
             <div class="chat-view-toggle">
               <span class="muted">View</span>
               <button id="chat-mode-plain" class="btn" type="button" aria-pressed="true">Plain</button>

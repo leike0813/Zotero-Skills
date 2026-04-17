@@ -2,7 +2,10 @@
   const state = {
     snapshot: null,
     workspace: null,
+    workspaceEnvelope: null,
     workspaceLabels: null,
+    bridgePrefix: "run-dialog",
+    hostMode: "dialog",
     chatModel: null,
     chatDisplayMode: "plain",
     markdownParser: undefined,
@@ -11,18 +14,21 @@
     promptSig: "",
     authSig: "",
   };
+  let layoutSyncHandle = 0;
 
+  const runRootEl = document.getElementById("run-root");
   const titleEl = document.getElementById("run-title");
   const subtitleEl = document.getElementById("run-subtitle");
+  const contextIndicatorEl = document.getElementById("context-indicator");
+  const runBackendEl = document.getElementById("run-backend");
   const statusEl = document.getElementById("run-status");
   const runEngineEl = document.getElementById("run-engine");
   const runModelEl = document.getElementById("run-model");
-  const pendingIdEl = document.getElementById("pending-id");
   const updatedAtEl = document.getElementById("run-updated-at");
-  const pendingOwnerEl = document.getElementById("run-pending-owner");
   const cancelBtnEl = document.getElementById("cancel-run-btn");
 
   const chatEl = document.getElementById("chat-panel");
+  const conversationTitleEl = document.getElementById("conversation-title");
   const chatModePlainEl = document.getElementById("chat-mode-plain");
   const chatModeBubbleEl = document.getElementById("chat-mode-bubble");
   const thinkingCardEl = document.getElementById("thinking-card");
@@ -74,26 +80,77 @@
   const replyShortcutHintEl = document.getElementById("reply-shortcut-hint");
   const replyErrorEl = document.getElementById("reply-error");
 
+  const metaBackendChipEl = document.getElementById("meta-backend-chip");
+  const metaStatusChipEl = document.getElementById("meta-status-chip");
+  const metaEngineChipEl = document.getElementById("meta-engine-chip");
+  const metaModelChipEl = document.getElementById("meta-model-chip");
+  const metaUpdatedChipEl = document.getElementById("meta-updated-chip");
+  const metaBackendLabelEl = document.getElementById("meta-label-backend");
   const metaStatusLabelEl = document.getElementById("meta-label-status");
   const metaEngineLabelEl = document.getElementById("meta-label-engine");
   const metaModelLabelEl = document.getElementById("meta-label-model");
-  const metaPendingIdLabelEl = document.getElementById("meta-label-pending-id");
   const metaUpdatedAtLabelEl = document.getElementById("meta-label-updated-at");
-  const metaPendingOwnerLabelEl = document.getElementById("meta-label-pending-owner");
   const workspaceGroupsEl = document.getElementById("workspace-groups");
   const workspaceEmptyEl = document.getElementById("workspace-empty");
+  const workspaceContextNoteEl = document.getElementById("workspace-context-note");
+  const workspaceSidebarEl = document.getElementById("workspace-sidebar");
+  const workspaceBackdropEl = document.getElementById("workspace-backdrop");
+  const workspaceDrawerCloseEl = document.getElementById("workspace-drawer-close");
+  const workspaceGlobalActionsEl = document.getElementById("workspace-global-actions");
+  const sessionsToggleBtnEl = document.getElementById("sessions-toggle-btn");
+  const closeSidebarBtnEl = document.getElementById("close-sidebar-btn");
+  const workspaceMainEl =
+    (runRootEl && runRootEl.querySelector(".workspace-main")) || document.querySelector(".workspace-main");
+  const conversationCardEl =
+    (runRootEl && runRootEl.querySelector(".conversation-card")) || document.querySelector(".conversation-card");
   const DEFAULT_INTERACTION_PROMPT = "The agent is waiting for your reply.";
+  const SIDEBAR_ACTION_BRIDGE_KEY = "__zsSkillRunnerSidebarBridge";
+
+  function resolveSidebarActionBridge() {
+    const wrappedWindow =
+      window.wrappedJSObject && typeof window.wrappedJSObject === "object"
+        ? window.wrappedJSObject
+        : null;
+    const bridge =
+      (wrappedWindow && wrappedWindow[SIDEBAR_ACTION_BRIDGE_KEY]) ||
+      window[SIDEBAR_ACTION_BRIDGE_KEY];
+    if (!bridge || typeof bridge.sendAction !== "function") {
+      return null;
+    }
+    return bridge;
+  }
 
   function sendAction(action, payload) {
-    const msg = { type: "run-dialog:action", action, payload: payload || {} };
+    if (state.hostMode === "sidebar") {
+      try {
+        const sidebarBridge = resolveSidebarActionBridge();
+        if (sidebarBridge) {
+          sidebarBridge.sendAction(action, payload || {});
+          return;
+        }
+      } catch {}
+    }
+    const prefixes =
+      !state.snapshot && action === "ready"
+        ? ["run-dialog", "skillrunner-sidebar"]
+        : [state.bridgePrefix || "run-dialog"];
     const targets = [window.parent, window.top, window.opener];
     const dedup = new Set();
     targets.forEach(function (target) {
       if (!target || dedup.has(target)) return;
       dedup.add(target);
-      try {
-        target.postMessage(msg, "*");
-      } catch {}
+      prefixes.forEach(function (prefix) {
+        try {
+          target.postMessage(
+            {
+              type: `${prefix}:action`,
+              action,
+              payload: payload || {},
+            },
+            "*",
+          );
+        } catch {}
+      });
     });
   }
 
@@ -107,6 +164,171 @@
     return state.workspaceLabels && typeof state.workspaceLabels === "object"
       ? state.workspaceLabels
       : {};
+  }
+
+  function setHostLayout(mode) {
+    const hostMode = safeText(mode).trim().toLowerCase() === "sidebar" ? "sidebar" : "dialog";
+    state.hostMode = hostMode;
+    document.body.classList.toggle("layout-sidebar", hostMode === "sidebar");
+    if (runRootEl) {
+      runRootEl.classList.toggle("layout-sidebar", hostMode === "sidebar");
+    }
+    workspaceGlobalActionsEl.classList.toggle("hidden", hostMode !== "sidebar");
+    sessionsToggleBtnEl.classList.toggle("hidden", hostMode !== "sidebar");
+    closeSidebarBtnEl.classList.toggle("hidden", hostMode !== "sidebar");
+    workspaceDrawerCloseEl.classList.toggle("hidden", hostMode !== "sidebar");
+    if (hostMode !== "sidebar") {
+      workspaceSidebarEl.classList.remove("drawer-open");
+      workspaceBackdropEl.classList.add("hidden");
+    }
+    queueLayoutSync();
+  }
+
+  function clearSidebarLayoutSyncStyles() {
+    [runRootEl, workspaceMainEl, conversationCardEl, chatEl].forEach(function (node) {
+      if (!node || !node.style) return;
+      node.style.removeProperty("height");
+      if (node !== chatEl) {
+        node.style.removeProperty("min-height");
+      }
+    });
+    if (chatEl && chatEl.style) {
+      chatEl.style.setProperty("min-height", "220px");
+    }
+  }
+
+  function syncSidebarLayoutHeights() {
+    if (!runRootEl || !workspaceMainEl || !conversationCardEl || !chatEl) {
+      return;
+    }
+    if (state.hostMode !== "sidebar") {
+      clearSidebarLayoutSyncStyles();
+      return;
+    }
+    runRootEl.style.setProperty("min-height", "0");
+    runRootEl.style.removeProperty("height");
+    workspaceMainEl.style.setProperty("min-height", "0");
+    workspaceMainEl.style.removeProperty("height");
+    conversationCardEl.style.setProperty("min-height", "0");
+    conversationCardEl.style.removeProperty("height");
+    chatEl.style.setProperty("min-height", "220px");
+    void runRootEl.offsetHeight;
+  }
+
+  function queueLayoutSync() {
+    if (layoutSyncHandle) {
+      window.cancelAnimationFrame(layoutSyncHandle);
+    }
+    layoutSyncHandle = window.requestAnimationFrame(function () {
+      layoutSyncHandle = window.requestAnimationFrame(function () {
+        layoutSyncHandle = 0;
+        syncSidebarLayoutHeights();
+      });
+    });
+  }
+
+  function renderContextHint(contextHint) {
+    const hint = contextHint && typeof contextHint === "object" ? contextHint : null;
+    if (!hint || hint.hasRelated !== true) {
+      contextIndicatorEl.setAttribute("title", "");
+      contextIndicatorEl.setAttribute("aria-label", "");
+      contextIndicatorEl.classList.add("hidden");
+      return;
+    }
+    const itemLabel = safeText(hint.itemLabel).trim();
+    const tooltip = safeText(hint.tooltip).trim();
+    const title = itemLabel && tooltip ? `${itemLabel}: ${tooltip}` : (itemLabel || tooltip);
+    contextIndicatorEl.setAttribute("title", title);
+    contextIndicatorEl.setAttribute("aria-label", title || "Related to current selection");
+    contextIndicatorEl.classList.remove("hidden");
+  }
+
+  function setMetaChipVisibility(chip, visible) {
+    if (!chip) return;
+    chip.classList.toggle("hidden", !visible);
+  }
+
+  function renderWorkspaceSections(drawer) {
+    const rawSections =
+      drawer && Array.isArray(drawer.sections)
+        ? drawer.sections
+        : [];
+    const selectedTaskKey = safeText(
+      state.workspace && state.workspace.selectedTaskKey,
+    ).trim();
+    const noticeText = safeText(drawer && drawer.notice).trim();
+    workspaceGroupsEl.textContent = "";
+    workspaceContextNoteEl.textContent = noticeText;
+    workspaceContextNoteEl.classList.toggle("hidden", !noticeText);
+    let availableTaskCount = 0;
+    rawSections.forEach(function (section) {
+      if (!section || typeof section !== "object") return;
+      const groups = Array.isArray(section.groups) ? section.groups : [];
+      const sectionTaskCount = groups.reduce(function (count, group) {
+        const activeTasks = Array.isArray(group && group.activeTasks) ? group.activeTasks.length : 0;
+        const finishedTasks = Array.isArray(group && group.finishedTasks) ? group.finishedTasks.length : 0;
+        return count + activeTasks + finishedTasks;
+      }, 0);
+      if (sectionTaskCount === 0) return;
+      availableTaskCount += sectionTaskCount;
+      const sectionBox = document.createElement("section");
+      sectionBox.className = "workspace-section";
+      const isCompletedSection = section.id === "completed";
+      const sectionCollapsed = isCompletedSection && section.collapsed === true;
+      if (isCompletedSection) {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "workspace-section-toggle";
+        toggle.textContent = safeText(section.title) || "-";
+        toggle.addEventListener("click", function () {
+          sendAction("toggle-drawer-section", {
+            sectionId: section.id,
+          });
+        });
+        sectionBox.appendChild(toggle);
+      } else {
+        const title = document.createElement("div");
+        title.className = "section-title";
+        title.textContent = safeText(section.title) || "-";
+        sectionBox.appendChild(title);
+      }
+      if (sectionCollapsed) {
+        workspaceGroupsEl.appendChild(sectionBox);
+        return;
+      }
+      groups.forEach(function (group) {
+        if (!group || typeof group !== "object") return;
+        const groupBox = document.createElement("section");
+        groupBox.className = "workspace-group";
+        const groupHeader = document.createElement("div");
+        groupHeader.className = "workspace-group-header";
+        groupHeader.textContent =
+          safeText(group.backendDisplayName) || safeText(group.backendId) || "-";
+        groupBox.appendChild(groupHeader);
+        const groupBody = document.createElement("div");
+        groupBody.className = "workspace-group-body";
+        const activeTasks = Array.isArray(group.activeTasks) ? group.activeTasks : [];
+        const finishedTasks = Array.isArray(group.finishedTasks) ? group.finishedTasks : [];
+        activeTasks.forEach(function (task) {
+          groupBody.appendChild(
+            renderWorkspaceTask(task, safeText(task.key) === selectedTaskKey, false),
+          );
+        });
+        finishedTasks.forEach(function (task) {
+          groupBody.appendChild(
+            renderWorkspaceTask(task, safeText(task.key) === selectedTaskKey, true),
+          );
+        });
+        groupBox.appendChild(groupBody);
+        sectionBox.appendChild(groupBox);
+      });
+      workspaceGroupsEl.appendChild(sectionBox);
+    });
+    workspaceEmptyEl.textContent = safeText(workspaceLabels().emptyTasks) || "No SkillRunner tasks.";
+    workspaceEmptyEl.classList.toggle("hidden", availableTaskCount > 0);
+    const drawerOpen = drawer && drawer.open === true;
+    workspaceSidebarEl.classList.toggle("drawer-open", drawerOpen);
+    workspaceBackdropEl.classList.toggle("hidden", !drawerOpen);
   }
 
   function safeText(v) {
@@ -989,7 +1211,6 @@
     promptIdEl.textContent = p.interactionId > 0 ? String(p.interactionId) : "-";
     promptKindEl.textContent = p.kind;
     interactionIdEl.value = p.interactionId > 0 ? String(p.interactionId) : "";
-    pendingIdEl.textContent = p.interactionId > 0 ? String(p.interactionId) : "-";
     if (p.hint) {
       promptHintEl.textContent = p.hint;
       promptHintEl.classList.remove("hidden");
@@ -1150,11 +1371,9 @@
       }));
       setReplyComposerVisible(false);
       setReplyEnabled(false);
-      pendingIdEl.textContent = safeText(l.pendingMethodSelection) || "method-selection";
     } else {
       authActionsEl.classList.add("hidden");
       authActionsEl.textContent = "";
-      pendingIdEl.textContent = a.authSessionId || "-";
     }
     if (a.authUrl) {
       authLinkEl.innerHTML = "";
@@ -1216,8 +1435,9 @@
 
   function renderWorkspaceTask(task, isSelected, isCompact) {
     const button = document.createElement("button");
+    const isRelated = !isSelected && safeText(task.relationState).trim() === "related";
     button.type = "button";
-    button.className = `task-tab${isCompact ? " compact" : ""}${isSelected ? " active" : ""}`;
+    button.className = `task-tab${isCompact ? " compact" : ""}${isSelected ? " active" : ""}${isRelated ? " related" : ""}`;
     button.disabled = task.selectable !== true;
     button.title = task.selectable === true
       ? ""
@@ -1250,6 +1470,14 @@
   }
 
   function renderWorkspace() {
+    if (state.hostMode === "sidebar") {
+      renderWorkspaceSections(
+        state.workspaceEnvelope && typeof state.workspaceEnvelope === "object"
+          ? state.workspaceEnvelope.drawer
+          : null,
+      );
+      return;
+    }
     const workspace = state.workspace && typeof state.workspace === "object"
       ? state.workspace
       : { selectedTaskKey: "", groups: [] };
@@ -1347,6 +1575,8 @@
 
   function applySnapshot(snapshot) {
     const envelope = snapshot && typeof snapshot === "object" ? snapshot : null;
+    const workspaceTitle = safeText(envelope && envelope.title).trim() || "SkillRunner Workspace";
+    state.workspaceEnvelope = envelope;
     state.workspace = envelope && envelope.workspace && typeof envelope.workspace === "object"
       ? envelope.workspace
       : null;
@@ -1356,45 +1586,73 @@
     state.snapshot = envelope && envelope.session && typeof envelope.session === "object"
       ? envelope.session
       : null;
+    setHostLayout(envelope && envelope.hostMode);
+    renderContextHint(envelope && envelope.contextHint);
     renderWorkspace();
+    conversationTitleEl.textContent =
+      safeText(workspaceLabels().conversationTitle).trim() || "Conversation";
+    closeSidebarBtnEl.textContent =
+      safeText(workspaceLabels().closeSidebar).trim() || "Close";
+    queueLayoutSync();
     if (!state.snapshot) {
-      document.title = "Run Details";
-      titleEl.textContent = "Run Details";
+      document.title = workspaceTitle;
+      titleEl.textContent = workspaceTitle;
       subtitleEl.textContent = "";
+      runBackendEl.textContent = "-";
       statusEl.textContent = "-";
       runEngineEl.textContent = "-";
       runModelEl.textContent = "-";
-      pendingIdEl.textContent = "-";
       updatedAtEl.textContent = "-";
-      pendingOwnerEl.textContent = "-";
+      metaStatusChipEl.classList.add("hidden");
+      setMetaChipVisibility(metaBackendChipEl, false);
+      setMetaChipVisibility(metaEngineChipEl, false);
+      setMetaChipVisibility(metaModelChipEl, false);
+      setMetaChipVisibility(metaUpdatedChipEl, false);
       cancelBtnEl.disabled = true;
+      renderContextHint(null);
       clearPromptCard();
       clearAuthCard();
       clearFinalSummary();
       renderChatEmpty();
+      queueLayoutSync();
       return;
     }
     const semantics = resolveStatusSemantics(state.snapshot);
     const l = labels();
-    document.title = safeText(state.snapshot.title) || "Run Details";
-    titleEl.textContent = safeText(state.snapshot.title) || "Run Details";
-    subtitleEl.textContent = safeText(state.snapshot.backendTitle);
+    document.title = safeText(state.snapshot.title) || workspaceTitle;
+    titleEl.textContent = safeText(state.snapshot.title) || workspaceTitle;
+    subtitleEl.textContent = safeText(l.requestId) && safeText(state.snapshot.requestId)
+      ? `${safeText(l.requestId)}: ${safeText(state.snapshot.requestId)}`
+      : safeText(state.snapshot.requestId);
     cancelBtnEl.textContent = safeText(l.cancel) || "Cancel Run";
     cancelBtnEl.disabled = isTerminal(state.snapshot.status, semantics);
+    metaBackendLabelEl.textContent = safeText(l.backend) || "Backend";
     metaStatusLabelEl.textContent = safeText(l.status) || "Status";
     metaEngineLabelEl.textContent = safeText(l.engine) || "Engine";
     metaModelLabelEl.textContent = safeText(l.model) || "Model";
-    metaPendingIdLabelEl.textContent = safeText(l.pendingInteractionId) || "Pending Interaction ID";
     metaUpdatedAtLabelEl.textContent = safeText(l.updatedAt) || "Updated At";
-    metaPendingOwnerLabelEl.textContent = safeText(l.pendingOwner) || "Pending Owner";
+    runBackendEl.textContent = safeText(state.snapshot.backendTitle) || "-";
     setStatusBadge(semantics.normalized);
+    metaStatusChipEl.classList.remove("hidden");
     runEngineEl.textContent = safeText(state.snapshot.engine) || "-";
     runModelEl.textContent = safeText(state.snapshot.model) || "-";
-    pendingIdEl.textContent = state.snapshot.pendingInteractionId != null
-      ? text(state.snapshot.pendingInteractionId)
-      : (safeText(state.snapshot.authSessionId) || "-");
     updatedAtEl.textContent = safeText(state.snapshot.updatedAt) || "-";
-    pendingOwnerEl.textContent = safeText(state.snapshot.pendingOwner) || "-";
+    setMetaChipVisibility(
+      metaBackendChipEl,
+      safeText(state.snapshot.backendTitle).trim().length > 0,
+    );
+    setMetaChipVisibility(
+      metaEngineChipEl,
+      safeText(state.snapshot.engine).trim().length > 0,
+    );
+    setMetaChipVisibility(
+      metaModelChipEl,
+      safeText(state.snapshot.model).trim().length > 0,
+    );
+    setMetaChipVisibility(
+      metaUpdatedChipEl,
+      safeText(state.snapshot.updatedAt).trim().length > 0,
+    );
     replyShortcutHintEl.textContent = safeText(l.replyShortcut) || "Ctrl+Enter / Cmd+Enter to send";
     clearFinalSummary();
     syncChat();
@@ -1404,15 +1662,18 @@
     }
     if (semantics.waiting && semantics.normalized === "waiting_user") {
       renderPromptCard();
+      queueLayoutSync();
       return;
     }
     if (semantics.waiting && semantics.normalized === "waiting_auth") {
       renderAuthCard();
+      queueLayoutSync();
       return;
     }
     clearPromptCard();
     clearAuthCard();
     setReplyEnabled(false);
+    queueLayoutSync();
   }
 
   function submitReply() {
@@ -1495,6 +1756,18 @@
     if (!state.snapshot) return;
     sendAction("cancel-run", { requestId: state.snapshot.requestId });
   });
+  sessionsToggleBtnEl.addEventListener("click", function () {
+    sendAction("toggle-drawer", {});
+  });
+  closeSidebarBtnEl.addEventListener("click", function () {
+    sendAction("close-sidebar", {});
+  });
+  workspaceDrawerCloseEl.addEventListener("click", function () {
+    sendAction("close-drawer", {});
+  });
+  workspaceBackdropEl.addEventListener("click", function () {
+    sendAction("close-drawer", {});
+  });
   replyFormEl.addEventListener("submit", function (evt) {
     evt.preventDefault();
     submitReply();
@@ -1522,13 +1795,33 @@
   window.addEventListener("message", function (event) {
     const data = event.data;
     if (!data || typeof data !== "object") return;
-    if (data.type === "run-dialog:init" || data.type === "run-dialog:snapshot") {
+    if (
+      data.type === "run-dialog:init" ||
+      data.type === "run-dialog:snapshot" ||
+      data.type === "skillrunner-sidebar:init" ||
+      data.type === "skillrunner-sidebar:snapshot"
+    ) {
+      state.bridgePrefix =
+        String(data.type).indexOf("skillrunner-sidebar:") === 0
+          ? "skillrunner-sidebar"
+          : "run-dialog";
       applySnapshot(data.payload || null);
     }
+  });
+  window.addEventListener("resize", function () {
+    queueLayoutSync();
+  });
+  window.addEventListener("focus", function () {
+    queueLayoutSync();
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return;
+    queueLayoutSync();
   });
 
   setReplyEnabled(false);
   setReplyComposerVisible(true);
   setChatDisplayMode("plain");
+  queueLayoutSync();
   sendAction("ready", {});
 })();

@@ -11,6 +11,9 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     const html = await readProjectFile("addon/content/dashboard/run-dialog.html");
     assert.include(html, 'id="workspace-groups"');
     assert.include(html, 'id="workspace-empty"');
+    assert.include(html, 'id="workspace-global-actions"');
+    assert.include(html, 'id="sessions-toggle-btn"');
+    assert.include(html, 'id="close-sidebar-btn"');
     assert.include(html, 'id="chat-panel"');
     assert.include(html, 'id="chat-mode-plain"');
     assert.include(html, 'id="chat-mode-bubble"');
@@ -26,6 +29,7 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(html, 'vendor/katex/katex.min.css');
     assert.include(html, 'vendor/katex/katex.min.js');
     assert.include(html, 'vendor/markdown-it-texmath/texmath.min.js');
+    assert.notInclude(html, 'id="shell-mode-rail"');
     assert.notInclude(html, 'id="app" class="run-root"');
   });
 
@@ -77,6 +81,24 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(js, "renderedChatOrder");
     assert.include(js, "resetConversationRenderState");
     assert.include(js, "appendChatBubble");
+  });
+
+  it("prefers sidebar bridge actions and renders drawer-scoped context notice without a mode rail", async function () {
+    const html = await readProjectFile("addon/content/dashboard/run-dialog.html");
+    const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    assert.include(html, 'id="workspace-global-actions"');
+    assert.notInclude(html, 'id="shell-mode-rail"');
+    assert.include(html, 'id="workspace-context-note"');
+    assert.include(html, 'id="context-indicator"');
+    assert.notInclude(html, 'id="context-hint"');
+    assert.include(js, "__zsSkillRunnerSidebarBridge");
+    assert.include(js, "window.wrappedJSObject");
+    assert.include(js, "workspaceContextNoteEl");
+    assert.include(js, "drawer.notice");
+    assert.include(js, "contextIndicatorEl");
+    assert.include(js, "closeSidebarBtnEl");
+    assert.include(js, "hint.hasRelated !== true");
+    assert.notInclude(js, "function renderSidebarModeRail");
   });
 
   it("keeps option reply payload as raw response value and supports auth method selection", async function () {
@@ -143,16 +165,82 @@ describe("skillrunner run dialog ui e2e alignment", function () {
     assert.include(css, "line-height: 1.5");
   });
 
-  it("renders workspace grouping actions and compact finished task tabs", async function () {
+  it("renders two-section sidebar sessions with relation-state task styling", async function () {
     const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    const css = await readProjectFile("addon/content/dashboard/run-dialog.css");
     assert.include(js, 'sendAction("select-task"');
     assert.include(js, 'sendAction("toggle-group-collapse"');
     assert.include(js, 'sendAction("toggle-finished-collapse"');
+    assert.include(js, 'sendAction("toggle-drawer"');
+    assert.include(js, 'sendAction("close-sidebar"');
+    assert.include(js, 'sendAction("toggle-drawer-section"');
+    assert.notInclude(js, 'sendAction("switch-shell-mode"');
+    assert.include(js, 'section.id === "completed"');
+    assert.include(js, "section.collapsed === true");
+    assert.include(js, "task.relationState");
+    assert.include(js, '" related"');
     assert.include(js, 'isCompact ? " compact" : ""');
     assert.include(js, "workspaceLabels().completedTasksTitle");
     assert.include(js, "workspaceLabels().waitingRequestId");
     assert.include(js, "task-tab-workflow");
     assert.include(js, "task.workflowLabel");
+    assert.include(css, ".task-tab.related");
+  });
+
+  it("uses task-style workspace titles, compact meta chips, and keeps sidebar chat as the stretching content area", async function () {
+    const hostTs = await readProjectFile("src/modules/skillRunnerRunDialog.ts");
+    const html = await readProjectFile("addon/content/dashboard/run-dialog.html");
+    const js = await readProjectFile("addon/content/dashboard/run-dialog.js");
+    const css = await readProjectFile("addon/content/dashboard/run-dialog.css");
+    assert.include(hostTs, "task-dashboard-run-workspace-title");
+    assert.include(hostTs, "selectedTask?.title");
+    assert.notInclude(hostTs, 'title: localize("task-dashboard-run-dialog-title"');
+    assert.include(html, 'class="banner-top-row"');
+    assert.include(html, 'class="title-cluster"');
+    assert.include(html, 'id="run-subtitle"');
+    assert.include(html, 'id="conversation-title"');
+    assert.include(html, 'id="close-sidebar-btn"');
+    assert.include(css, ".workspace-main");
+    assert.include(css, ".meta-strip");
+    assert.include(css, ".context-indicator");
+    assert.include(css, ".btn.btn-danger");
+    assert.include(css, "white-space: nowrap");
+    assert.include(css, ".banner-top-row");
+    assert.include(css, ".title-cluster");
+    assert.include(css, "width: 14px");
+    assert.notInclude(css, ".meta-grid");
+    assert.notInclude(css, ".context-hint");
+    assert.include(css, ".conversation-card");
+    assert.include(css, "#chat-panel");
+    assert.include(css, "grid-template-rows: auto minmax(0, 1fr)");
+    assert.include(css, ".workspace-root.layout-sidebar .workspace-main");
+    assert.include(css, "grid-template-rows: auto auto minmax(0, 1fr)");
+    assert.include(css, ".workspace-root.layout-sidebar .banner-top-row");
+    assert.include(css, ".workspace-root:not(.layout-sidebar)");
+    assert.notInclude(css, ".conversation-body");
+    assert.include(css, "min-height: 220px");
+    assert.notInclude(html, 'class="conversation-body"');
+    assert.include(js, "function queueLayoutSync");
+    assert.include(js, "function syncSidebarLayoutHeights");
+    assert.include(js, "workspaceLabels().conversationTitle");
+    assert.include(js, "workspaceLabels().closeSidebar");
+    assert.include(js, "window.addEventListener(\"resize\"");
+    assert.include(js, "document.addEventListener(\"visibilitychange\"");
+    assert.include(js, "window.addEventListener(\"focus\"");
+    assert.include(js, "queueLayoutSync()");
+    assert.notInclude(js, "conversationBodyEl");
+    assert.notInclude(js, "function resolveSidebarHostHeight");
+    assert.notInclude(js, "window.visualViewport");
+    assert.notInclude(js, "window.innerHeight");
+    assert.notInclude(js, "window.frameElement");
+    assert.notInclude(js, "--sidebar-viewport-height");
+    assert.notInclude(js, "const conversationBodyHeight =");
+    assert.notInclude(js, "const bannerHeight =");
+    assert.notInclude(js, "const replyHeight =");
+    assert.notInclude(js, "pendingIdEl");
+    assert.notInclude(js, "pendingOwnerEl");
+    assert.notInclude(html, 'id="meta-label-pending-id"');
+    assert.notInclude(html, 'id="meta-label-pending-owner"');
   });
 
   it("falls back to localized confirm options when kind=confirm and options are missing", async function () {

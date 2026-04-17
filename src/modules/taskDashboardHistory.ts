@@ -74,6 +74,10 @@ function parseHistoryRecord(raw: unknown): TaskDashboardHistoryRecord | null {
     state: normalizeStatus(state) as WorkflowTaskRecord["state"],
     requestId: String(raw.requestId || "").trim() || undefined,
     engine: String(raw.engine || "").trim() || undefined,
+    targetParentID:
+      typeof raw.targetParentID === "number" && Number.isFinite(raw.targetParentID)
+        ? Math.floor(raw.targetParentID)
+        : undefined,
     inputUnitIdentity: String(raw.inputUnitIdentity || "").trim() || undefined,
     inputUnitLabel: String(raw.inputUnitLabel || "").trim() || undefined,
     providerId: String(raw.providerId || "").trim() || undefined,

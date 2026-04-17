@@ -24,6 +24,7 @@ function makeJob(args: {
   backendBaseUrl?: string;
   engine?: string;
   requestId?: string;
+  targetParentID?: number;
   error?: string;
 }) {
   const job: JobRecord = {
@@ -41,6 +42,7 @@ function makeJob(args: {
       backendType: args.backendType || "skillrunner",
       backendBaseUrl: args.backendBaseUrl || "http://127.0.0.1:8030",
       engine: args.engine || "",
+      targetParentID: args.targetParentID,
     },
     state: args.state,
     createdAt: args.createdAt,
@@ -247,6 +249,23 @@ describe("task runtime", function () {
     const tasks = listWorkflowTasks();
     assert.lengthOf(tasks, 1);
     assert.equal(tasks[0].engine, "codex");
+  });
+
+  it("captures targetParentID metadata from job meta", function () {
+    recordWorkflowTaskUpdate(
+      makeJob({
+        id: "job-1",
+        state: "running",
+        createdAt: "2026-02-10T01:00:00.000Z",
+        updatedAt: "2026-02-10T01:00:01.000Z",
+        runId: "run-a",
+        taskName: "attachment-a.md",
+        targetParentID: 321,
+      }),
+    );
+    const tasks = listWorkflowTasks();
+    assert.lengthOf(tasks, 1);
+    assert.equal(tasks[0].targetParentID, 321);
   });
 
   it("prefers requestId from job meta during running phase", function () {

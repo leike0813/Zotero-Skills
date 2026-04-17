@@ -43,6 +43,8 @@
 - [x] 添加专属 Note 的导入导出 workflow （导入/导出Digest、References和Citation Analysis note）
 - [x] 让 Tag Manager 不选中父条目也可以触发
 - [x] **test 治理**
+- [ ] **本地账本/任务的清理/管理机制**
+- [ ] **reconcile状态的显式化（例如转圈图标之类的）**
 - [ ] **兼容 Zotero 8**
 - [ ] workflow 多语言文案机制
 - [ ] Dashboard 增加 Tag Manager 快捷方式（可选，要做的话也得做成注册式的）

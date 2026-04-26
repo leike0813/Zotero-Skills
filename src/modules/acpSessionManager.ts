@@ -12,10 +12,16 @@ import {
 } from "./acpConnectionAdapter";
 import {
   clearAcpConversationState,
+  deleteAcpConversationState,
+  listAllAcpChatSessions,
+  listAcpChatSessions,
+  listStoredVisibleAcpChatSessions,
   loadAcpConversationState,
   loadAcpFrontendState,
+  renameAcpConversationState,
   resolveAcpSessionCwd,
   resolveAcpStoragePaths,
+  saveAcpChatSessionIndex,
   saveAcpConversationState,
   saveAcpFrontendState,
 } from "./acpConversationStore";
@@ -26,6 +32,7 @@ import {
   createEmptyAcpConversationSnapshot,
   normalizeAcpStatus,
   type AcpAuthMethod,
+  type AcpChatSessionSummary,
   type AcpChatDisplayMode,
   type AcpConversationItem,
   type AcpConversationMessageItem,
@@ -60,6 +67,7 @@ export type AcpSessionSlot = {
   pendingPermissionResolver:
     | ((outcome: RequestPermissionOutcome) => void)
     | null;
+  suppressSessionLoadReplay: boolean;
   uiEmitTimer: ReturnType<typeof setTimeout> | null;
   persistTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -176,8 +184,8 @@ function ensureInitialized() {
   initialized = true;
 }
 
-function hydrateSnapshot(backendId: string) {
-  const restored = loadAcpConversationState(backendId);
+function hydrateSnapshot(backendId: string, conversationId?: string) {
+  const restored = loadAcpConversationState(backendId, conversationId);
   const snapshot = {
     ...createEmptyAcpConversationSnapshot(),
     ...restored.snapshot,
@@ -188,13 +196,40 @@ function hydrateSnapshot(backendId: string) {
   if (!snapshot.conversationId) {
     snapshot.conversationId = nextOpaqueId("acp-conversation");
   }
+  if (!snapshot.conversationCreatedAt) {
+    snapshot.conversationCreatedAt = nowIso();
+  }
+  snapshot.sessionId = "";
+  snapshot.remoteSessionId = String(snapshot.remoteSessionId || "").trim();
+  snapshot.remoteSessionRestoreStatus =
+    snapshot.remoteSessionRestoreStatus || "none";
   snapshot.status = normalizeAcpStatus(snapshot.status);
+  if (
+    snapshot.status === "prompting" ||
+    snapshot.status === "permission-required" ||
+    snapshot.status === "connected" ||
+    snapshot.status === "checking-command" ||
+    snapshot.status === "spawning" ||
+    snapshot.status === "initializing"
+  ) {
+    snapshot.status = "idle";
+    snapshot.busy = false;
+    snapshot.pendingPermissionRequest = null;
+  }
   snapshot.chatDisplayMode =
     snapshot.chatDisplayMode === "bubble" ? "bubble" : "plain";
   snapshot.statusExpanded = snapshot.statusExpanded === true;
   snapshot.authMethodIds = snapshot.authMethods.map((entry) => entry.id);
   deriveModelEffortState(snapshot);
   return snapshot;
+}
+
+function resetSlotTransientState(slot: AcpSessionSlot) {
+  slot.activeAssistantItemId = "";
+  slot.activeThoughtItemId = "";
+  slot.activePlanItemId = "";
+  slot.pendingPermissionResolver = null;
+  slot.suppressSessionLoadReplay = false;
 }
 
 function getOrCreateSlot(backendIdRaw?: string) {
@@ -219,6 +254,7 @@ function getOrCreateSlot(backendIdRaw?: string) {
     activeThoughtItemId: "",
     activePlanItemId: "",
     pendingPermissionResolver: null,
+    suppressSessionLoadReplay: false,
     uiEmitTimer: null,
     persistTimer: null,
   };
@@ -344,7 +380,7 @@ async function resolveBackendForSlot(slot: AcpSessionSlot) {
   if (!backend) {
     throw new Error(`ACP backend "${slot.backendId}" is not available`);
   }
-  const paths = resolveAcpStoragePaths(backend.id);
+  const paths = resolveAcpStoragePaths(backend.id, slot.snapshot.conversationId);
   slot.snapshot.backend = backend;
   slot.snapshot.backendId = backend.id;
   slot.snapshot.sessionCwd = resolveAcpSessionCwd();
@@ -764,6 +800,20 @@ function handleSessionUpdate(
     return;
   }
   const update = event.update;
+  if (slot.suppressSessionLoadReplay) {
+    switch (String(update.sessionUpdate || "").trim()) {
+      case "agent_message_chunk":
+      case "agent_thought_chunk":
+      case "user_message_chunk":
+      case "tool_call":
+      case "tool_call_update":
+      case "plan":
+        slot.snapshot.lastLifecycleEvent = "session_load_replay_suppressed";
+        return;
+      default:
+        break;
+    }
+  }
   switch (String(update.sessionUpdate || "").trim()) {
     case "agent_message_chunk": {
       slot.snapshot.lastLifecycleEvent = "agent_message_chunk";
@@ -1079,6 +1129,10 @@ async function ensureAdapter(backendId?: string) {
     slot.snapshot.commandLine = initializedAdapter.commandLine;
     slot.snapshot.agentLabel = initializedAdapter.agentName;
     slot.snapshot.agentVersion = initializedAdapter.agentVersion;
+    slot.snapshot.canLoadRemoteSession =
+      initializedAdapter.canLoadSession === true;
+    slot.snapshot.canResumeRemoteSession =
+      initializedAdapter.canResumeSession === true;
     slot.snapshot.status = "initializing";
     slot.adapter = nextAdapter;
     emitSlotSnapshot(slot);
@@ -1101,20 +1155,129 @@ async function ensureAdapter(backendId?: string) {
   }
 }
 
+function applyAttachedSessionResult(
+  slot: AcpSessionSlot,
+  result: {
+    sessionId: string;
+    sessionTitle?: string;
+    sessionUpdatedAt?: string;
+    modes?: Parameters<typeof applyModeState>[1] | null;
+    models?: Parameters<typeof applyModelState>[1] | null;
+  },
+) {
+  slot.snapshot.sessionId = String(result.sessionId || "").trim();
+  slot.snapshot.remoteSessionId =
+    slot.snapshot.sessionId || String(slot.snapshot.remoteSessionId || "").trim();
+  slot.snapshot.sessionTitle = String(result.sessionTitle || "").trim();
+  slot.snapshot.sessionUpdatedAt = String(result.sessionUpdatedAt || "").trim();
+  applyModeState(slot, result.modes || {});
+  applyModelState(slot, result.models || {});
+  slot.snapshot.status = "connected";
+  slot.snapshot.busy = false;
+}
+
 async function ensureSession(backendId?: string) {
   const { slot, adapter } = await ensureAdapter(backendId);
   if (slot.snapshot.sessionId) {
     return { slot, adapter };
   }
+  const remoteSessionId = String(slot.snapshot.remoteSessionId || "").trim();
+  if (remoteSessionId) {
+    if (slot.snapshot.canResumeRemoteSession) {
+      slot.snapshot.sessionId = remoteSessionId;
+      slot.snapshot.remoteSessionRestoreStatus = "pending";
+      slot.snapshot.remoteSessionRestoreMessage = `Resuming remote ACP session ${remoteSessionId}`;
+      emitSlotSnapshot(slot);
+      try {
+        const resumed = await adapter.resumeSession({ sessionId: remoteSessionId });
+        applyAttachedSessionResult(slot, resumed);
+        slot.snapshot.remoteSessionRestoreStatus = "resumed";
+        slot.snapshot.remoteSessionRestoreMessage = "Remote ACP session resumed.";
+        emitSlotSnapshot(slot);
+        return { slot, adapter };
+      } catch (error) {
+        slot.snapshot.sessionId = "";
+        slot.snapshot.remoteSessionRestoreStatus = "failed";
+        slot.snapshot.remoteSessionRestoreMessage = compactError(error);
+        appendErrorDiagnostic({
+          slot,
+          kind: "session_restore_failed",
+          message: "Remote ACP session resume failed",
+          error,
+          stage: "session_resume",
+        });
+      }
+    } else if (slot.snapshot.canLoadRemoteSession) {
+      slot.snapshot.sessionId = remoteSessionId;
+      slot.snapshot.remoteSessionRestoreStatus = "pending";
+      slot.snapshot.remoteSessionRestoreMessage = `Loading remote ACP session ${remoteSessionId}`;
+      emitSlotSnapshot(slot);
+      try {
+        slot.suppressSessionLoadReplay = true;
+        const loaded = await adapter.loadSession({ sessionId: remoteSessionId });
+        slot.suppressSessionLoadReplay = false;
+        applyAttachedSessionResult(slot, loaded);
+        slot.snapshot.remoteSessionRestoreStatus = "loaded";
+        slot.snapshot.remoteSessionRestoreMessage = "Remote ACP session loaded.";
+        emitSlotSnapshot(slot);
+        return { slot, adapter };
+      } catch (error) {
+        slot.suppressSessionLoadReplay = false;
+        slot.snapshot.sessionId = "";
+        slot.snapshot.remoteSessionRestoreStatus = "failed";
+        slot.snapshot.remoteSessionRestoreMessage = compactError(error);
+        appendErrorDiagnostic({
+          slot,
+          kind: "session_restore_failed",
+          message: "Remote ACP session load failed",
+          error,
+          stage: "session_load",
+        });
+      }
+    } else {
+      slot.snapshot.remoteSessionRestoreStatus = "unsupported";
+      slot.snapshot.remoteSessionRestoreMessage =
+        "Remote ACP session restore is not supported by this backend.";
+      appendDiagnostic(slot, {
+        id: nextOpaqueId("acp-diag"),
+        ts: nowIso(),
+        kind: "session_restore_unsupported",
+        level: "info",
+        message: "Remote ACP session restore is not supported by this backend",
+        detail: remoteSessionId,
+      });
+    }
+  }
   try {
     const created = await adapter.newSession();
-    slot.snapshot.sessionId = String(created.sessionId || "").trim();
-    slot.snapshot.sessionTitle = String(created.sessionTitle || "").trim();
-    slot.snapshot.sessionUpdatedAt = String(created.sessionUpdatedAt || "").trim();
-    applyModeState(slot, created.modes || {});
-    applyModelState(slot, created.models || {});
-    slot.snapshot.status = "connected";
-    slot.snapshot.busy = false;
+    const previousRemoteSessionId = String(slot.snapshot.remoteSessionId || "").trim();
+    applyAttachedSessionResult(slot, created);
+    if (previousRemoteSessionId && previousRemoteSessionId !== slot.snapshot.sessionId) {
+      slot.snapshot.remoteSessionRestoreStatus =
+        slot.snapshot.remoteSessionRestoreStatus === "unsupported"
+          ? "unsupported"
+          : "fallback-new";
+      slot.snapshot.remoteSessionRestoreMessage =
+        slot.snapshot.remoteSessionRestoreStatus === "unsupported"
+          ? "Remote ACP session restore is not supported; continued with a new agent session."
+          : "Remote session could not be restored; continued with a new agent session.";
+      appendDiagnostic(slot, {
+        id: nextOpaqueId("acp-diag"),
+        ts: nowIso(),
+        kind: "session_new_fallback",
+        level: "warn",
+        message: "Remote session could not be restored; continued with a new agent session.",
+        detail: `previous=${previousRemoteSessionId} new=${slot.snapshot.sessionId}`,
+      });
+      upsertStatusItem(slot, {
+        level: "warn",
+        label: "Remote session",
+        text: slot.snapshot.remoteSessionRestoreMessage,
+      });
+    } else if (!previousRemoteSessionId) {
+      slot.snapshot.remoteSessionRestoreStatus = "none";
+      slot.snapshot.remoteSessionRestoreMessage = "";
+    }
     emitSlotSnapshot(slot);
     return { slot, adapter };
   } catch (error) {
@@ -1129,9 +1292,15 @@ async function ensureSession(backendId?: string) {
   }
 }
 
-function buildBackendSummary(backend: BackendInstance) {
+function buildBackendSummary(
+  backend: BackendInstance,
+  options: { ensureSession?: boolean } = {},
+) {
   const slot = getOrCreateSlot(backend.id);
   slot.snapshot.backend = backend;
+  const sessions = options.ensureSession
+    ? listAcpChatSessions(backend.id)
+    : listStoredVisibleAcpChatSessions(backend.id);
   const lastError =
     String(slot.snapshot.prerequisiteError || "").trim() ||
     String(slot.snapshot.lastError || "").trim();
@@ -1144,7 +1313,9 @@ function buildBackendSummary(backend: BackendInstance) {
       slot.snapshot.status === "connected" ||
       slot.snapshot.status === "prompting" ||
       slot.adapter !== null,
-    messageCount: slot.snapshot.items.length,
+    messageCount:
+      sessions.reduce((sum, entry) => sum + entry.messageCount, 0) ||
+      slot.snapshot.items.length,
     lastError,
     updatedAt: slot.snapshot.updatedAt,
   };
@@ -1153,6 +1324,7 @@ function buildBackendSummary(backend: BackendInstance) {
 function buildFrontendSnapshot(): AcpFrontendSnapshot {
   ensureInitialized();
   const activeSlot = getOrCreateSlot(activeBackendId);
+  const chatSessions = listAcpChatSessions(activeBackendId);
   const knownBackends =
     cachedAcpBackends.length > 0
       ? cachedAcpBackends
@@ -1167,9 +1339,35 @@ function buildFrontendSnapshot(): AcpFrontendSnapshot {
               command: "",
             },
           ];
-  const summaries = knownBackends.map((backend) => buildBackendSummary(backend));
+  const summaries = knownBackends.map((backend) =>
+    buildBackendSummary(backend, {
+      ensureSession: backend.id === activeBackendId,
+    }),
+  );
+  const sortedBackends = [
+    ...knownBackends.filter((backend) => backend.id === activeBackendId),
+    ...knownBackends.filter((backend) => backend.id !== activeBackendId),
+  ];
+  const backendChatSessions = sortedBackends
+    .map((backend) => {
+      const isActiveBackend = backend.id === activeBackendId;
+      return {
+        backendId: backend.id,
+        displayName: String(backend.displayName || backend.id || "").trim(),
+        sessions: isActiveBackend
+          ? chatSessions
+          : listStoredVisibleAcpChatSessions(backend.id),
+      };
+    })
+    .filter(
+      (entry) =>
+        entry.backendId === activeBackendId || entry.sessions.length > 0,
+    );
   return {
     activeBackendId,
+    activeConversationId: activeSlot.snapshot.conversationId,
+    chatSessions,
+    backendChatSessions,
     backends: summaries,
     activeSnapshot: cloneSnapshotValue(activeSlot.snapshot),
     connectedCount: summaries.filter((entry) => entry.connected).length,
@@ -1221,10 +1419,105 @@ export async function setActiveAcpBackend(args: { backendId: string }) {
   notifyFrontendListenersNow();
 }
 
+function assertSessionSwitchAllowed(slot: AcpSessionSlot) {
+  if (
+    slot.snapshot.status === "prompting" ||
+    slot.snapshot.status === "permission-required"
+  ) {
+    throw new Error("Cannot change ACP chat session while a prompt is active");
+  }
+}
+
+function sortSessionsByUpdatedAt(sessions: AcpChatSessionSummary[]) {
+  return [...sessions].sort((left, right) =>
+    String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")),
+  );
+}
+
+function createNewLocalConversationSnapshot(args: {
+  slot: AcpSessionSlot;
+  backend: BackendInstance | null;
+  backendId: string;
+  createdAt?: string;
+}) {
+  const createdAt = args.createdAt || nowIso();
+  const conversationId = nextOpaqueId("acp-conversation");
+  const paths = resolveAcpStoragePaths(args.backendId, conversationId);
+  return {
+    ...createEmptyAcpConversationSnapshot(),
+    backend: args.backend,
+    backendId: args.backendId,
+    conversationId,
+    conversationTitle: "New Conversation",
+    conversationCreatedAt: createdAt,
+    showDiagnostics: args.slot.snapshot.showDiagnostics,
+    statusExpanded: args.slot.snapshot.statusExpanded,
+    chatDisplayMode: args.slot.snapshot.chatDisplayMode,
+    sessionCwd: resolveAcpSessionCwd(),
+    workspaceDir: paths.workspaceDir,
+    runtimeDir: paths.runtimeDir,
+    updatedAt: createdAt,
+  };
+}
+
+export async function setActiveAcpConversation(args: {
+  conversationId: string;
+  backendId?: string;
+}) {
+  ensureInitialized();
+  const backendId = normalizeBackendId(args.backendId || activeBackendId);
+  const conversationId = normalizeBackendId(args.conversationId);
+  if (!backendId || !conversationId) {
+    return;
+  }
+  const slot = getOrCreateSlot(backendId);
+  if (slot.snapshot.conversationId === conversationId) {
+    return;
+  }
+  assertSessionSwitchAllowed(slot);
+  emitSlotSnapshot(slot, { throttleUi: false });
+  await disconnectSlotAdapter(slot);
+  slot.snapshot = hydrateSnapshot(backendId, conversationId);
+  resetSlotTransientState(slot);
+  saveAcpChatSessionIndex({
+    backendId,
+    activeConversationId: conversationId,
+    sessions: listAllAcpChatSessions(backendId),
+  });
+  emitSlotSnapshot(slot);
+}
+
 export async function ensureAcpConversationReady(backendId?: string) {
   ensureInitialized();
   await refreshAcpBackends();
   await ensureSession(backendId || activeBackendId);
+}
+
+export async function refreshAcpConversationBackends() {
+  ensureInitialized();
+  await refreshAcpBackends();
+  const slot = getOrCreateSlot(activeBackendId);
+  notifyConversationListenersNow(slot);
+  notifyFrontendListenersNow();
+}
+
+export async function connectAcpConversation(args?: { backendId?: string }) {
+  ensureInitialized();
+  await refreshAcpBackends();
+  await ensureSession(args?.backendId || activeBackendId);
+}
+
+export async function disconnectAcpConversation(args?: { backendId?: string }) {
+  ensureInitialized();
+  const slot = getOrCreateSlot(args?.backendId || activeBackendId);
+  await disconnectSlotAdapter(slot);
+  slot.snapshot.sessionId = "";
+  slot.snapshot.busy = false;
+  slot.snapshot.status = "idle";
+  slot.snapshot.lastError = "";
+  slot.snapshot.prerequisiteError = "";
+  slot.snapshot.pendingPermissionRequest = null;
+  emitSlotSnapshot(slot);
 }
 
 export async function sendAcpConversationPrompt(args: {
@@ -1240,6 +1533,14 @@ export async function sendAcpConversationPrompt(args: {
   const { slot, adapter } = await ensureSession(args.backendId || activeBackendId);
   if (!slot.snapshot.conversationId) {
     slot.snapshot.conversationId = nextOpaqueId("acp-conversation");
+  }
+  if (
+    (!slot.snapshot.conversationTitle ||
+      slot.snapshot.conversationTitle === "New Conversation") &&
+    slot.snapshot.items.length === 0
+  ) {
+    slot.snapshot.conversationTitle =
+      message.length > 48 ? `${message.slice(0, 48)}...` : message;
   }
   pushItem(slot, {
     id: nextOpaqueId("acp-msg-user"),
@@ -1304,30 +1605,175 @@ export async function cancelAcpConversationPrompt(args?: { backendId?: string })
 
 export async function startNewAcpConversation(args?: { backendId?: string }) {
   ensureInitialized();
+  await refreshAcpBackends();
   const slot = getOrCreateSlot(args?.backendId || activeBackendId);
+  assertSessionSwitchAllowed(slot);
+  emitSlotSnapshot(slot, { throttleUi: false });
   await disconnectSlotAdapter(slot);
-  const preservedBackend = slot.snapshot.backend;
+  const preservedBackend =
+    cachedAcpBackends.find((entry) => entry.id === slot.backendId) ||
+    slot.snapshot.backend;
   const preservedBackendId = slot.snapshot.backendId || slot.backendId;
   const preservedDiagnosticsVisibility = slot.snapshot.showDiagnostics;
   const preservedStatusExpanded = slot.snapshot.statusExpanded;
   const preservedChatDisplayMode = slot.snapshot.chatDisplayMode;
+  const createdAt = nowIso();
+  slot.snapshot = createNewLocalConversationSnapshot({
+    slot,
+    backend: preservedBackend,
+    backendId: preservedBackendId,
+    createdAt,
+  });
+  slot.snapshot.showDiagnostics = preservedDiagnosticsVisibility;
+  slot.snapshot.statusExpanded = preservedStatusExpanded;
+  slot.snapshot.chatDisplayMode = preservedChatDisplayMode;
+  resetSlotTransientState(slot);
+  emitSlotSnapshot(slot);
+}
+
+export async function renameAcpConversation(args: {
+  title: string;
+  backendId?: string;
+  conversationId?: string;
+}) {
+  ensureInitialized();
+  const title = String(args.title || "").trim();
+  if (!title) {
+    return;
+  }
+  const slot = getOrCreateSlot(args.backendId || activeBackendId);
+  assertSessionSwitchAllowed(slot);
+  const conversationId =
+    normalizeBackendId(args.conversationId) || slot.snapshot.conversationId;
+  if (!conversationId) {
+    return;
+  }
+  if (conversationId === slot.snapshot.conversationId) {
+    slot.snapshot.conversationTitle = title;
+    emitSlotSnapshot(slot);
+    return;
+  }
+  renameAcpConversationState({
+    backendId: slot.backendId,
+    conversationId,
+    title,
+  });
+  notifyFrontendListenersNow();
+}
+
+export async function archiveAcpConversation(args: {
+  conversationId: string;
+  backendId?: string;
+}) {
+  ensureInitialized();
+  const backendId = normalizeBackendId(args.backendId || activeBackendId);
+  const conversationId = normalizeBackendId(args.conversationId);
+  if (!backendId || !conversationId) {
+    return;
+  }
+  const slot = getOrCreateSlot(backendId);
+  assertSessionSwitchAllowed(slot);
+  const archivedAt = nowIso();
+  const allSessions = listAllAcpChatSessions(backendId);
+  if (
+    !allSessions.some(
+      (entry) => entry.conversationId === conversationId && !entry.archivedAt,
+    )
+  ) {
+    return;
+  }
+  const updatedSessions = allSessions.map((entry) =>
+    entry.conversationId === conversationId
+      ? {
+          ...entry,
+          archivedAt,
+          updatedAt: archivedAt,
+          status: "idle" as const,
+        }
+      : entry,
+  );
+  const visibleSessions = sortSessionsByUpdatedAt(
+    updatedSessions.filter((entry) => !entry.archivedAt),
+  );
+  const isActive = slot.snapshot.conversationId === conversationId;
+  if (!isActive) {
+    saveAcpChatSessionIndex({
+      backendId,
+      activeConversationId: slot.snapshot.conversationId,
+      sessions: updatedSessions,
+    });
+    notifyFrontendListenersNow();
+    return;
+  }
+
+  emitSlotSnapshot(slot, { throttleUi: false });
+  await disconnectSlotAdapter(slot);
+  resetSlotTransientState(slot);
+  if (visibleSessions.length > 0) {
+    slot.snapshot = hydrateSnapshot(backendId, visibleSessions[0].conversationId);
+    saveAcpChatSessionIndex({
+      backendId,
+      activeConversationId: slot.snapshot.conversationId,
+      sessions: updatedSessions,
+    });
+    emitSlotSnapshot(slot);
+    return;
+  }
+
+  const preservedBackend = slot.snapshot.backend;
+  const preservedBackendId = slot.snapshot.backendId || slot.backendId;
+  saveAcpChatSessionIndex({
+    backendId,
+    activeConversationId: "",
+    sessions: updatedSessions,
+  });
+  slot.snapshot = createNewLocalConversationSnapshot({
+    slot,
+    backend: preservedBackend,
+    backendId: preservedBackendId,
+  });
+  resetSlotTransientState(slot);
+  emitSlotSnapshot(slot);
+}
+
+export async function deleteActiveAcpConversation(args?: { backendId?: string }) {
+  ensureInitialized();
+  const backendId = normalizeBackendId(args?.backendId || activeBackendId);
+  const slot = getOrCreateSlot(backendId);
+  assertSessionSwitchAllowed(slot);
+  const deletedConversationId = slot.snapshot.conversationId;
+  if (!deletedConversationId) {
+    return;
+  }
+  await disconnectSlotAdapter(slot);
+  deleteAcpConversationState(backendId, deletedConversationId);
+  const remaining = sortSessionsByUpdatedAt(listAcpChatSessions(backendId));
+  if (remaining.length > 0) {
+    slot.snapshot = hydrateSnapshot(backendId, remaining[0].conversationId);
+    resetSlotTransientState(slot);
+    saveAcpChatSessionIndex({
+      backendId,
+      activeConversationId: slot.snapshot.conversationId,
+      sessions: listAllAcpChatSessions(backendId),
+    });
+    emitSlotSnapshot(slot);
+    return;
+  }
+  const preservedBackend = slot.snapshot.backend;
+  const preservedBackendId = slot.snapshot.backendId || slot.backendId;
   slot.snapshot = {
     ...createEmptyAcpConversationSnapshot(),
     backend: preservedBackend,
     backendId: preservedBackendId,
     conversationId: nextOpaqueId("acp-conversation"),
-    showDiagnostics: preservedDiagnosticsVisibility,
-    statusExpanded: preservedStatusExpanded,
-    chatDisplayMode: preservedChatDisplayMode,
+    conversationTitle: "New Conversation",
+    conversationCreatedAt: nowIso(),
     sessionCwd: slot.snapshot.sessionCwd,
     workspaceDir: slot.snapshot.workspaceDir,
     runtimeDir: slot.snapshot.runtimeDir,
     updatedAt: nowIso(),
   };
-  slot.activeAssistantItemId = "";
-  slot.activeThoughtItemId = "";
-  slot.activePlanItemId = "";
-  clearAcpConversationState(slot.backendId);
+  resetSlotTransientState(slot);
   emitSlotSnapshot(slot);
 }
 
@@ -1514,6 +1960,8 @@ export function buildAcpDiagnosticsBundle(backendId?: string): AcpDiagnosticsBun
       busy: snapshot.busy,
       conversationId: snapshot.conversationId,
       sessionId: snapshot.sessionId,
+      remoteSessionId: snapshot.remoteSessionId,
+      remoteSessionRestoreStatus: snapshot.remoteSessionRestoreStatus,
       commandLabel: snapshot.commandLabel,
       commandLine: snapshot.commandLine,
       sessionCwd: snapshot.sessionCwd,

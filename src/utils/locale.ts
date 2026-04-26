@@ -78,7 +78,13 @@ function getStringOrFallback(
     const resolved = String(
       _getString(localeString as FluentMessageId, options),
     ).trim();
-    if (!resolved || resolved === getLocaleID(localeString)) {
+    const rawId = String(localeString || "").trim();
+    if (
+      !resolved ||
+      resolved === rawId ||
+      resolved === getLocaleID(localeString) ||
+      resolved.endsWith(`-${rawId}`)
+    ) {
       return fallback;
     }
     return resolved;

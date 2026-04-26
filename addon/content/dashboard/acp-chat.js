@@ -9,8 +9,11 @@
     transcriptMode: "",
     pickerSignature: "",
     backendPickerSignature: "",
+    sessionPickerSignature: "",
     diagnosticsSignature: "",
     actionsMenuOpen: false,
+    sessionDrawerOpen: false,
+    sessionDrawerSignature: "",
     toolGroupExpandedIds: new Set(),
   };
   const SIDEBAR_ACTION_BRIDGE_KEY = "__zsAcpSidebarBridge";
@@ -26,15 +29,32 @@
   );
   const chatModePlainBtnEl = document.getElementById("acp-chat-mode-plain");
   const chatModeBubbleBtnEl = document.getElementById("acp-chat-mode-bubble");
+  const sessionManagerBtnEl = document.getElementById("acp-session-manager-btn");
   const moreBtnEl = document.getElementById("acp-more-btn");
   const actionsMenuEl = document.getElementById("acp-actions-menu");
-  const backendLabelEl = document.getElementById("acp-backend-label");
+  const sessionDrawerEl = document.getElementById("acp-session-drawer");
+  const sessionDrawerTitleEl = document.getElementById("acp-session-drawer-title");
+  const sessionDrawerSubtitleEl = document.getElementById(
+    "acp-session-drawer-subtitle",
+  );
+  const sessionDrawerCloseBtnEl = document.getElementById(
+    "acp-session-drawer-close-btn",
+  );
+  const sessionDrawerBusyEl = document.getElementById("acp-session-drawer-busy");
+  const sessionDrawerListEl = document.getElementById("acp-session-drawer-list");
+  const sessionDrawerEmptyEl = document.getElementById("acp-session-drawer-empty");
   const backendPickerLabelEl = document.getElementById("acp-backend-picker-label");
   const backendSelectEl = document.getElementById("acp-backend-select");
+  const sessionPickerLabelEl = document.getElementById("acp-session-picker-label");
+  const sessionSelectEl = document.getElementById("acp-session-select");
   const statusLabelEl = document.getElementById("acp-status-label");
   const targetLabelEl = document.getElementById("acp-target-label");
   const agentLabelEl = document.getElementById("acp-agent-label");
   const sessionLabelEl = document.getElementById("acp-session-label");
+  const remoteSessionLabelEl = document.getElementById("acp-remote-session-label");
+  const remoteSessionValueEl = document.getElementById("acp-remote-session-value");
+  const remoteRestoreLabelEl = document.getElementById("acp-remote-restore-label");
+  const remoteRestoreValueEl = document.getElementById("acp-remote-restore-value");
   const commandLabelEl = document.getElementById("acp-command-label");
   const transcriptEl = document.getElementById("acp-transcript");
   const updatedAtEl = document.getElementById("acp-updated-at");
@@ -71,10 +91,10 @@
   );
   const formEl = document.getElementById("acp-composer-form");
   const inputEl = document.getElementById("acp-composer-input");
-  const sendBtnEl = document.getElementById("acp-send-btn");
+  const primaryActionBtnEl = document.getElementById("acp-primary-action-btn");
   const newConversationBtnEl = document.getElementById("acp-new-conversation-btn");
-  const reconnectBtnEl = document.getElementById("acp-reconnect-btn");
-  const cancelBtnEl = document.getElementById("acp-cancel-btn");
+  const connectBtnEl = document.getElementById("acp-connect-btn");
+  const disconnectBtnEl = document.getElementById("acp-disconnect-btn");
   const closeBtnEl = document.getElementById("acp-close-btn");
 
   function resolveSidebarActionBridge() {
@@ -183,6 +203,14 @@
     return parts.join(" • ") || "-";
   }
 
+  function isSessionMutationBlocked(snapshot) {
+    return (
+      snapshot.busy === true ||
+      snapshot.status === "prompting" ||
+      snapshot.status === "permission-required"
+    );
+  }
+
   function renderBanner(snapshot) {
     const labels = snapshot.labels || {};
     const parts = [];
@@ -191,6 +219,12 @@
     }
     if (snapshot.lastStopReason) {
       parts.push((labels.stopReason || "Stop reason") + ": " + snapshot.lastStopReason);
+    }
+    if (snapshot.remoteSessionRestoreStatus === "fallback-new") {
+      parts.push(
+        snapshot.remoteSessionRestoreMessage ||
+          "Remote session could not be restored; continued with a new agent session.",
+      );
     }
     if (snapshot.usage && typeof snapshot.usage.used === "number") {
       parts.push(
@@ -220,6 +254,186 @@
     );
     actionsMenuEl.className =
       "acp-actions-menu" + (state.actionsMenuOpen ? "" : " hidden");
+  }
+
+  function renderSessionDrawer(snapshot) {
+    const labels = snapshot.labels || {};
+    const backendGroups =
+      Array.isArray(snapshot.backendChatSessions) &&
+      snapshot.backendChatSessions.length > 0
+        ? snapshot.backendChatSessions
+        : [
+            {
+              backendId: String(snapshot.activeBackendId || snapshot.backendId || ""),
+              displayName: snapshot.backendLabel || "",
+              sessions: Array.isArray(snapshot.chatSessions)
+                ? snapshot.chatSessions
+                : [],
+            },
+          ];
+    const activeConversationId = String(
+      snapshot.activeConversationId || snapshot.conversationId || "",
+    ).trim();
+    const activeBackendId = String(snapshot.activeBackendId || snapshot.backendId || "").trim();
+    const blocked = isSessionMutationBlocked(snapshot);
+    sessionManagerBtnEl.textContent =
+      labels.sessionManager || labels.conversation || "Sessions";
+    sessionManagerBtnEl.setAttribute(
+      "aria-expanded",
+      state.sessionDrawerOpen ? "true" : "false",
+    );
+    sessionDrawerEl.className =
+      "acp-session-drawer" + (state.sessionDrawerOpen ? "" : " hidden");
+    sessionDrawerTitleEl.textContent =
+      labels.sessionManager || labels.conversation || "Sessions";
+    sessionDrawerSubtitleEl.textContent =
+      String(backendGroups.length) + " backend" + (backendGroups.length === 1 ? "" : "s");
+    sessionDrawerCloseBtnEl.textContent = labels.close || "Close";
+    sessionDrawerBusyEl.textContent =
+      labels.sessionBusy ||
+      "Session changes are disabled while a prompt or permission request is active.";
+    sessionDrawerBusyEl.className =
+      "acp-session-drawer-note" + (blocked ? "" : " hidden");
+    sessionDrawerEmptyEl.textContent =
+      labels.sessionEmpty || labels.empty || "No conversations yet.";
+    const signature = JSON.stringify({
+      open: state.sessionDrawerOpen,
+      activeConversationId,
+      activeBackendId,
+      blocked,
+      backendGroups: backendGroups.map(function (group) {
+        return {
+          backendId: String(group.backendId || ""),
+          displayName: String(group.displayName || ""),
+          sessions: (group.sessions || []).map(function (entry) {
+            return [
+              String(entry.conversationId || ""),
+              String(entry.title || ""),
+              String(entry.updatedAt || ""),
+              String(entry.status || ""),
+              String(entry.lastError || ""),
+              Number(entry.messageCount || 0),
+            ];
+          }),
+        };
+      }),
+    });
+    if (signature === state.sessionDrawerSignature) {
+      return;
+    }
+    state.sessionDrawerSignature = signature;
+    clearNode(sessionDrawerListEl);
+    const totalSessions = backendGroups.reduce(function (sum, group) {
+      return sum + (Array.isArray(group.sessions) ? group.sessions.length : 0);
+    }, 0);
+    sessionDrawerEmptyEl.className =
+      "acp-empty-state" + (totalSessions === 0 ? "" : " hidden");
+    backendGroups.forEach(function (group) {
+      const backendId = String(group.backendId || "").trim();
+      const sessions = Array.isArray(group.sessions) ? group.sessions : [];
+      if (sessions.length === 0) {
+        return;
+      }
+      const groupNode = el(
+        "section",
+        "acp-session-backend-group" +
+          (backendId === activeBackendId ? " is-active-backend" : ""),
+      );
+      groupNode.appendChild(
+        el(
+          "div",
+          "acp-session-backend-title",
+          String(group.displayName || backendId || "ACP"),
+        ),
+      );
+      sessions.forEach(function (entry) {
+      const conversationId = String(entry.conversationId || "").trim();
+      const isActive =
+        conversationId === activeConversationId && backendId === activeBackendId;
+      const row = el(
+        "article",
+        "acp-session-row" + (isActive ? " is-active" : ""),
+      );
+      const main = el("button", "acp-session-row-main");
+      main.type = "button";
+      main.disabled = blocked || isActive;
+      main.addEventListener("click", function () {
+        if (!conversationId) {
+          return;
+        }
+        state.sessionDrawerOpen = false;
+        sendAction("set-active-conversation", {
+          backendId: backendId,
+          conversationId: conversationId,
+        });
+      });
+      main.appendChild(
+        el("span", "acp-session-row-title", String(entry.title || "New Conversation")),
+      );
+      main.appendChild(
+        el(
+          "span",
+          "acp-session-row-meta",
+          [
+            formatTime(entry.updatedAt),
+            String(Number(entry.messageCount || 0)) + " messages",
+            String(entry.lastError || entry.status || "").trim(),
+          ]
+            .filter(Boolean)
+            .join(" • "),
+        ),
+      );
+      const actions = el("div", "acp-session-row-actions");
+      const renameBtn = el(
+        "button",
+        "btn btn-compact",
+        labels.renameConversation || "Rename",
+      );
+      renameBtn.type = "button";
+      renameBtn.disabled = blocked;
+      renameBtn.addEventListener("click", function () {
+        const title = window.prompt(
+          labels.renameConversation || "Rename Conversation",
+          String(entry.title || "New Conversation"),
+        );
+        if (!title || !String(title).trim()) {
+          return;
+        }
+        sendAction("rename-conversation", {
+          backendId: backendId,
+          conversationId: conversationId,
+          title: String(title).trim(),
+        });
+      });
+      const archiveBtn = el(
+        "button",
+        "btn btn-compact",
+        labels.archiveConversation || "Archive",
+      );
+      archiveBtn.type = "button";
+      archiveBtn.disabled = blocked;
+      archiveBtn.addEventListener("click", function () {
+        if (
+          !window.confirm(
+            labels.archiveConversationConfirm ||
+              "Archive this conversation? It will be hidden from the list.",
+          )
+        ) {
+          return;
+        }
+        sendAction("archive-conversation", {
+          backendId: backendId,
+          conversationId: conversationId,
+        });
+      });
+      actions.appendChild(renameBtn);
+      actions.appendChild(archiveBtn);
+      row.appendChild(main);
+      row.appendChild(actions);
+        groupNode.appendChild(row);
+      });
+      sessionDrawerListEl.appendChild(groupNode);
+    });
   }
 
   function renderChatMode(snapshot) {
@@ -273,6 +487,7 @@
     options.forEach(function (entry) {
       const option = el("option", "", entry.label || entry.id);
       option.value = entry.id;
+      option.title = entry.label || entry.id;
       if (current && current.id === entry.id) {
         option.selected = true;
       }
@@ -296,12 +511,18 @@
     const reasoningOptions = Array.isArray(snapshot.reasoningEffortOptions)
       ? snapshot.reasoningEffortOptions
       : [];
+    const effectiveReasoningOptions =
+      reasoningOptions.length > 0
+        ? reasoningOptions
+        : [{ id: "default", label: "Default" }];
+    const effectiveReasoning =
+      snapshot.currentReasoningEffort || effectiveReasoningOptions[0];
     const signature =
       optionsSignature(modeOptions, snapshot.currentMode) +
       "|" +
       optionsSignature(modelOptions, snapshot.currentDisplayModel || snapshot.currentModel) +
       "|" +
-      optionsSignature(reasoningOptions, snapshot.currentReasoningEffort);
+      optionsSignature(effectiveReasoningOptions, effectiveReasoning);
     if (signature !== state.pickerSignature) {
       renderSelect(modeSelectEl, modeOptions, snapshot.currentMode);
       renderSelect(
@@ -309,16 +530,15 @@
         modelOptions,
         snapshot.currentDisplayModel || snapshot.currentModel,
       );
-      renderSelect(reasoningSelectEl, reasoningOptions, snapshot.currentReasoningEffort);
+      renderSelect(reasoningSelectEl, effectiveReasoningOptions, effectiveReasoning);
+      reasoningSelectEl.disabled = reasoningOptions.length <= 1;
       state.pickerSignature = signature;
     }
     modeSelectEl.closest(".acp-picker").classList.toggle("hidden", modeOptions.length === 0);
     modelSelectEl
       .closest(".acp-picker")
       .classList.toggle("hidden", modelOptions.length === 0);
-    reasoningSelectEl
-      .closest(".acp-picker")
-      .classList.toggle("hidden", reasoningOptions.length <= 1);
+    reasoningSelectEl.closest(".acp-picker").classList.remove("hidden");
   }
 
   function renderBackendPicker(snapshot) {
@@ -356,10 +576,62 @@
           }
           backendSelectEl.appendChild(option);
         });
-        backendSelectEl.disabled = options.length <= 1;
+        backendSelectEl.disabled = false;
       }
       state.backendPickerSignature = signature;
     }
+  }
+
+  function renderSessionPicker(snapshot) {
+    const labels = snapshot.labels || {};
+    const options = Array.isArray(snapshot.chatSessions)
+      ? snapshot.chatSessions
+      : [];
+    sessionPickerLabelEl.textContent = labels.conversation || "Conversation";
+    const activeConversationId = String(
+      snapshot.activeConversationId || snapshot.conversationId || "",
+    ).trim();
+    const signature = JSON.stringify({
+      activeConversationId,
+      busy: snapshot.busy === true,
+      status: String(snapshot.status || ""),
+      options: options.map(function (entry) {
+        return [
+          String(entry.conversationId || ""),
+          String(entry.title || ""),
+          String(entry.updatedAt || ""),
+          Number(entry.messageCount || 0),
+        ];
+      }),
+    });
+    if (signature !== state.sessionPickerSignature) {
+      clearNode(sessionSelectEl);
+      if (options.length === 0) {
+        const empty = el("option", "", "-");
+        empty.value = "";
+        sessionSelectEl.appendChild(empty);
+      } else {
+        options.forEach(function (entry) {
+          const title = String(entry.title || "New Conversation");
+          const count = Number(entry.messageCount || 0);
+          const option = el(
+            "option",
+            "",
+            count > 0 ? title + " (" + String(count) + ")" : title,
+          );
+          option.value = String(entry.conversationId || "");
+          if (option.value === activeConversationId) {
+            option.selected = true;
+          }
+          sessionSelectEl.appendChild(option);
+        });
+      }
+      state.sessionPickerSignature = signature;
+    }
+    sessionSelectEl.disabled =
+      options.length <= 1 ||
+      snapshot.status === "prompting" ||
+      snapshot.status === "permission-required";
   }
 
   function renderPermission(snapshot) {
@@ -751,8 +1023,8 @@
     const labels = snapshot.labels || {};
     titleEl.textContent = snapshot.title || "ACP Chat";
     subtitleEl.textContent = labels.subtitle || "";
-    backendLabelEl.textContent = snapshot.backendLabel || "-";
     renderBackendPicker(snapshot);
+    renderSessionPicker(snapshot);
     statusLabelEl.textContent = snapshot.statusLabel || "-";
     targetLabelEl.textContent =
       snapshot.target === "reader"
@@ -761,6 +1033,18 @@
     agentLabelEl.textContent =
       [snapshot.agentLabel, snapshot.agentVersion].filter(Boolean).join(" ") || "-";
     sessionLabelEl.textContent = snapshot.sessionTitle || snapshot.sessionId || "-";
+    remoteSessionLabelEl.textContent = labels.remoteSession || "Remote session";
+    remoteSessionValueEl.textContent =
+      snapshot.remoteSessionId || snapshot.sessionId || "-";
+    remoteRestoreLabelEl.textContent = labels.remoteRestore || "Remote restore";
+    remoteRestoreValueEl.textContent =
+      snapshot.remoteSessionRestoreStatus &&
+      snapshot.remoteSessionRestoreStatus !== "none"
+        ? snapshot.remoteSessionRestoreStatus +
+          (snapshot.remoteSessionRestoreMessage
+            ? " · " + snapshot.remoteSessionRestoreMessage
+            : "")
+        : "-";
     commandLabelEl.textContent = snapshot.commandLabel || snapshot.commandLine || "-";
     workspaceLabelEl.textContent = labels.workspace || "Workspace";
     runtimeLabelEl.textContent = labels.runtime || "Runtime";
@@ -772,10 +1056,13 @@
     inputEl.placeholder =
       labels.composerPlaceholder ||
       "Ask the active ACP backend about the current library or item...";
-    sendBtnEl.textContent = labels.send || "Send";
+    primaryActionBtnEl.textContent =
+      snapshot.busy === true ? labels.cancel || "Cancel" : labels.send || "Send";
+    primaryActionBtnEl.className =
+      snapshot.busy === true ? "btn btn-danger" : "btn btn-primary";
     newConversationBtnEl.textContent = labels.newConversation || "New Conversation";
-    reconnectBtnEl.textContent = labels.reconnect || "Reconnect";
-    cancelBtnEl.textContent = labels.cancel || "Cancel";
+    connectBtnEl.textContent = labels.connect || "Connect";
+    disconnectBtnEl.textContent = labels.disconnect || "Disconnect";
     closeBtnEl.textContent = labels.close || "Close";
     authenticateBtnEl.textContent = labels.authenticate || "Authenticate";
     manageBackendsBtnEl.textContent = labels.manageBackends || "Manage Backends";
@@ -784,14 +1071,23 @@
       snapshot.status === "spawning" ||
       snapshot.status === "initializing";
     const isBusy = snapshot.busy === true;
+    const isConnected =
+      Boolean(String(snapshot.sessionId || "").trim()) ||
+      snapshot.status === "connected" ||
+      snapshot.status === "prompting" ||
+      snapshot.status === "permission-required" ||
+      snapshot.status === "auth-required";
     inputEl.disabled = isConnecting;
-    sendBtnEl.disabled = isConnecting;
-    cancelBtnEl.disabled = !isBusy;
+    primaryActionBtnEl.disabled = isConnecting;
+    connectBtnEl.disabled = isConnecting || isConnected || isBusy;
+    disconnectBtnEl.disabled = isConnecting || (!isConnected && snapshot.status === "idle");
+    newConversationBtnEl.disabled = isBusy;
     authenticateBtnEl.disabled =
       !Array.isArray(snapshot.authMethods) || snapshot.authMethods.length === 0;
     statusSummaryEl.setAttribute("data-status", String(snapshot.status || "idle"));
     renderBanner(snapshot);
     renderActionsMenu(snapshot);
+    renderSessionDrawer(snapshot);
     renderChatMode(snapshot);
     renderStatusDetails(snapshot);
     renderPickers(snapshot);
@@ -802,6 +1098,11 @@
 
   formEl.addEventListener("submit", function (event) {
     event.preventDefault();
+    const snapshot = state.snapshot || {};
+    if (snapshot.busy === true) {
+      sendAction("cancel", {});
+      return;
+    }
     const message = String(inputEl.value || "").trim();
     if (!message) {
       return;
@@ -849,10 +1150,43 @@
     sendAction("set-active-backend", { backendId: backendId });
   });
 
+  sessionSelectEl.addEventListener("change", function () {
+    const conversationId = String(sessionSelectEl.value || "").trim();
+    if (!conversationId) {
+      return;
+    }
+    sendAction("set-active-conversation", { conversationId: conversationId });
+  });
+
   moreBtnEl.addEventListener("click", function (event) {
     event.stopPropagation();
     state.actionsMenuOpen = !state.actionsMenuOpen;
     renderActionsMenu(state.snapshot || {});
+  });
+
+  sessionManagerBtnEl.addEventListener("click", function (event) {
+    event.stopPropagation();
+    state.sessionDrawerOpen = !state.sessionDrawerOpen;
+    state.sessionDrawerSignature = "";
+    renderSessionDrawer(state.snapshot || {});
+  });
+
+  sessionDrawerCloseBtnEl.addEventListener("click", function () {
+    state.sessionDrawerOpen = false;
+    state.sessionDrawerSignature = "";
+    renderSessionDrawer(state.snapshot || {});
+  });
+
+  sessionDrawerEl.addEventListener("click", function (event) {
+    if (
+      event.target &&
+      event.target.closest &&
+      event.target.closest("[data-acp-session-drawer-close]")
+    ) {
+      state.sessionDrawerOpen = false;
+      state.sessionDrawerSignature = "";
+      renderSessionDrawer(state.snapshot || {});
+    }
   });
 
   actionsMenuEl.addEventListener("click", function (event) {
@@ -938,12 +1272,12 @@
     sendAction("new-conversation", {});
   });
 
-  reconnectBtnEl.addEventListener("click", function () {
-    sendAction("reconnect", {});
+  connectBtnEl.addEventListener("click", function () {
+    sendAction("connect", {});
   });
 
-  cancelBtnEl.addEventListener("click", function () {
-    sendAction("cancel", {});
+  disconnectBtnEl.addEventListener("click", function () {
+    sendAction("disconnect", {});
   });
 
   closeBtnEl.addEventListener("click", function () {

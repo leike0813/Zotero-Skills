@@ -34,7 +34,7 @@ body {
   min-height: 0;
   padding: 10px;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   gap: 8px;
   overflow: hidden;
 }
@@ -42,7 +42,7 @@ body {
 .acp-chat-header {
   grid-row: 1;
   display: grid;
-  grid-template-columns: minmax(0, auto) minmax(120px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -67,15 +67,33 @@ body {
   white-space: nowrap;
 }
 
-.acp-status-summary {
+.acp-control-bar {
+  grid-row: 2;
   min-width: 0;
-  display: flex;
+  display: block;
   align-items: center;
-  gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--acp-line);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.9);
+}
+
+.acp-control-main,
+.acp-control-secondary {
+  min-width: 0;
+  display: grid;
+  align-items: center;
+  gap: 6px;
+}
+
+.acp-control-main {
+  grid-template-columns: auto minmax(104px, 1.4fr) minmax(132px, 1.8fr) auto;
+}
+
+.acp-control-secondary {
+  margin-top: 6px;
+  grid-template-columns:
+    auto minmax(110px, auto) minmax(0, 1fr) auto;
 }
 
 .acp-status-pill {
@@ -88,35 +106,29 @@ body {
   font-size: 12px;
 }
 
-.acp-status-copy {
+.acp-control-picker {
   min-width: 0;
-  flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
-.acp-status-copy strong,
-.acp-status-copy span {
+.acp-control-picker span,
+.acp-status-summary-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.acp-backend-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.acp-backend-picker span {
+.acp-control-picker span {
+  flex: 0 0 auto;
   color: var(--acp-muted);
   font-size: 11px;
 }
 
-.acp-backend-picker select {
-  max-width: 190px;
+.acp-control-picker select {
+  min-width: 0;
+  width: 100%;
   border: 1px solid var(--acp-line);
   border-radius: 999px;
   padding: 2px 8px;
@@ -124,13 +136,26 @@ body {
   background: #fff;
 }
 
-.acp-status-copy strong {
-  flex: 0 1 auto;
+.acp-connection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 
-.acp-status-copy span {
-  flex: 1 1 auto;
+.acp-status-summary-text {
   color: var(--acp-muted);
+  min-height: 1.45em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acp-header-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
 }
 
 .acp-actions-menu-wrap {
@@ -159,8 +184,14 @@ body {
   text-align: left;
 }
 
+.acp-interaction-notices {
+  grid-row: 4;
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+}
+
 .acp-status-banner {
-  grid-row: 2;
   padding: 8px 10px;
   border: 1px solid #e5cf91;
   border-radius: 10px;
@@ -176,16 +207,154 @@ body {
 
 .acp-status-banner.hidden,
 .acp-permission-banner.hidden,
+.acp-session-drawer.hidden,
+.acp-session-drawer-note.hidden,
+.acp-session-drawer .acp-empty-state.hidden,
 .acp-overlay-panel.hidden,
 .acp-actions-menu.hidden,
 .acp-picker.hidden {
   display: none;
 }
 
+.acp-session-drawer {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  pointer-events: none;
+}
+
+.acp-session-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(16, 33, 58, 0.18);
+  pointer-events: auto;
+}
+
+.acp-session-drawer-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(380px, 92vw);
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+  border-left: 1px solid var(--acp-line);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: -24px 0 48px rgba(16, 33, 58, 0.2);
+  pointer-events: auto;
+}
+
+.acp-session-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.acp-session-drawer-subtitle,
+.acp-session-drawer-note,
+.acp-session-row-meta {
+  color: var(--acp-muted);
+  font-size: 12px;
+}
+
+.acp-session-drawer-note {
+  padding: 7px 9px;
+  border: 1px solid #e5cf91;
+  border-radius: 10px;
+  background: #fff7e1;
+  color: #7a4f00;
+}
+
+.acp-session-drawer-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.acp-session-backend-group {
+  display: grid;
+  gap: 8px;
+}
+
+.acp-session-backend-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 2px;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--acp-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.acp-session-backend-group.is-active-backend .acp-session-backend-title {
+  color: #0d5da3;
+}
+
+.acp-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--acp-line);
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.acp-session-row.is-active {
+  border-color: #8ec3f4;
+  background: #edf7ff;
+}
+
+.acp-session-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.acp-session-row-main:disabled {
+  cursor: default;
+}
+
+.acp-session-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.acp-session-row-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acp-session-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
 .acp-overlay-panel {
   position: absolute;
   z-index: 15;
-  top: 58px;
+  top: 96px;
   left: 10px;
   right: 10px;
   max-height: min(52vh, 420px);
@@ -225,7 +394,6 @@ body {
 }
 
 .acp-permission-banner {
-  grid-row: 3;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -253,7 +421,7 @@ body {
 }
 
 .acp-transcript {
-  grid-row: 4;
+  grid-row: 3;
   min-height: 0;
   max-height: 100%;
   overflow: auto;
@@ -278,10 +446,36 @@ body {
 
 .acp-transcript.plain-mode .acp-message {
   border-width: 0 0 0 3px;
-  border-radius: 0;
+  border-radius: 10px;
   box-shadow: none;
+  padding: 7px 9px;
+}
+
+.acp-transcript.plain-mode .acp-role-user {
+  border-left-color: #2f7fbd;
+  background: linear-gradient(90deg, rgba(226, 242, 255, 0.95) 0%, #f8fcff 100%);
+}
+
+.acp-transcript.plain-mode .acp-role-assistant {
+  border-left-color: #4d8b5a;
+  background: linear-gradient(90deg, rgba(242, 248, 241, 0.95) 0%, #ffffff 100%);
+}
+
+.acp-transcript.plain-mode .acp-role-user .acp-message-role {
+  color: #0d5da3;
+  font-weight: 700;
+}
+
+.acp-transcript.plain-mode .acp-role-assistant .acp-message-role {
+  color: #386f45;
+  font-weight: 700;
+}
+
+.acp-transcript.plain-mode .acp-role-thought,
+.acp-transcript.plain-mode .acp-role-plan,
+.acp-transcript.plain-mode .acp-role-status {
+  border-left-color: #cbd5e1;
   background: transparent;
-  padding: 6px 8px;
 }
 
 .acp-transcript.plain-mode .acp-tool-line {
@@ -483,12 +677,24 @@ body {
 }
 
 .acp-composer-footer,
-.acp-composer-pickers,
 .acp-view-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.acp-composer-footer {
+  display: grid;
+  grid-template-columns: 3fr 5fr 2fr 2fr;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.acp-composer-pickers {
+  display: contents;
+  min-width: 0;
 }
 
 .acp-picker {
@@ -504,7 +710,8 @@ body {
 }
 
 .acp-picker select {
-  max-width: 150px;
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--acp-line);
   border-radius: 9px;
   padding: 6px 8px;
@@ -516,7 +723,12 @@ body {
 .acp-updated-at {
   color: var(--acp-muted);
   font-size: 12px;
-  margin-left: auto;
+  white-space: nowrap;
+}
+
+#acp-primary-action-btn {
+  width: 100%;
+  min-width: 0;
 }
 
 .btn {
@@ -571,16 +783,27 @@ body {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .acp-status-summary {
-    grid-column: 1 / -1;
-    order: 3;
+  .acp-control-main {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .acp-control-secondary {
+    grid-template-columns: auto minmax(92px, auto) minmax(0, 1fr) auto;
+  }
+
+  .acp-connection-actions {
+    justify-content: flex-end;
+  }
+
+  .acp-status-summary-text {
+    min-width: 0;
   }
 
   .acp-meta-grid {
     grid-template-columns: 1fr;
   }
 
-  .acp-updated-at {
-    margin-left: 0;
+  .acp-composer-footer {
+    grid-template-columns: 3fr 5fr 2fr 2fr;
   }
 }

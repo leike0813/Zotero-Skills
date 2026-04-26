@@ -1,11 +1,8 @@
 # acp-model-effort-selector Specification
 
 ## Purpose
-
-ACP chat SHALL present model and reasoning effort as separate frontend controls when an ACP backend encodes effort as model variants.
-
+TBD - created by archiving change split-acp-model-reasoning-effort-selector. Update Purpose after archive.
 ## Requirements
-
 ### Requirement: Model variants SHALL be folded into display model and effort selectors
 
 When raw ACP model options contain multiple recognized effort variants for the same base model, the ACP chat frontend SHALL show one display model option and a separate reasoning effort selector.
@@ -50,3 +47,4 @@ This feature SHALL NOT require ACP `configOptions`, `thought_level`, or `session
 
 - **WHEN** the user changes model or reasoning effort
 - **THEN** the frontend SHALL use the existing `session/set_model` adapter path
+

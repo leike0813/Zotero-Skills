@@ -261,6 +261,68 @@ describe("acp client connection", function () {
     await connection.closed;
   });
 
+  it("sends session/resume and session/load requests with cwd and MCP server params", async function () {
+    const harness = createMessageHarness();
+    const connection = new AcpClientConnection(
+      () => ({
+        requestPermission: async () => ({ outcome: "cancelled" }),
+        sessionUpdate: async () => undefined,
+      }),
+      harness.stream,
+    );
+
+    const resumePromise = connection.resumeSession({
+      sessionId: "session-1",
+      cwd: "D:\\ZoteroData",
+      mcpServers: [],
+    });
+    const resumeOutbound = await harness.nextOutbound();
+    assert.include(resumeOutbound, {
+      jsonrpc: "2.0",
+      method: "session/resume",
+    });
+    assert.deepEqual(resumeOutbound.params, {
+      sessionId: "session-1",
+      cwd: "D:\\ZoteroData",
+      mcpServers: [],
+    });
+    harness.pushInbound({
+      jsonrpc: "2.0",
+      id: resumeOutbound.id,
+      result: {
+        title: "Resumed",
+      },
+    });
+    assert.deepEqual(await resumePromise, {
+      title: "Resumed",
+    });
+
+    const loadPromise = connection.loadSession({
+      sessionId: "session-2",
+      cwd: "D:\\ZoteroData",
+      mcpServers: [],
+    });
+    const loadOutbound = await harness.nextOutbound();
+    assert.include(loadOutbound, {
+      jsonrpc: "2.0",
+      method: "session/load",
+    });
+    assert.deepEqual(loadOutbound.params, {
+      sessionId: "session-2",
+      cwd: "D:\\ZoteroData",
+      mcpServers: [],
+    });
+    harness.pushInbound({
+      jsonrpc: "2.0",
+      id: loadOutbound.id,
+      result: null,
+    });
+    assert.isNull(await loadPromise);
+
+    harness.closeInbound();
+    await connection.closed;
+  });
+
   it("does not depend on AbortController to receive session/update and close cleanly", async function () {
     const harness = createMessageHarness();
     const previousAbortController = redefineGlobalProperty(

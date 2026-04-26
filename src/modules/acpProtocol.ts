@@ -4,8 +4,10 @@ export const ACP_AGENT_METHODS = {
   authenticate: "authenticate",
   initialize: "initialize",
   session_cancel: "session/cancel",
+  session_load: "session/load",
   session_new: "session/new",
   session_prompt: "session/prompt",
+  session_resume: "session/resume",
   session_set_mode: "session/set_mode",
   session_set_model: "session/set_model",
 } as const;
@@ -67,6 +69,15 @@ export type AcpAgentInfo = {
   version?: string | null;
 };
 
+export type AcpAgentCapabilities = {
+  loadSession?: boolean | null;
+  sessionCapabilities?: {
+    resume?: Record<string, unknown> | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+};
+
 export type AcpInitializeRequest = {
   protocolVersion: number;
   clientCapabilities?: Record<string, unknown>;
@@ -76,6 +87,7 @@ export type AcpInitializeResponse = {
   protocolVersion?: number;
   agentInfo?: AcpAgentInfo | null;
   authMethods?: AcpAuthMethod[] | null;
+  agentCapabilities?: AcpAgentCapabilities | null;
 };
 
 export type AcpSessionMode = {
@@ -107,6 +119,13 @@ export type NewSessionResponse = {
   modes?: SessionModeState | null;
   models?: SessionModelState | null;
 };
+
+export type SessionAttachResponse = {
+  title?: string | null;
+  updatedAt?: string | null;
+  modes?: SessionModeState | null;
+  models?: SessionModelState | null;
+} | null;
 
 export type AcpPermissionOption = {
   optionId: string;

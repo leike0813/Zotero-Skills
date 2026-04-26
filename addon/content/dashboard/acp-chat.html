@@ -13,53 +13,76 @@
           <h1 id="acp-title" class="acp-chat-title">ACP Chat</h1>
           <div id="acp-subtitle" class="acp-chat-subtitle"></div>
         </div>
-        <section id="acp-status-summary" class="acp-status-summary">
-          <div class="acp-status-pill">
-            <span id="acp-status-label">Idle</span>
-          </div>
-          <div class="acp-status-copy">
-            <label class="acp-backend-picker">
-              <span id="acp-backend-picker-label">Backend</span>
-              <select id="acp-backend-select"></select>
-            </label>
-            <strong id="acp-backend-label">ACP</strong>
-            <span id="acp-status-summary-text">-</span>
-          </div>
-        </section>
-        <div class="acp-actions-menu-wrap">
-          <button id="acp-more-btn" class="btn btn-compact" type="button">More</button>
-          <div id="acp-actions-menu" class="acp-actions-menu hidden">
-            <button id="acp-new-conversation-btn" class="btn" type="button">
-              New Conversation
-            </button>
-            <button id="acp-reconnect-btn" class="btn" type="button">
-              Reconnect
-            </button>
-            <button
-              id="acp-status-details-toggle-btn"
-              class="btn"
-              type="button"
-            >
-              Show Details
-            </button>
-            <button id="acp-authenticate-btn" class="btn" type="button">
-              Authenticate
-            </button>
-            <button id="acp-diagnostics-toggle-btn" class="btn" type="button">
-              Show Diagnostics
-            </button>
-            <button id="acp-diagnostics-copy-btn" class="btn" type="button">
-              Copy Diagnostics
-            </button>
-            <button id="acp-manage-backends-btn" class="btn" type="button">
-              Manage Backends
-            </button>
-            <button id="acp-close-btn" class="btn" type="button">Close</button>
+        <div class="acp-header-actions">
+          <button id="acp-session-manager-btn" class="btn btn-compact" type="button">
+            Sessions
+          </button>
+          <div class="acp-actions-menu-wrap">
+            <button id="acp-more-btn" class="btn btn-compact" type="button">More</button>
+            <div id="acp-actions-menu" class="acp-actions-menu hidden">
+              <button
+                id="acp-status-details-toggle-btn"
+                class="btn"
+                type="button"
+              >
+                Show Details
+              </button>
+              <button id="acp-authenticate-btn" class="btn" type="button">
+                Authenticate
+              </button>
+              <button id="acp-diagnostics-toggle-btn" class="btn" type="button">
+                Show Diagnostics
+              </button>
+              <button id="acp-diagnostics-copy-btn" class="btn" type="button">
+                Copy Diagnostics
+              </button>
+              <button id="acp-manage-backends-btn" class="btn" type="button">
+                Manage Backends
+              </button>
+              <button id="acp-close-btn" class="btn" type="button">Close</button>
+            </div>
           </div>
         </div>
       </header>
 
-      <section id="acp-status-banner" class="acp-status-banner hidden"></section>
+      <section id="acp-status-summary" class="acp-control-bar">
+        <div class="acp-control-main">
+          <div class="acp-status-pill">
+            <span id="acp-status-label">Idle</span>
+          </div>
+          <label class="acp-control-picker acp-backend-picker">
+            <span id="acp-backend-picker-label">Backend</span>
+            <select id="acp-backend-select"></select>
+          </label>
+          <label class="acp-control-picker acp-session-picker">
+            <span id="acp-session-picker-label">Conversation</span>
+            <select id="acp-session-select"></select>
+          </label>
+          <button id="acp-new-conversation-btn" class="btn btn-compact" type="button">
+            New
+          </button>
+        </div>
+        <div class="acp-control-secondary">
+          <div class="acp-connection-actions">
+            <button id="acp-connect-btn" class="btn btn-primary btn-compact" type="button">
+              Connect
+            </button>
+            <button id="acp-disconnect-btn" class="btn btn-compact" type="button">
+              Disconnect
+            </button>
+          </div>
+          <div id="acp-updated-at" class="acp-updated-at"></div>
+          <span id="acp-status-summary-text" class="acp-status-summary-text">-</span>
+          <div class="acp-view-toggle" role="group" aria-label="Chat view">
+            <button id="acp-chat-mode-plain" class="btn btn-compact" type="button">
+              Plain
+            </button>
+            <button id="acp-chat-mode-bubble" class="btn btn-compact" type="button">
+              Bubble
+            </button>
+          </div>
+        </div>
+      </section>
 
       <section
         id="acp-status-details-panel"
@@ -77,6 +100,14 @@
           <div class="acp-meta-chip">
             <strong>Session</strong>
             <span id="acp-session-label">-</span>
+          </div>
+          <div class="acp-meta-chip">
+            <strong id="acp-remote-session-label">Remote session</strong>
+            <span id="acp-remote-session-value">-</span>
+          </div>
+          <div class="acp-meta-chip">
+            <strong id="acp-remote-restore-label">Remote restore</strong>
+            <span id="acp-remote-restore-value">-</span>
           </div>
           <div class="acp-meta-chip">
             <strong>Command</strong>
@@ -100,22 +131,46 @@
         </section>
       </section>
 
-      <section id="acp-permission-banner" class="acp-permission-banner hidden">
-        <div class="acp-permission-copy">
-          <strong id="acp-permission-title">Permission request</strong>
-          <div id="acp-permission-summary"></div>
-        </div>
-        <div class="acp-permission-actions">
-          <button id="acp-allow-btn" class="btn btn-primary" type="button">
-            Allow
-          </button>
-          <button id="acp-deny-btn" class="btn btn-danger" type="button">
-            Deny
-          </button>
-        </div>
+      <section id="acp-transcript" class="acp-transcript plain-mode"></section>
+
+      <section id="acp-session-drawer" class="acp-session-drawer hidden">
+        <div class="acp-session-drawer-backdrop" data-acp-session-drawer-close="true"></div>
+        <aside class="acp-session-drawer-panel" aria-labelledby="acp-session-drawer-title">
+          <div class="acp-session-drawer-header">
+            <div>
+              <strong id="acp-session-drawer-title">Sessions</strong>
+              <div id="acp-session-drawer-subtitle" class="acp-session-drawer-subtitle"></div>
+            </div>
+            <button id="acp-session-drawer-close-btn" class="btn btn-compact" type="button">
+              Close
+            </button>
+          </div>
+          <div id="acp-session-drawer-busy" class="acp-session-drawer-note hidden"></div>
+          <div id="acp-session-drawer-list" class="acp-session-drawer-list"></div>
+          <div id="acp-session-drawer-empty" class="acp-empty-state hidden">
+            No conversations yet.
+          </div>
+        </aside>
       </section>
 
-      <section id="acp-transcript" class="acp-transcript plain-mode"></section>
+      <section class="acp-interaction-notices">
+        <section id="acp-status-banner" class="acp-status-banner hidden"></section>
+
+        <section id="acp-permission-banner" class="acp-permission-banner hidden">
+          <div class="acp-permission-copy">
+            <strong id="acp-permission-title">Permission request</strong>
+            <div id="acp-permission-summary"></div>
+          </div>
+          <div class="acp-permission-actions">
+            <button id="acp-allow-btn" class="btn btn-primary" type="button">
+              Allow
+            </button>
+            <button id="acp-deny-btn" class="btn btn-danger" type="button">
+              Deny
+            </button>
+          </div>
+        </section>
+      </section>
 
       <section
         id="acp-diagnostics-panel"
@@ -151,19 +206,9 @@
               <select id="acp-reasoning-select"></select>
             </label>
           </div>
-          <div class="acp-view-toggle" role="group" aria-label="Chat view">
-            <button id="acp-chat-mode-plain" class="btn btn-compact" type="button">
-              Plain
-            </button>
-            <button id="acp-chat-mode-bubble" class="btn btn-compact" type="button">
-              Bubble
-            </button>
-          </div>
-          <div id="acp-updated-at" class="acp-updated-at"></div>
-          <button id="acp-cancel-btn" class="btn btn-danger" type="button">
-            Cancel
+          <button id="acp-primary-action-btn" class="btn btn-primary" type="submit">
+            Send
           </button>
-          <button id="acp-send-btn" class="btn btn-primary" type="submit">Send</button>
         </div>
       </form>
     </main>

@@ -90,6 +90,11 @@ export function buildAcpSidebarViewSnapshot(args: {
 }) {
   const backendLabel =
     String(args.snapshot.backend?.displayName || "").trim() ||
+    String(
+      (args.frontendSnapshot?.backends || []).find(
+        (entry) => entry.backendId === args.frontendSnapshot?.activeBackendId,
+      )?.displayName || "",
+    ).trim() ||
     String(args.snapshot.backendId || "").trim() ||
     "ACP";
   const lastError =
@@ -109,7 +114,33 @@ export function buildAcpSidebarViewSnapshot(args: {
     errorCount: Number(args.frontendSnapshot?.errorCount || 0),
     totalMessageCount: Number(args.frontendSnapshot?.totalMessageCount || args.snapshot.items.length || 0),
     conversationId: String(args.snapshot.conversationId || "").trim(),
+    conversationTitle: String(args.snapshot.conversationTitle || "").trim(),
+    activeConversationId:
+      String(
+        args.frontendSnapshot?.activeConversationId ||
+          args.snapshot.conversationId ||
+          "",
+      ).trim(),
+    chatSessions: (args.frontendSnapshot?.chatSessions || []).map((entry) => ({
+      ...entry,
+    })),
+    backendChatSessions: (
+      args.frontendSnapshot?.backendChatSessions || []
+    ).map((group) => ({
+      backendId: group.backendId,
+      displayName: group.displayName,
+      sessions: group.sessions.map((entry) => ({ ...entry })),
+    })),
     sessionId: String(args.snapshot.sessionId || "").trim(),
+    remoteSessionId: String(args.snapshot.remoteSessionId || "").trim(),
+    canLoadRemoteSession: args.snapshot.canLoadRemoteSession === true,
+    canResumeRemoteSession: args.snapshot.canResumeRemoteSession === true,
+    remoteSessionRestoreStatus: String(
+      args.snapshot.remoteSessionRestoreStatus || "none",
+    ).trim(),
+    remoteSessionRestoreMessage: String(
+      args.snapshot.remoteSessionRestoreMessage || "",
+    ).trim(),
     updatedAt: String(args.snapshot.updatedAt || "").trim(),
     busy: args.snapshot.busy === true,
     status: args.snapshot.status,
@@ -180,6 +211,14 @@ export function buildAcpSidebarViewSnapshot(args: {
         "Persistent ACP chat for your Zotero workspace.",
       ),
       backend: localize("task-dashboard-acp-backend" as any, "Backend"),
+      conversation: localize(
+        "task-dashboard-acp-conversation" as any,
+        "Conversation",
+      ),
+      sessionManager: localize(
+        "task-dashboard-acp-session-manager" as any,
+        "Sessions",
+      ),
       manageBackends: localize(
         "task-dashboard-acp-manage-backends" as any,
         "Manage Backends",
@@ -187,6 +226,31 @@ export function buildAcpSidebarViewSnapshot(args: {
       newConversation: localize(
         "task-dashboard-acp-new-conversation" as any,
         "New Conversation",
+      ),
+      renameConversation: localize(
+        "task-dashboard-acp-rename-conversation" as any,
+        "Rename Conversation",
+      ),
+      archiveConversation: localize(
+        "task-dashboard-acp-archive-conversation" as any,
+        "Archive",
+      ),
+      archiveConversationConfirm: localize(
+        "task-dashboard-acp-archive-conversation-confirm" as any,
+        "Archive this conversation? It will be hidden from the list.",
+      ),
+      sessionBusy: localize(
+        "task-dashboard-acp-session-busy" as any,
+        "Session changes are disabled while a prompt or permission request is active.",
+      ),
+      sessionEmpty: localize(
+        "task-dashboard-acp-session-empty" as any,
+        "No conversations yet.",
+      ),
+      connect: localize("task-dashboard-acp-connect" as any, "Connect"),
+      disconnect: localize(
+        "task-dashboard-acp-disconnect" as any,
+        "Disconnect",
       ),
       reconnect: localize("task-dashboard-acp-reconnect" as any, "Reconnect"),
       cancel: localize("task-dashboard-acp-cancel" as any, "Cancel"),
@@ -243,6 +307,14 @@ export function buildAcpSidebarViewSnapshot(args: {
       model: localize("task-dashboard-acp-model" as any, "Model"),
       reasoning: localize("task-dashboard-acp-reasoning" as any, "Reasoning"),
       session: localize("task-dashboard-acp-session" as any, "Session"),
+      remoteSession: localize(
+        "task-dashboard-acp-remote-session" as any,
+        "Remote session",
+      ),
+      remoteRestore: localize(
+        "task-dashboard-acp-remote-restore" as any,
+        "Remote restore",
+      ),
       workspace: localize("task-dashboard-acp-session-cwd" as any, "Session cwd"),
       runtime: localize("task-dashboard-acp-runtime" as any, "Runtime"),
       hostContext: localize(

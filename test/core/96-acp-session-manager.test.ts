@@ -6,15 +6,22 @@ import {
 } from "../../src/config/defaults";
 import {
   authenticateAcpConversation,
+  archiveAcpConversation,
   buildAcpDiagnosticsBundle,
   cancelAcpConversationPrompt,
+  connectAcpConversation,
+  deleteActiveAcpConversation,
+  disconnectAcpConversation,
   getAcpFrontendSnapshot,
   getAcpConversationSnapshot,
+  refreshAcpConversationBackends,
   reconnectAcpConversation,
+  renameAcpConversation,
   resolveAcpConversationPermission,
   resetAcpSessionManagerForTests,
   sendAcpConversationPrompt,
   setActiveAcpBackend,
+  setActiveAcpConversation,
   setAcpConversationChatDisplayMode,
   setAcpConversationModel,
   setAcpConversationMode,
@@ -25,11 +32,19 @@ import {
   toggleAcpConversationStatusDetails,
 } from "../../src/modules/acpSessionManager";
 import {
+  listAcpChatSessions,
   loadAcpConversationState,
   resolveAcpStoragePaths,
   resolveAcpSessionCwd,
 } from "../../src/modules/acpConversationStore";
 import { resetPluginStateStoreForTests } from "../../src/modules/pluginStateStore";
+import {
+  PLUGIN_TASK_DOMAIN_ACP,
+  getPluginTaskRequestEntry,
+  listPluginTaskRowEntries,
+  replacePluginTaskRowEntries,
+  upsertPluginTaskRequestEntry,
+} from "../../src/modules/pluginStateStore";
 import type {
   AcpConnectionAdapter,
   AcpConnectionAdapterFactoryArgs,
@@ -54,6 +69,8 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
   readonly sessionIds: string[] = [];
   readonly modelSelections: string[] = [];
   readonly modeSelections: string[] = [];
+  readonly loadSessionIds: string[] = [];
+  readonly resumeSessionIds: string[] = [];
   readonly authenticateCalls: string[] = [];
   readonly cancelSessionIds: string[] = [];
   initializeCalls = 0;
@@ -61,6 +78,11 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
   promptStopReason = "end_turn";
   failInitialize = false;
   failNewSessionUntilAuthenticated = false;
+  canLoadSession = false;
+  canResumeSession = false;
+  failLoadSession = false;
+  failResumeSession = false;
+  emitReplayOnLoad = false;
   emitPermissionDuringPrompt = false;
   streamingChunkCount = 0;
   modelState = {
@@ -110,6 +132,8 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
       ],
       commandLabel: "npx opencode-ai@latest acp",
       commandLine: "npx opencode-ai@latest acp",
+      canLoadSession: this.canLoadSession,
+      canResumeSession: this.canResumeSession,
     };
   }
 
@@ -174,6 +198,78 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
           { id: "code", name: "Code", description: "Act directly" },
         ],
       },
+      models: {
+        currentModelId: this.modelState.currentModelId,
+        availableModels: this.modelState.availableModels,
+      },
+    };
+  }
+
+  async loadSession(args: { sessionId: string }) {
+    this.loadSessionIds.push(args.sessionId);
+    this.emitDiagnostic({
+      kind: "session_load_attempted",
+      level: "info",
+      message: `load ${args.sessionId}`,
+    });
+    if (this.failLoadSession) {
+      throw new Error("load failed");
+    }
+    if (this.emitReplayOnLoad) {
+      await this.emitUpdate({
+        sessionId: args.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "replayed assistant text",
+          },
+        },
+      });
+      await this.emitUpdate({
+        sessionId: args.sessionId,
+        update: {
+          sessionUpdate: "session_info_update",
+          title: "Loaded session",
+          updatedAt: "2026-04-22T02:00:00.000Z",
+        },
+      });
+    }
+    this.emitDiagnostic({
+      kind: "session_load_succeeded",
+      level: "info",
+      message: `loaded ${args.sessionId}`,
+    });
+    return {
+      sessionId: args.sessionId,
+      sessionTitle: "Loaded session",
+      sessionUpdatedAt: "2026-04-22T02:00:00.000Z",
+      models: {
+        currentModelId: this.modelState.currentModelId,
+        availableModels: this.modelState.availableModels,
+      },
+    };
+  }
+
+  async resumeSession(args: { sessionId: string }) {
+    this.resumeSessionIds.push(args.sessionId);
+    this.emitDiagnostic({
+      kind: "session_resume_attempted",
+      level: "info",
+      message: `resume ${args.sessionId}`,
+    });
+    if (this.failResumeSession) {
+      throw new Error("resume failed");
+    }
+    this.emitDiagnostic({
+      kind: "session_resume_succeeded",
+      level: "info",
+      message: `resumed ${args.sessionId}`,
+    });
+    return {
+      sessionId: args.sessionId,
+      sessionTitle: "Resumed session",
+      sessionUpdatedAt: "2026-04-22T02:00:00.000Z",
       models: {
         currentModelId: this.modelState.currentModelId,
         availableModels: this.modelState.availableModels,
@@ -451,6 +547,36 @@ describe("acp session manager", function () {
     }
   });
 
+  it("refreshes ACP backend metadata without starting an engine", async function () {
+    await refreshAcpConversationBackends();
+
+    const frontend = getAcpFrontendSnapshot();
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(frontend.activeBackendId, ACP_OPENCODE_BACKEND_ID);
+    assert.isAtLeast(frontend.backends.length, 1);
+    assert.equal(snapshot.backendId, ACP_OPENCODE_BACKEND_ID);
+    assert.equal(snapshot.backend?.id, ACP_OPENCODE_BACKEND_ID);
+    assert.isNull(lastAdapter);
+  });
+
+  it("connects and disconnects the active ACP conversation explicitly", async function () {
+    await connectAcpConversation();
+
+    let snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.status, "connected");
+    assert.equal(snapshot.sessionId, "session-1");
+    assert.equal(snapshot.remoteSessionId, "session-1");
+    assert.equal(lastAdapter?.initializeCalls, 1);
+
+    await disconnectAcpConversation();
+
+    snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.status, "idle");
+    assert.equal(snapshot.sessionId, "");
+    assert.equal(snapshot.remoteSessionId, "session-1");
+    assert.equal(lastAdapter?.closeCalls, 1);
+  });
+
   it("creates an ACP session on demand, merges streamed assistant chunks, and persists transcript state", async function () {
     (Zotero as typeof Zotero & { DataDirectory?: { dir?: string } }).DataDirectory = {
       dir: "D:\\ZoteroData",
@@ -473,6 +599,7 @@ describe("acp session manager", function () {
     assert.equal(snapshot.sessionCwd, "D:\\ZoteroData");
     assert.equal(snapshot.lastLifecycleEvent, "prompt_finished");
     assert.equal(snapshot.sessionId, "session-1");
+    assert.equal(snapshot.remoteSessionId, "session-1");
     assert.equal(snapshot.sessionTitle, "OpenCode session");
     assert.equal(snapshot.sessionUpdatedAt, "2026-04-22T01:23:45.000Z");
     assert.equal(snapshot.lastStopReason, "end_turn");
@@ -526,9 +653,9 @@ describe("acp session manager", function () {
     assert.deepEqual(lastAdapter?.sessionIds, ["session-1"]);
     assert.equal(lastAdapter?.prompts.length, 1);
     assert.equal(lastFactoryArgs?.sessionCwd, "D:\\ZoteroData");
-    assert.equal(
-      lastFactoryArgs?.workspaceDir,
-      "D:\\ZoteroData\\zotero-skills\\acp\\workspaces\\acp-opencode",
+    assert.include(
+      String(lastFactoryArgs?.workspaceDir || ""),
+      "D:\\ZoteroData\\zotero-skills\\acp\\workspaces\\acp-opencode\\",
     );
     assert.equal(
       lastFactoryArgs?.runtimeDir,
@@ -536,7 +663,8 @@ describe("acp session manager", function () {
     );
 
     const persisted = loadAcpConversationState(ACP_OPENCODE_BACKEND_ID);
-    assert.equal(persisted.snapshot.sessionId, "session-1");
+    assert.equal(persisted.snapshot.sessionId, "");
+    assert.equal(persisted.snapshot.remoteSessionId, "session-1");
     assert.equal(persisted.snapshot.commandLabel, "npx opencode-ai@latest acp");
     assert.equal(persisted.snapshot.commandLine, "npx opencode-ai@latest acp");
     assert.equal(persisted.snapshot.agentLabel, "OpenCode");
@@ -616,28 +744,271 @@ describe("acp session manager", function () {
     assert.equal(frontend.activeBackendId, "acp-two");
     assert.equal(frontend.connectedCount, 2);
     assert.equal(frontend.totalMessageCount, one.items.length + two.items.length);
+    assert.deepEqual(
+      frontend.backendChatSessions.map((entry) => entry.backendId),
+      ["acp-two", "acp-one"],
+    );
+    assert.isAtLeast(frontend.backendChatSessions[0].sessions.length, 1);
+    assert.isAtLeast(frontend.backendChatSessions[1].sessions.length, 1);
 
+    const beforeNew = getAcpConversationSnapshot("acp-two").conversationId;
     await startNewAcpConversation();
     assert.isAtLeast(loadAcpConversationState("acp-one").items.length, 1);
     assert.lengthOf(loadAcpConversationState("acp-two").items, 0);
+    assert.isAtLeast(listAcpChatSessions("acp-two").length, 2);
+    assert.notEqual(getAcpConversationSnapshot("acp-two").conversationId, beforeNew);
   });
 
-  it("resets the local conversation while keeping the ACP backend slot stable", async function () {
+  it("creates a new local conversation without deleting the previous transcript", async function () {
     await sendAcpConversationPrompt({
       message: "Before reset",
     });
+    const previousConversationId = getAcpConversationSnapshot().conversationId;
 
     await startNewAcpConversation();
 
     const snapshot = getAcpConversationSnapshot();
     assert.equal(snapshot.backendId, ACP_OPENCODE_BACKEND_ID);
     assert.equal(snapshot.sessionId, "");
+    assert.equal(snapshot.remoteSessionId, "");
     assert.equal(snapshot.status, "idle");
     assert.lengthOf(snapshot.items, 0);
 
     const persisted = loadAcpConversationState(ACP_OPENCODE_BACKEND_ID);
     assert.equal(persisted.snapshot.sessionId, "");
+    assert.equal(persisted.snapshot.remoteSessionId, "");
     assert.lengthOf(persisted.items, 0);
+    const previous = loadAcpConversationState(
+      ACP_OPENCODE_BACKEND_ID,
+      previousConversationId,
+    );
+    assert.isAtLeast(previous.items.length, 1);
+    assert.isAtLeast(listAcpChatSessions(ACP_OPENCODE_BACKEND_ID).length, 2);
+  });
+
+  it("switches local conversations and rebuilds the remote ACP attachment on demand", async function () {
+    await sendAcpConversationPrompt({ message: "First local session" });
+    const firstConversationId = getAcpConversationSnapshot().conversationId;
+    const firstAdapter = lastAdapter;
+
+    await startNewAcpConversation();
+    const secondConversationId = getAcpConversationSnapshot().conversationId;
+    assert.notEqual(secondConversationId, firstConversationId);
+    assert.equal(firstAdapter?.closeCalls, 1);
+
+    await sendAcpConversationPrompt({ message: "Second local session" });
+    assert.equal(getAcpConversationSnapshot().conversationId, secondConversationId);
+    assert.include(
+      getAcpConversationSnapshot().items
+        .filter((entry) => entry.kind === "message")
+        .map((entry) => ("text" in entry ? entry.text : ""))
+        .join("\n"),
+      "Second local session",
+    );
+
+    const secondAdapter = lastAdapter;
+    await setActiveAcpConversation({ conversationId: firstConversationId });
+    assert.equal(secondAdapter?.closeCalls, 1);
+    let snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.conversationId, firstConversationId);
+    assert.equal(snapshot.sessionId, "");
+    assert.include(
+      snapshot.items
+        .filter((entry) => entry.kind === "message")
+        .map((entry) => ("text" in entry ? entry.text : ""))
+        .join("\n"),
+      "First local session",
+    );
+
+    await sendAcpConversationPrompt({ message: "Back on first" });
+    snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.conversationId, firstConversationId);
+    assert.include(
+      snapshot.items
+        .filter((entry) => entry.kind === "message")
+        .map((entry) => ("text" in entry ? entry.text : ""))
+        .join("\n"),
+      "Back on first",
+    );
+  });
+
+  it("resumes a persisted remote ACP session when the backend advertises resume support", async function () {
+    await sendAcpConversationPrompt({ message: "Persist remote context" });
+    const conversationId = getAcpConversationSnapshot().conversationId;
+    assert.equal(getAcpConversationSnapshot().remoteSessionId, "session-1");
+
+    resetAcpSessionManagerForTests();
+    setAcpConnectionAdapterFactoryForTests(async () => {
+      lastAdapter = new FakeAcpConnectionAdapter();
+      lastAdapter.canResumeSession = true;
+      return lastAdapter;
+    });
+
+    await setActiveAcpConversation({ conversationId });
+    await reconnectAcpConversation();
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.sessionId, "session-1");
+    assert.equal(snapshot.remoteSessionId, "session-1");
+    assert.equal(snapshot.remoteSessionRestoreStatus, "resumed");
+    assert.deepEqual(lastAdapter?.resumeSessionIds, ["session-1"]);
+    assert.deepEqual(lastAdapter?.loadSessionIds, []);
+    assert.deepEqual(lastAdapter?.sessionIds, []);
+  });
+
+  it("loads a persisted remote ACP session when resume is unavailable and suppresses replay duplication", async function () {
+    await sendAcpConversationPrompt({ message: "Persist loadable context" });
+    const conversationId = getAcpConversationSnapshot().conversationId;
+
+    resetAcpSessionManagerForTests();
+    setAcpConnectionAdapterFactoryForTests(async () => {
+      lastAdapter = new FakeAcpConnectionAdapter();
+      lastAdapter.canLoadSession = true;
+      lastAdapter.emitReplayOnLoad = true;
+      return lastAdapter;
+    });
+
+    await setActiveAcpConversation({ conversationId });
+    await reconnectAcpConversation();
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.sessionId, "session-1");
+    assert.equal(snapshot.remoteSessionRestoreStatus, "loaded");
+    assert.deepEqual(lastAdapter?.loadSessionIds, ["session-1"]);
+    assert.deepEqual(lastAdapter?.sessionIds, []);
+    assert.equal(snapshot.sessionTitle, "Loaded session");
+    assert.isUndefined(
+      snapshot.items.find(
+        (entry) =>
+          entry.kind === "message" &&
+          entry.role === "assistant" &&
+          entry.text === "replayed assistant text",
+      ),
+    );
+  });
+
+  it("falls back to a new remote ACP session when restore fails", async function () {
+    await sendAcpConversationPrompt({ message: "Persist resumable context" });
+    const conversationId = getAcpConversationSnapshot().conversationId;
+
+    resetAcpSessionManagerForTests();
+    setAcpConnectionAdapterFactoryForTests(async () => {
+      lastAdapter = new FakeAcpConnectionAdapter();
+      lastAdapter.canResumeSession = true;
+      lastAdapter.failResumeSession = true;
+      lastAdapter.sessionIds.push("preexisting");
+      return lastAdapter;
+    });
+
+    await setActiveAcpConversation({ conversationId });
+    await reconnectAcpConversation();
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.sessionId, "session-2");
+    assert.equal(snapshot.remoteSessionId, "session-2");
+    assert.equal(snapshot.remoteSessionRestoreStatus, "fallback-new");
+    assert.deepEqual(lastAdapter?.resumeSessionIds, ["session-1"]);
+    assert.deepEqual(lastAdapter?.sessionIds, ["preexisting", "session-2"]);
+    assert.isOk(
+      snapshot.diagnostics.find((entry) => entry.kind === "session_new_fallback"),
+    );
+    assert.isOk(
+      snapshot.items.find(
+        (entry) =>
+          entry.kind === "status" &&
+          entry.text.includes("Remote session could not be restored"),
+      ),
+    );
+  });
+
+  it("does not call restore methods when the backend does not advertise support", async function () {
+    await sendAcpConversationPrompt({ message: "Persist unsupported context" });
+    const conversationId = getAcpConversationSnapshot().conversationId;
+
+    resetAcpSessionManagerForTests();
+    setAcpConnectionAdapterFactoryForTests(async () => {
+      lastAdapter = new FakeAcpConnectionAdapter();
+      return lastAdapter;
+    });
+
+    await setActiveAcpConversation({ conversationId });
+    await reconnectAcpConversation();
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.remoteSessionRestoreStatus, "unsupported");
+    assert.deepEqual(lastAdapter?.resumeSessionIds, []);
+    assert.deepEqual(lastAdapter?.loadSessionIds, []);
+    assert.deepEqual(lastAdapter?.sessionIds, ["session-1"]);
+  });
+
+  it("renames and deletes the active local conversation with fallback selection", async function () {
+    await sendAcpConversationPrompt({ message: "Keep me" });
+    const firstConversationId = getAcpConversationSnapshot().conversationId;
+    await startNewAcpConversation();
+    const secondConversationId = getAcpConversationSnapshot().conversationId;
+
+    await renameAcpConversation({ title: "Scratchpad" });
+    assert.equal(getAcpConversationSnapshot().conversationTitle, "Scratchpad");
+    assert.equal(
+      listAcpChatSessions(ACP_OPENCODE_BACKEND_ID).find(
+        (entry) => entry.conversationId === secondConversationId,
+      )?.title,
+      "Scratchpad",
+    );
+
+    await deleteActiveAcpConversation();
+    const snapshot = getAcpConversationSnapshot();
+    assert.equal(snapshot.conversationId, firstConversationId);
+    assert.notEqual(snapshot.conversationId, secondConversationId);
+    assert.isUndefined(
+      listAcpChatSessions(ACP_OPENCODE_BACKEND_ID).find(
+        (entry) => entry.conversationId === secondConversationId,
+      ),
+    );
+  });
+
+  it("renames sessions by id and archives them without deleting transcript", async function () {
+    await sendAcpConversationPrompt({ message: "Keep archived transcript" });
+    const firstConversationId = getAcpConversationSnapshot().conversationId;
+    await startNewAcpConversation();
+    const secondConversationId = getAcpConversationSnapshot().conversationId;
+
+    await renameAcpConversation({
+      conversationId: firstConversationId,
+      title: "Archived Reference",
+    });
+    assert.equal(
+      listAcpChatSessions(ACP_OPENCODE_BACKEND_ID).find(
+        (entry) => entry.conversationId === firstConversationId,
+      )?.title,
+      "Archived Reference",
+    );
+    assert.equal(getAcpConversationSnapshot().conversationId, secondConversationId);
+
+    await archiveAcpConversation({
+      conversationId: firstConversationId,
+    });
+    assert.isUndefined(
+      listAcpChatSessions(ACP_OPENCODE_BACKEND_ID).find(
+        (entry) => entry.conversationId === firstConversationId,
+      ),
+    );
+    assert.equal(
+      loadAcpConversationState(
+        ACP_OPENCODE_BACKEND_ID,
+        firstConversationId,
+      ).items.find((entry) => entry.kind === "message" && entry.role === "user")
+        ?.text,
+      "Keep archived transcript",
+    );
+
+    await archiveAcpConversation({
+      conversationId: secondConversationId,
+    });
+    const snapshot = getAcpConversationSnapshot();
+    assert.notEqual(snapshot.conversationId, secondConversationId);
+    assert.lengthOf(listAcpChatSessions(ACP_OPENCODE_BACKEND_ID), 1);
+    assert.equal(listAcpChatSessions(ACP_OPENCODE_BACKEND_ID)[0].messageCount, 0);
   });
 
   it("throttles streaming snapshot notifications while preserving the final transcript", async function () {
@@ -995,6 +1366,62 @@ describe("acp conversation store", function () {
   afterEach(function () {
     resetPluginStateStoreForTests();
     delete (Zotero as typeof Zotero & { DataDirectory?: unknown }).DataDirectory;
+  });
+
+  it("migrates legacy per-backend conversation storage into a default chat session", function () {
+    const legacyRequestId = `conversation:${ACP_OPENCODE_BACKEND_ID}`;
+    upsertPluginTaskRequestEntry(PLUGIN_TASK_DOMAIN_ACP, {
+      requestId: legacyRequestId,
+      backendId: ACP_OPENCODE_BACKEND_ID,
+      state: "connected",
+      updatedAt: "2026-04-25T01:00:00.000Z",
+      payload: JSON.stringify({
+        conversationId: "legacy-conversation",
+        conversationTitle: "Legacy Chat",
+        sessionId: "legacy-remote-session",
+        status: "connected",
+        updatedAt: "2026-04-25T01:00:00.000Z",
+      }),
+    });
+    replacePluginTaskRowEntries(PLUGIN_TASK_DOMAIN_ACP, "active", [
+      {
+        taskId: "legacy-user",
+        requestId: legacyRequestId,
+        backendId: ACP_OPENCODE_BACKEND_ID,
+        state: "complete",
+        updatedAt: "2026-04-25T01:00:00.000Z",
+        payload: JSON.stringify({
+          id: "legacy-user",
+          kind: "message",
+          role: "user",
+          text: "Legacy hello",
+          createdAt: "2026-04-25T01:00:00.000Z",
+          state: "complete",
+        }),
+      },
+    ]);
+
+    const restored = loadAcpConversationState(ACP_OPENCODE_BACKEND_ID);
+    assert.equal(restored.snapshot.conversationId, "legacy-conversation");
+    assert.equal(restored.snapshot.sessionId, "");
+    assert.equal(restored.snapshot.remoteSessionId, "legacy-remote-session");
+    assert.equal(restored.items[0]?.kind, "message");
+    assert.equal(
+      restored.items.find((entry) => entry.kind === "message")?.text,
+      "Legacy hello",
+    );
+    assert.equal(
+      listAcpChatSessions(ACP_OPENCODE_BACKEND_ID)[0]?.conversationId,
+      "legacy-conversation",
+    );
+    assert.isNull(
+      getPluginTaskRequestEntry(PLUGIN_TASK_DOMAIN_ACP, legacyRequestId),
+    );
+    assert.isFalse(
+      listPluginTaskRowEntries(PLUGIN_TASK_DOMAIN_ACP, "active").some(
+        (entry) => entry.requestId === legacyRequestId,
+      ),
+    );
   });
 
   it("resolves ACP workspace and runtime paths from Zotero.DataDirectory with cwd fallback", function () {

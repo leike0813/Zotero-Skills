@@ -12,15 +12,20 @@ import { buildAcpHostContext } from "./acpContextBuilder";
 import { buildAcpSidebarViewSnapshot } from "./acpSidebarModel";
 import {
   authenticateAcpConversation,
+  archiveAcpConversation,
   buildAcpDiagnosticsBundle,
   cancelAcpConversationPrompt,
-  ensureAcpConversationReady,
+  connectAcpConversation,
+  disconnectAcpConversation,
   getAcpFrontendSnapshot,
   getAcpConversationSnapshot,
+  refreshAcpConversationBackends,
   reconnectAcpConversation,
+  renameAcpConversation,
   resolveAcpConversationPermission,
   sendAcpConversationPrompt,
   setActiveAcpBackend,
+  setActiveAcpConversation,
   setAcpConversationChatDisplayMode,
   setAcpConversationModel,
   setAcpConversationMode,
@@ -278,6 +283,15 @@ function postSnapshotToPane(
   );
 }
 
+async function postFreshSnapshotToPane(
+  pane: MountedSidebarPane,
+  target: AcpSidebarTarget,
+  messageType: "acp:init" | "acp:snapshot" = "acp:snapshot",
+) {
+  await refreshAcpConversationBackends();
+  postSnapshotToPane(pane, target, messageType);
+}
+
 function postSnapshot(host: SidebarHostRuntime) {
   if (host.postSnapshotTimer) {
     clearTimeout(host.postSnapshotTimer);
@@ -396,14 +410,11 @@ async function handleSidebarAction(
   }
   try {
     if (action === "ready") {
-      postSnapshotToPane(
+      await postFreshSnapshotToPane(
         target === "reader" ? host.reader : host.library,
         target,
         "acp:init",
       );
-      void ensureAcpConversationReady().catch(() => {
-        postSnapshot(host);
-      });
       return;
     }
     if (action === "set-active-backend") {
@@ -412,6 +423,18 @@ async function handleSidebarAction(
         return;
       }
       await setActiveAcpBackend({ backendId });
+      return;
+    }
+    if (action === "set-active-conversation") {
+      const conversationId = String(envelope.payload?.conversationId || "").trim();
+      const backendId = String(envelope.payload?.backendId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      if (backendId) {
+        await setActiveAcpBackend({ backendId });
+      }
+      await setActiveAcpConversation({ conversationId, backendId });
       return;
     }
     if (action === "open-backend-manager") {
@@ -427,8 +450,39 @@ async function handleSidebarAction(
       await startNewAcpConversation();
       return;
     }
+    if (action === "rename-conversation") {
+      const title = String(envelope.payload?.title || "").trim();
+      const conversationId = String(
+        envelope.payload?.conversationId || "",
+      ).trim();
+      const backendId = String(envelope.payload?.backendId || "").trim();
+      if (!title) {
+        return;
+      }
+      await renameAcpConversation({ title, conversationId, backendId });
+      return;
+    }
+    if (action === "archive-conversation") {
+      const conversationId = String(
+        envelope.payload?.conversationId || "",
+      ).trim();
+      const backendId = String(envelope.payload?.backendId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      await archiveAcpConversation({ conversationId, backendId });
+      return;
+    }
     if (action === "reconnect") {
       await reconnectAcpConversation();
+      return;
+    }
+    if (action === "connect") {
+      await connectAcpConversation();
+      return;
+    }
+    if (action === "disconnect") {
+      await disconnectAcpConversation();
       return;
     }
     if (action === "cancel") {
@@ -569,7 +623,7 @@ function mountLibraryPane(host: SidebarHostRuntime) {
     host.library.frameWindow = resolveSidebarFrameWindow(frame);
     installSidebarPaneBridge(host, host.library, "library");
     if (host.activeTarget === "library") {
-      postSnapshotToPane(host.library, "library", "acp:init");
+      void postFreshSnapshotToPane(host.library, "library", "acp:init");
     }
   };
   frame.addEventListener("load", frameLoadHandler);
@@ -628,7 +682,7 @@ function mountReaderPane(host: SidebarHostRuntime) {
     host.reader.frameWindow = resolveSidebarFrameWindow(frame);
     installSidebarPaneBridge(host, host.reader, "reader");
     if (host.activeTarget === "reader") {
-      postSnapshotToPane(host.reader, "reader", "acp:init");
+      void postFreshSnapshotToPane(host.reader, "reader", "acp:init");
     }
   };
   frame.addEventListener("load", frameLoadHandler);
@@ -678,7 +732,7 @@ async function activateTarget(host: SidebarHostRuntime, target: AcpSidebarTarget
     setSidebarContainerVisible(host.library.container, true);
     setButtonSelected(host.library.button, true);
     host.activeTarget = "library";
-    postSnapshotToPane(host.library, "library", "acp:init");
+    await postFreshSnapshotToPane(host.library, "library", "acp:init");
     return true;
   }
   if (!ensureReaderPaneExpanded(host.win)) {
@@ -695,7 +749,7 @@ async function activateTarget(host: SidebarHostRuntime, target: AcpSidebarTarget
   setSidebarContainerVisible(host.reader.container, true);
   setButtonSelected(host.reader.button, true);
   host.activeTarget = "reader";
-  postSnapshotToPane(host.reader, "reader", "acp:init");
+  await postFreshSnapshotToPane(host.reader, "reader", "acp:init");
   return true;
 }
 

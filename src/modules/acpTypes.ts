@@ -13,6 +13,14 @@ export type AcpConnectionStatus =
 
 export type AcpSidebarTarget = "library" | "reader";
 export type AcpChatDisplayMode = "plain" | "bubble";
+export type AcpRemoteSessionRestoreStatus =
+  | "none"
+  | "unsupported"
+  | "pending"
+  | "resumed"
+  | "loaded"
+  | "fallback-new"
+  | "failed";
 
 export type AcpHostContext = {
   target: AcpSidebarTarget;
@@ -139,7 +147,14 @@ export type AcpConversationSnapshot = {
   backend: BackendInstance | null;
   backendId: string;
   conversationId: string;
+  conversationTitle: string;
+  conversationCreatedAt: string;
   sessionId: string;
+  remoteSessionId: string;
+  canLoadRemoteSession: boolean;
+  canResumeRemoteSession: boolean;
+  remoteSessionRestoreStatus: AcpRemoteSessionRestoreStatus;
+  remoteSessionRestoreMessage: string;
   status: AcpConnectionStatus;
   busy: boolean;
   showDiagnostics: boolean;
@@ -178,6 +193,17 @@ export type AcpConversationSnapshot = {
   updatedAt: string;
 };
 
+export type AcpChatSessionSummary = {
+  conversationId: string;
+  title: string;
+  messageCount: number;
+  status: AcpConnectionStatus;
+  lastError: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+};
+
 export type AcpBackendSummary = {
   backendId: string;
   displayName: string;
@@ -189,8 +215,17 @@ export type AcpBackendSummary = {
   updatedAt: string;
 };
 
+export type AcpBackendChatSessions = {
+  backendId: string;
+  displayName: string;
+  sessions: AcpChatSessionSummary[];
+};
+
 export type AcpFrontendSnapshot = {
   activeBackendId: string;
+  activeConversationId: string;
+  chatSessions: AcpChatSessionSummary[];
+  backendChatSessions: AcpBackendChatSessions[];
   backends: AcpBackendSummary[];
   activeSnapshot: AcpConversationSnapshot;
   connectedCount: number;
@@ -225,6 +260,8 @@ export type AcpDiagnosticsBundle = {
     busy: boolean;
     conversationId: string;
     sessionId: string;
+    remoteSessionId: string;
+    remoteSessionRestoreStatus: AcpRemoteSessionRestoreStatus;
     commandLabel: string;
     commandLine: string;
     sessionCwd: string;
@@ -246,7 +283,14 @@ export function createEmptyAcpConversationSnapshot(): AcpConversationSnapshot {
     backend: null,
     backendId: "",
     conversationId: "",
+    conversationTitle: "",
+    conversationCreatedAt: "",
     sessionId: "",
+    remoteSessionId: "",
+    canLoadRemoteSession: false,
+    canResumeRemoteSession: false,
+    remoteSessionRestoreStatus: "none",
+    remoteSessionRestoreMessage: "",
     status: "idle",
     busy: false,
     showDiagnostics: false,

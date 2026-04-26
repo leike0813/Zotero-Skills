@@ -10,6 +10,7 @@ import {
   type JsonRpcRequest,
   type JsonRpcResponse,
   type NewSessionResponse,
+  type SessionAttachResponse,
   RequestError,
   type RequestPermissionRequest,
   type RequestPermissionOutcome,
@@ -286,6 +287,28 @@ export class AcpClientConnection {
   }) {
     return await this.sendRequest<NewSessionResponse>(
       ACP_AGENT_METHODS.session_new,
+      params,
+    );
+  }
+
+  async loadSession(params: {
+    sessionId: string;
+    cwd: string;
+    mcpServers: unknown[];
+  }) {
+    return await this.sendRequest<SessionAttachResponse>(
+      ACP_AGENT_METHODS.session_load,
+      params,
+    );
+  }
+
+  async resumeSession(params: {
+    sessionId: string;
+    cwd: string;
+    mcpServers: unknown[];
+  }) {
+    return await this.sendRequest<SessionAttachResponse>(
+      ACP_AGENT_METHODS.session_resume,
       params,
     );
   }

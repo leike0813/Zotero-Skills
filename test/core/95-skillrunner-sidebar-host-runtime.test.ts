@@ -102,6 +102,8 @@ describe("skillrunner sidebar host runtime", function () {
     assert.include(toolbarTs, "export function applyToolbarButtonStyling");
     assert.include(toolbarTs, "export function syncToolbarButtonIconFill");
     assert.include(localeTs, "export { initLocale, getString, getLocaleID, getStringOrFallback };");
+    assert.include(localeTs, "resolved === rawId");
+    assert.include(localeTs, "resolved.endsWith(`-${rawId}`)");
     assert.include(localeTs, "resolved === getLocaleID(localeString)");
     assert.include(paneCss, "#zotero-context-pane-sidenav .zs-skillrunner-sidebar-button");
     assert.include(paneCss, "#zotero-context-pane-sidenav .zs-skillrunner-sidebar-button > .toolbarbutton-icon");

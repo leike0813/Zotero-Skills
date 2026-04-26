@@ -54,9 +54,19 @@ export type AcpConnectionInitializeResult = {
   agentVersion: string;
   commandLabel: string;
   commandLine: string;
+  canLoadSession: boolean;
+  canResumeSession: boolean;
 };
 
 export type AcpConnectionNewSessionResult = {
+  sessionId: string;
+  sessionTitle?: string;
+  sessionUpdatedAt?: string;
+  modes?: SessionModeState | null;
+  models?: SessionModelState | null;
+};
+
+export type AcpConnectionAttachSessionResult = {
   sessionId: string;
   sessionTitle?: string;
   sessionUpdatedAt?: string;
@@ -71,6 +81,8 @@ export type AcpConnectionAdapter = {
   onDiagnostics: (listener: AcpConnectionDiagnosticsListener) => () => void;
   onPermissionRequest: (listener: AcpConnectionPermissionListener) => () => void;
   newSession: () => Promise<AcpConnectionNewSessionResult>;
+  loadSession: (args: { sessionId: string }) => Promise<AcpConnectionAttachSessionResult>;
+  resumeSession: (args: { sessionId: string }) => Promise<AcpConnectionAttachSessionResult>;
   prompt: (args: {
     sessionId: string;
     message: string;
@@ -166,6 +178,8 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
   private commandLine = "";
   private agentName = "";
   private agentVersion = "";
+  private canLoadSession = false;
+  private canResumeSession = false;
   private closing = false;
 
   constructor(private readonly args: AcpConnectionAdapterFactoryArgs) {}
@@ -320,6 +334,8 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         agentVersion: this.agentVersion,
         commandLabel: this.commandLabel,
         commandLine: this.commandLine,
+        canLoadSession: this.canLoadSession,
+        canResumeSession: this.canResumeSession,
       };
     }
     this.emitDiagnostic({
@@ -399,11 +415,19 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         String(response.agentInfo?.title || "").trim() ||
         String(response.agentInfo?.name || "").trim();
       this.agentVersion = String(response.agentInfo?.version || "").trim();
+      this.canLoadSession = response.agentCapabilities?.loadSession === true;
+      this.canResumeSession =
+        !!response.agentCapabilities?.sessionCapabilities?.resume;
       this.initialized = true;
       this.emitDiagnostic({
         kind: "initialized",
         message: "ACP initialize completed",
-        detail: [this.agentName, this.agentVersion].filter(Boolean).join(" "),
+        detail: [
+          this.agentName,
+          this.agentVersion,
+          this.canResumeSession ? "resume" : "",
+          this.canLoadSession ? "load" : "",
+        ].filter(Boolean).join(" "),
       });
       return {
         authMethods: this.authMethods.map((entry) => ({ ...entry })),
@@ -411,6 +435,8 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         agentVersion: this.agentVersion,
         commandLabel: this.commandLabel,
         commandLine: this.commandLine,
+        canLoadSession: this.canLoadSession,
+        canResumeSession: this.canResumeSession,
       };
     } catch (error) {
       this.emitErrorDiagnostic({
@@ -496,6 +522,80 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         message: "Failed to create ACP session",
         error,
         stage: "session_new",
+      });
+      throw error;
+    }
+  }
+
+  async loadSession(args: { sessionId: string }) {
+    if (!this.connection) {
+      await this.initialize();
+    }
+    const sessionId = String(args.sessionId || "").trim();
+    this.emitDiagnostic({
+      kind: "session_load_attempted",
+      message: `Loading ACP session ${sessionId}`,
+    });
+    try {
+      const response = await this.connection!.loadSession({
+        sessionId,
+        cwd: this.args.sessionCwd,
+        mcpServers: [],
+      });
+      this.emitDiagnostic({
+        kind: "session_load_succeeded",
+        message: `Loaded ACP session ${sessionId}`,
+      });
+      return {
+        sessionId,
+        sessionTitle: String(response?.title || "").trim() || undefined,
+        sessionUpdatedAt: String(response?.updatedAt || "").trim() || undefined,
+        modes: response?.modes || null,
+        models: response?.models || null,
+      };
+    } catch (error) {
+      this.emitErrorDiagnostic({
+        kind: "session_restore_failed",
+        message: "Failed to load ACP session",
+        error,
+        stage: "session_load",
+      });
+      throw error;
+    }
+  }
+
+  async resumeSession(args: { sessionId: string }) {
+    if (!this.connection) {
+      await this.initialize();
+    }
+    const sessionId = String(args.sessionId || "").trim();
+    this.emitDiagnostic({
+      kind: "session_resume_attempted",
+      message: `Resuming ACP session ${sessionId}`,
+    });
+    try {
+      const response = await this.connection!.resumeSession({
+        sessionId,
+        cwd: this.args.sessionCwd,
+        mcpServers: [],
+      });
+      this.emitDiagnostic({
+        kind: "session_resume_succeeded",
+        message: `Resumed ACP session ${sessionId}`,
+      });
+      return {
+        sessionId,
+        sessionTitle: String(response?.title || "").trim() || undefined,
+        sessionUpdatedAt: String(response?.updatedAt || "").trim() || undefined,
+        modes: response?.modes || null,
+        models: response?.models || null,
+      };
+    } catch (error) {
+      this.emitErrorDiagnostic({
+        kind: "session_restore_failed",
+        message: "Failed to resume ACP session",
+        error,
+        stage: "session_resume",
       });
       throw error;
     }

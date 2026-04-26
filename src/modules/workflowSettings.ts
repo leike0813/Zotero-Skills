@@ -11,6 +11,7 @@ import { getLoadedWorkflowEntries } from "./workflowRuntime";
 import { getPref, setPref } from "../utils/prefs";
 import { resolveWorkflowRequestKind } from "./workflowRequestKind";
 import {
+  ACP_BACKEND_TYPE,
   DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
   PASS_THROUGH_BACKEND_TYPE,
 } from "../config/defaults";
@@ -117,6 +118,15 @@ function buildLocalBackendForProvider(providerId: string): BackendInstance {
       kind: "none",
     },
   };
+}
+
+function assertWorkflowExecutionProviderSupported(providerIdRaw: string) {
+  const providerId = String(providerIdRaw || "").trim();
+  if (providerId === ACP_BACKEND_TYPE) {
+    throw new Error(
+      "ACP global chat is not available through workflow execution in phase 1",
+    );
+  }
 }
 
 function toStringEnum(values: unknown) {
@@ -419,6 +429,7 @@ export async function buildWorkflowSettingsUiDescriptor(args: {
   autoSelectFallbackProfile?: boolean;
 }): Promise<WorkflowSettingsUiDescriptor> {
   const providerId = resolveProviderId(args.workflow);
+  assertWorkflowExecutionProviderSupported(providerId);
   const provider = resolveProviderById(providerId);
   const requiresBackendProfile = provider.requiresBackendProfile !== false;
   const rawCandidateBackends = Array.isArray(args.candidateBackends)
@@ -575,6 +586,7 @@ export function applyRunOnceWorkflowSettingsDraft(args: {
 
 export async function listProviderProfilesForWorkflow(workflow: LoadedWorkflow) {
   const providerId = resolveProviderId(workflow);
+  assertWorkflowExecutionProviderSupported(providerId);
   return listBackendsForProvider(providerId);
 }
 
@@ -583,6 +595,7 @@ export async function resolveWorkflowExecutionContext(args: {
   executionOptionsOverride?: WorkflowExecutionOptions;
 }): Promise<WorkflowExecutionContext> {
   const providerId = resolveProviderId(args.workflow);
+  assertWorkflowExecutionProviderSupported(providerId);
   const provider = resolveProviderById(providerId);
   const saved = getWorkflowSettings(args.workflow.manifest.id);
   const merged = mergeExecutionOptions(saved, args.executionOptionsOverride);

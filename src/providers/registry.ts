@@ -1,5 +1,6 @@
 import type { BackendInstance } from "../backends/types";
 import type { ProviderExecutionResult } from "./contracts";
+import { AcpProvider } from "./acp/provider";
 import { GenericHttpProvider } from "./generic-http/provider";
 import { PassThroughProvider } from "./pass-through/provider";
 import { appendRuntimeLog } from "../modules/runtimeLogManager";
@@ -15,6 +16,7 @@ import type { Provider } from "./types";
 
 const providers: Provider[] = [
   new SkillRunnerProvider(),
+  new AcpProvider(),
   new GenericHttpProvider(),
   new PassThroughProvider(),
 ];

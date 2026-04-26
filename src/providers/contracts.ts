@@ -101,6 +101,12 @@ export type PassThroughRunRequestV1 = ProviderExecutionRequestMeta & {
   parameter?: Record<string, unknown>;
 };
 
+export type AcpPromptRequestV1 = ProviderExecutionRequestMeta & {
+  kind: "acp.prompt.v1";
+  message: string;
+  hostContext?: Record<string, unknown>;
+};
+
 export type SkillRunnerBackendRunStatus = SkillRunnerProviderState;
 
 export type ProviderExecutionSucceededResult = {

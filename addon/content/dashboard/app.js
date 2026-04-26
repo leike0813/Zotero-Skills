@@ -316,9 +316,89 @@
 
   function renderSummary(main, snapshot) {
     const labels = snapshot.labels;
+    const homeAcpEntry =
+      snapshot.homeAcpEntry && typeof snapshot.homeAcpEntry === "object"
+        ? snapshot.homeAcpEntry
+        : null;
     const workflows = Array.isArray(snapshot.homeWorkflows)
       ? snapshot.homeWorkflows
       : [];
+    if (homeAcpEntry) {
+      const acpSection = el("section", "section");
+      acpSection.classList.add("workflow-bubbles-section");
+      acpSection.appendChild(
+        el(
+          "h3",
+          "section-title",
+          homeAcpEntry.title || labels.homeAcpTitle || "ACP Chat",
+        ),
+      );
+      const panel = el("div", "panel");
+      const summary = el("div", "bound-task");
+      summary.appendChild(
+        el(
+          "div",
+          "bound-task-item",
+          homeAcpEntry.subtitle || "",
+        ),
+      );
+      summary.appendChild(
+        el(
+          "div",
+          "bound-task-item",
+          (labels.statusPrefix || "Status") + ": " + (homeAcpEntry.statusLabel || "-"),
+        ),
+      );
+      if (homeAcpEntry.activeBackendLabel) {
+        summary.appendChild(
+          el(
+            "div",
+            "bound-task-item",
+            (labels.backend || "Backend") + ": " + homeAcpEntry.activeBackendLabel,
+          ),
+        );
+      }
+      summary.appendChild(
+        el(
+          "div",
+          "bound-task-item",
+          (labels.homeAcpMessages || "Messages") + ": " + String(homeAcpEntry.totalMessageCount || homeAcpEntry.messageCount || 0),
+        ),
+      );
+      summary.appendChild(
+        el(
+          "div",
+          "bound-task-item",
+          "Connected: " +
+            String(homeAcpEntry.connectedCount || 0) +
+            " · Errors: " +
+            String(homeAcpEntry.errorCount || 0),
+        ),
+      );
+      if (homeAcpEntry.lastError) {
+        summary.appendChild(
+          el(
+            "div",
+            "bound-task-item",
+            homeAcpEntry.lastError,
+          ),
+        );
+      }
+      panel.appendChild(summary);
+      const actions = el("div", "actions-wrap");
+      const openButton = el(
+        "button",
+        "btn",
+        homeAcpEntry.actionLabel || labels.homeAcpOpen || "Open Chat",
+      );
+      openButton.addEventListener("click", function () {
+        sendAction("open-acp-sidebar", {});
+      });
+      actions.appendChild(openButton);
+      panel.appendChild(actions);
+      acpSection.appendChild(panel);
+      main.appendChild(acpSection);
+    }
     if (workflows.length > 0) {
       const section = el("section", "section");
       section.classList.add("workflow-bubbles-section");

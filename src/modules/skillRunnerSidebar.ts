@@ -21,6 +21,12 @@ import {
   isSkillRunnerTaskRelatedToContext,
   type SkillRunnerSidebarContext,
 } from "./skillRunnerSidebarModel";
+import {
+  createSidebarContainer,
+  createSidebarFrame,
+  resolveSidebarFrameWindow,
+  setSidebarContainerVisible,
+} from "./sidebarBrowserHost";
 import { showWorkflowToast } from "./workflowExecution/feedbackSeam";
 import { listActiveWorkflowTasks, subscribeWorkflowTasks } from "./taskRuntime";
 import { normalizeStatus } from "./skillRunnerProviderStateMachine";
@@ -77,71 +83,15 @@ function resolveSidebarPageUrl() {
 }
 
 function createFrame(doc: Document, pageUrl: string) {
-  const createXul = (doc as { createXULElement?: (tag: string) => Element })
-    .createXULElement;
-  if (typeof createXul === "function") {
-    const browser = createXul.call(doc, "browser");
-    browser.setAttribute("disableglobalhistory", "true");
-    browser.setAttribute("maychangeremoteness", "true");
-    browser.setAttribute("type", "content");
-    browser.setAttribute("flex", "1");
-    browser.setAttribute("src", pageUrl);
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "width",
-      "100%",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "height",
-      "100%",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "flex",
-      "1 1 auto",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "min-height",
-      "0",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "min-width",
-      "0",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "display",
-      "block",
-    );
-    (browser as Element & { style?: CSSStyleDeclaration }).style?.setProperty(
-      "border",
-      "0",
-    );
-    return browser;
-  }
-  const frame = doc.createElement("iframe");
-  frame.src = pageUrl;
-  frame.style.width = "100%";
-  frame.style.height = "100%";
-  frame.style.flex = "1 1 auto";
-  frame.style.minHeight = "0";
-  frame.style.minWidth = "0";
-  frame.style.display = "block";
-  frame.style.border = "0";
-  return frame;
+  return createSidebarFrame(doc, pageUrl);
 }
 
 function resolveFrameWindow(frame: Element | null) {
-  return (frame as Element & { contentWindow?: Window | null } | null)
-    ?.contentWindow || null;
+  return resolveSidebarFrameWindow(frame);
 }
 
 function ensureContainer(doc: Document) {
-  const createXul = (doc as { createXULElement?: (tag: string) => XULElement })
-    .createXULElement;
-  if (typeof createXul === "function") {
-    const box = createXul.call(doc, "vbox");
-    box.setAttribute("flex", "1");
-    return box;
-  }
-  return doc.createElement("div") as unknown as XULElement;
+  return createSidebarContainer(doc);
 }
 
 function applyPaneContainerStyles(container: XULElement) {
@@ -176,10 +126,7 @@ function applyPaneContainerStyles(container: XULElement) {
 }
 
 function setContainerVisible(container: XULElement | null, visible: boolean) {
-  (container as Element & { style?: CSSStyleDeclaration } | null)?.style?.setProperty(
-    "display",
-    visible ? "flex" : "none",
-  );
+  setSidebarContainerVisible(container, visible);
 }
 
 function buildSidebarButton(

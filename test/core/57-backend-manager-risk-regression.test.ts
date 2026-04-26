@@ -51,18 +51,24 @@ function makeRow(args: {
   type: string;
   internalId?: string;
   displayName: string;
-  baseUrl: string;
-  authKind: "none" | "bearer";
-  authToken: string;
-  timeoutMs: string;
+  baseUrl?: string;
+  authKind?: "none" | "bearer";
+  authToken?: string;
+  timeoutMs?: string;
+  command?: string;
+  argsText?: string;
+  envText?: string;
 }): FakeRow {
   let internalId = String(args.internalId || "").trim();
   const controls = new Map<string, FakeControl>([
     ["displayName", makeTextControl(args.displayName)],
-    ["baseUrl", makeTextControl(args.baseUrl)],
-    ["authKind", makeChoiceControl(args.authKind)],
-    ["authToken", makeTextControl(args.authToken)],
-    ["timeoutMs", makeTextControl(args.timeoutMs)],
+    ["baseUrl", makeTextControl(args.baseUrl || "")],
+    ["authKind", makeChoiceControl(args.authKind || "none")],
+    ["authToken", makeTextControl(args.authToken || "")],
+    ["timeoutMs", makeTextControl(args.timeoutMs || "")],
+    ["command", makeTextControl(args.command || "")],
+    ["args", makeTextControl(args.argsText || "")],
+    ["env", makeTextControl(args.envText || "")],
   ]);
 
   return {
@@ -178,7 +184,37 @@ describe("backend manager risk regression", function () {
     assert.deepEqual(getBackendRowActionKindsForType("generic-http"), [
       "remove",
     ]);
+    assert.deepEqual(getBackendRowActionKindsForType("acp"), ["remove"]);
     assert.deepEqual(getBackendRowActionKindsForType(""), ["remove"]);
+  });
+
+  it("collects ACP backend command args and env without requiring http fields", function () {
+    const doc = makeDoc([
+      makeRow({
+        type: "acp",
+        internalId: "acp-custom",
+        displayName: "Custom ACP",
+        command: "node",
+        argsText: "agent.js\n--acp",
+        envText: "FOO=bar\nEMPTY=\nBAD_LINE",
+      }),
+    ]);
+
+    const collected = collectBackendsFromDialog(doc);
+
+    assert.lengthOf(collected.backends, 1);
+    assert.deepEqual(collected.backends[0], {
+      id: "acp-custom",
+      displayName: "Custom ACP",
+      type: "acp",
+      baseUrl: "local://acp-custom",
+      command: "node",
+      args: ["agent.js", "--acp"],
+      env: {
+        FOO: "bar",
+        EMPTY: "",
+      },
+    });
   });
 
   it("resolves management launch payload from stable internal id", function () {

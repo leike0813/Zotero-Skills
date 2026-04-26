@@ -55,6 +55,12 @@ import {
   removeSkillRunnerSidebarShell,
   toggleSkillRunnerSidebar,
 } from "./modules/skillRunnerSidebar";
+import {
+  installAcpSidebarShell,
+  openAcpSidebar,
+  removeAcpSidebarShell,
+} from "./modules/acpSidebar";
+import { shutdownAcpSessionManager } from "./modules/acpSessionManager";
 
 const WORKFLOW_MENU_RETRY_INTERVAL_MS = 100;
 const WORKFLOW_MENU_RETRY_MAX_ATTEMPTS = 20;
@@ -241,6 +247,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   await ensureWorkflowRegistryAndMenu(win);
   ensureDashboardToolbarButton(win);
   installSkillRunnerSidebarShell(win);
+  installAcpSidebarShell(win);
 
   const ProgressWindow = getRuntimeToolkit()?.ProgressWindow;
   const popupWin = ProgressWindow
@@ -283,16 +290,19 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 async function onMainWindowUnload(win: Window): Promise<void> {
   removeDashboardToolbarButton(win);
   removeSkillRunnerSidebarShell(win as _ZoteroTypes.MainWindow);
+  removeAcpSidebarShell(win as _ZoteroTypes.MainWindow);
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
 }
 
 async function onShutdown(): Promise<void> {
+  await shutdownAcpSessionManager();
   await shutdownSkillRunnerAsyncLifecycle();
   await flushRuntimeLogsPersistence();
   for (const win of Zotero.getMainWindows?.() || []) {
     removeDashboardToolbarButton(win);
     removeSkillRunnerSidebarShell(win);
+    removeAcpSidebarShell(win);
   }
   unregisterToolkitSafely();
   addon.data.dialog?.window?.close();
@@ -425,6 +435,11 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       break;
     case "openSkillRunnerSidebar":
       await openSkillRunnerSidebar({
+        window: data.window,
+      });
+      break;
+    case "openAcpSidebar":
+      await openAcpSidebar({
         window: data.window,
       });
       break;

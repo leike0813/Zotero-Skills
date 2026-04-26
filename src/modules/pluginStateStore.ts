@@ -15,6 +15,7 @@ type SqlAdapter = {
 type PluginTaskScope = "active" | "history";
 
 export const PLUGIN_TASK_DOMAIN_SKILLRUNNER = "skillrunner";
+export const PLUGIN_TASK_DOMAIN_ACP = "acp";
 
 export type PluginTaskRequestEntry = {
   requestId: string;
@@ -170,6 +171,10 @@ function getDataDirectoryPath() {
     return joinPath(cwd, ".zotero-skills-runtime");
   }
   return ".zotero-skills-runtime";
+}
+
+export function getPluginDataDirectoryPath() {
+  return getDataDirectoryPath();
 }
 
 function ensureDirectoryZotero(targetDir: string) {

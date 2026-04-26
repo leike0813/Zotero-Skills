@@ -9,6 +9,9 @@ export type BackendInstance = {
   displayName?: string;
   type: string;
   baseUrl: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
   auth?: {
     kind?: "none" | "bearer";
     token?: string;

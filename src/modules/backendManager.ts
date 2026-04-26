@@ -1,4 +1,5 @@
 import {
+  ACP_BACKEND_TYPE,
   DEFAULT_BACKEND_ID,
   DEFAULT_BACKEND_TYPE,
   DEFAULT_SKILLRUNNER_ENDPOINT,
@@ -27,6 +28,7 @@ import { MANAGED_LOCAL_BACKEND_ID } from "./skillRunnerLocalRuntimeConstants";
 import { stopSessionSync } from "./skillRunnerSessionSyncManager";
 import { untrackSkillRunnerBackendHealth } from "./skillRunnerBackendHealthRegistry";
 import { purgeSkillRunnerBackendReconcileState } from "./skillRunnerTaskReconciler";
+import { pruneAcpSessionSlotsForBackends } from "./acpSessionManager";
 
 const BACKENDS_CONFIG_PREF_KEY = "backendsConfigJson";
 const PROVIDER_SECTIONS = [
@@ -37,6 +39,10 @@ const PROVIDER_SECTIONS = [
   {
     type: "generic-http",
     labelKey: "backend-manager-provider-generic-http",
+  },
+  {
+    type: ACP_BACKEND_TYPE,
+    labelKey: "backend-manager-provider-acp",
   },
 ];
 
@@ -54,6 +60,9 @@ type EditableBackendRow = {
   authKind: "none" | "bearer";
   authToken: string;
   timeoutMs: string;
+  command: string;
+  argsText: string;
+  envText: string;
 };
 
 export type SkillRunnerManagementLaunchPayload = {
@@ -295,6 +304,9 @@ function buildFallbackBackendRow(): EditableBackendRow {
     authKind: "none",
     authToken: "",
     timeoutMs: "600000",
+    command: "",
+    argsText: "",
+    envText: "",
   };
 }
 
@@ -310,6 +322,13 @@ function normalizeRowFromBackend(backend: BackendInstance): EditableBackendRow {
       typeof backend.defaults?.timeout_ms === "number"
         ? String(backend.defaults.timeout_ms)
         : "",
+    command: backend.command || "",
+    argsText: Array.isArray(backend.args) ? backend.args.join("\n") : "",
+    envText: backend.env
+      ? Object.entries(backend.env)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("\n")
+      : "",
   };
 }
 
@@ -333,6 +352,22 @@ function appendTextCell(
   input.setAttribute("data-zs-backend-field", label);
   input.style.width = width;
   cell.appendChild(input);
+}
+
+function appendTextAreaCell(
+  row: HTMLElement,
+  label: string,
+  value: string,
+  width = "260px",
+) {
+  const cell = appendCell(row);
+  const textarea = createHtmlElement(row.ownerDocument!, "textarea");
+  textarea.value = value;
+  textarea.setAttribute("data-zs-backend-field", label);
+  textarea.style.width = width;
+  textarea.style.minHeight = "56px";
+  textarea.style.boxSizing = "border-box";
+  cell.appendChild(textarea);
 }
 
 function appendSelectCell(
@@ -416,24 +451,30 @@ function appendBackendRow(args: {
   row.setAttribute("data-zs-backend-internal-id", args.backend.internalId);
 
   appendTextCell(row, "displayName", args.backend.displayName, "190px");
-  appendTextCell(row, "baseUrl", args.backend.baseUrl, "320px");
-  appendSelectCell(
-    row,
-    "authKind",
-    [
-      {
-        value: "none",
-        text: getString("backend-manager-auth-none" as any),
-      },
-      {
-        value: "bearer",
-        text: getString("backend-manager-auth-bearer" as any),
-      },
-    ],
-    args.backend.authKind,
-  );
-  appendTextCell(row, "authToken", args.backend.authToken, "220px");
-  appendTextCell(row, "timeoutMs", args.backend.timeoutMs, "110px");
+  if (args.backend.type === ACP_BACKEND_TYPE) {
+    appendTextCell(row, "command", args.backend.command, "180px");
+    appendTextAreaCell(row, "args", args.backend.argsText, "240px");
+    appendTextAreaCell(row, "env", args.backend.envText, "260px");
+  } else {
+    appendTextCell(row, "baseUrl", args.backend.baseUrl, "320px");
+    appendSelectCell(
+      row,
+      "authKind",
+      [
+        {
+          value: "none",
+          text: getString("backend-manager-auth-none" as any),
+        },
+        {
+          value: "bearer",
+          text: getString("backend-manager-auth-bearer" as any),
+        },
+      ],
+      args.backend.authKind,
+    );
+    appendTextCell(row, "authToken", args.backend.authToken, "220px");
+    appendTextCell(row, "timeoutMs", args.backend.timeoutMs, "110px");
+  }
   appendActionCell({
     row,
     backendType: args.backend.type,
@@ -484,14 +525,24 @@ function appendProviderSection(args: {
 
   const thead = createHtmlElement(doc, "thead");
   const headerRow = createHtmlElement(doc, "tr");
-  [
-    "backend-manager-column-id",
-    "backend-manager-column-base-url",
-    "backend-manager-column-auth",
-    "backend-manager-column-token",
-    "backend-manager-column-timeout-ms",
-    "backend-manager-column-actions",
-  ].forEach((columnKey) => {
+  const columnKeys =
+    args.provider.type === ACP_BACKEND_TYPE
+      ? [
+          "backend-manager-column-id",
+          "backend-manager-column-command",
+          "backend-manager-column-args",
+          "backend-manager-column-env",
+          "backend-manager-column-actions",
+        ]
+      : [
+          "backend-manager-column-id",
+          "backend-manager-column-base-url",
+          "backend-manager-column-auth",
+          "backend-manager-column-token",
+          "backend-manager-column-timeout-ms",
+          "backend-manager-column-actions",
+        ];
+  columnKeys.forEach((columnKey) => {
     const th = createHtmlElement(doc, "th");
     th.textContent = getString(columnKey as any);
     th.style.textAlign = "left";
@@ -656,6 +707,9 @@ export function collectBackendsFromDialog(doc: Document): {
     const authKind = readRowField(row, "authKind") || "none";
     const authToken = readRowField(row, "authToken");
     const timeoutText = readRowField(row, "timeoutMs");
+    const command = readRowField(row, "command");
+    const argsText = readRowField(row, "args");
+    const envText = readRowField(row, "env");
 
     if (!displayName) {
       throw new Error(
@@ -688,6 +742,45 @@ export function collectBackendsFromDialog(doc: Document): {
         }),
       );
     }
+    if (type === ACP_BACKEND_TYPE) {
+      if (!command) {
+        throw new Error(
+          getString("backend-manager-error-command-required" as any, {
+            args: { row: i + 1 },
+          }),
+        );
+      }
+      const parsedEnv: Record<string, string> = {};
+      for (const line of String(envText || "").split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const equalsIndex = trimmed.indexOf("=");
+        if (equalsIndex <= 0) {
+          continue;
+        }
+        const key = trimmed.slice(0, equalsIndex).trim();
+        if (!key) {
+          continue;
+        }
+        parsedEnv[key] = trimmed.slice(equalsIndex + 1);
+      }
+      backends.push({
+        id,
+        displayName: normalizeBackendDisplayName(displayName, id),
+        type,
+        baseUrl: `local://${id}`,
+        command,
+        args: String(argsText || "")
+          .split(/\r?\n/)
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+        ...(Object.keys(parsedEnv).length > 0 ? { env: parsedEnv } : {}),
+      });
+      continue;
+    }
+
     if (!baseUrl) {
       throw new Error(
         getString("backend-manager-error-base-url-required" as any, {
@@ -946,6 +1039,7 @@ export function persistBackendsConfig(
     mergedBackends,
     refreshModelCache: resolved.refreshModelCache,
   });
+  pruneAcpSessionSlotsForBackends(mergedBackends);
 }
 
 function getAlertWindow(window?: Window) {
@@ -1077,11 +1171,14 @@ export async function openBackendManagerDialog(args?: { window?: Window }) {
               internalId: "",
               displayName: "",
               type: providerType,
-              baseUrl: "",
-              authKind: "none",
-              authToken: "",
-              timeoutMs: "",
-            },
+          baseUrl: "",
+          authKind: "none",
+          authToken: "",
+          timeoutMs: "",
+          command: "",
+          argsText: "",
+          envText: "",
+        },
             onOpenManagement: openManagementFromRow,
             onRefreshModelCache: refreshModelCacheFromRow,
           });

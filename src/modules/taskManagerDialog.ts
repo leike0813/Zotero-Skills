@@ -48,6 +48,8 @@ import {
 } from "./skillRunnerBackendHealthRegistry";
 import { getVisibleLoadedWorkflowEntries } from "./workflowVisibility";
 import { openSkillRunnerSidebar } from "./skillRunnerSidebar";
+import { getAcpFrontendSnapshot } from "./acpSessionManager";
+import { openAcpSidebar } from "./acpSidebar";
 
 type DashboardState = {
   backends: BackendInstance[];
@@ -145,6 +147,19 @@ type DashboardSnapshot = {
     configurable: boolean;
     builtin: boolean;
   }>;
+  homeAcpEntry?: {
+    title: string;
+    subtitle: string;
+    status: string;
+    statusLabel: string;
+    messageCount: number;
+    activeBackendLabel?: string;
+    connectedCount?: number;
+    errorCount?: number;
+    totalMessageCount?: number;
+    actionLabel: string;
+    lastError?: string;
+  };
   homeWorkflowDocView?: {
     workflowId: string;
     workflowLabel: string;
@@ -261,6 +276,68 @@ function sanitizeRenderedMarkdownHtml(html: string) {
       /\s(href|src)\s*=\s*(['"])\s*javascript:[^'"]*\2/gi,
       (_m, attr: string) => ` ${attr}="#"`,
     );
+}
+
+function buildHomeAcpEntry() {
+  const frontend = getAcpFrontendSnapshot();
+  const snapshot = frontend.activeSnapshot;
+  const normalizedStatus = String(snapshot.status || "idle").trim();
+  const statusLabel =
+    normalizedStatus === "checking-command"
+      ? localize(
+          "task-dashboard-acp-status-checking-command",
+          "Checking command",
+        )
+      : normalizedStatus === "spawning"
+        ? localize("task-dashboard-acp-status-spawning", "Spawning")
+        : normalizedStatus === "initializing"
+          ? localize(
+              "task-dashboard-acp-status-initializing",
+              "Initializing",
+            )
+          : normalizedStatus === "connecting"
+            ? localize("task-dashboard-acp-status-connecting", "Connecting")
+            : normalizedStatus === "connected"
+              ? localize("task-dashboard-acp-status-connected", "Connected")
+              : normalizedStatus === "prompting"
+                ? localize("task-dashboard-acp-status-prompting", "Running")
+                : normalizedStatus === "auth-required"
+                  ? localize(
+                      "task-dashboard-acp-status-auth-required",
+                      "Authentication required",
+                    )
+                  : normalizedStatus === "permission-required"
+                    ? localize(
+                        "task-dashboard-acp-status-permission-required",
+                        "Permission required",
+                      )
+                    : normalizedStatus === "error"
+                      ? localize("task-dashboard-acp-status-error", "Error")
+                      : localize("task-dashboard-acp-status-idle", "Idle");
+  const messageCount = Array.isArray(snapshot.items)
+    ? snapshot.items.filter((entry) => entry.kind === "message").length
+    : 0;
+  return {
+    title: localize("task-dashboard-home-acp-title", "ACP Chat"),
+    subtitle: localize(
+      "task-dashboard-home-acp-subtitle",
+      "Persistent ACP chat for your Zotero workspace.",
+    ),
+    status: normalizedStatus,
+    statusLabel,
+    messageCount,
+    activeBackendLabel:
+      String(snapshot.backend?.displayName || snapshot.backendId || "").trim() ||
+      undefined,
+    connectedCount: frontend.connectedCount,
+    errorCount: frontend.errorCount,
+    totalMessageCount: frontend.totalMessageCount,
+    actionLabel: localize("task-dashboard-home-acp-open", "Open Chat"),
+    lastError:
+      String(snapshot.prerequisiteError || "").trim() ||
+      String(snapshot.lastError || "").trim() ||
+      undefined,
+  } satisfies NonNullable<DashboardSnapshot["homeAcpEntry"]>;
 }
 
 function renderInlineMarkdownFallback(value: string) {
@@ -883,6 +960,7 @@ async function buildDashboardSnapshot(args: {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   let homeWorkflows: DashboardSnapshot["homeWorkflows"] = [];
+  let homeAcpEntry: DashboardSnapshot["homeAcpEntry"] = undefined;
   let homeWorkflowDocView: DashboardSnapshot["homeWorkflowDocView"] = undefined;
   const selectedBackendFromRequestedTab = args.backends.find(
     (entry) => entry.id === fromBackendTabKey(selectedTabKey),
@@ -901,6 +979,7 @@ async function buildDashboardSnapshot(args: {
     homeWorkflows = await buildHomeWorkflowSummaries({
       backends: args.backends,
     });
+    homeAcpEntry = buildHomeAcpEntry();
     const requestedWorkflowId = String(
       args.state.homeWorkflowDocWorkflowId || "",
     ).trim();
@@ -1080,6 +1159,9 @@ async function buildDashboardSnapshot(args: {
       "task-dashboard-home-workflow-builtin",
       "Builtin",
     ),
+    homeAcpTitle: localize("task-dashboard-home-acp-title", "ACP Chat"),
+    homeAcpOpen: localize("task-dashboard-home-acp-open", "Open Chat"),
+    homeAcpMessages: localize("task-dashboard-home-acp-messages", "Messages"),
     homeWorkflowDocMissingReadme: localize(
       "task-dashboard-home-workflow-doc-missing-readme",
       "README.md was not found for this workflow.",
@@ -1161,6 +1243,7 @@ async function buildDashboardSnapshot(args: {
     },
     runningRows,
     homeWorkflows,
+    homeAcpEntry,
     homeWorkflowDocView,
     backendLoadError: args.state.backendLoadError,
   };
@@ -1636,6 +1719,12 @@ export async function openTaskManagerDialog(args?: {
         state.selectedLogEntryByBackendId.delete(backendId);
         refresh("user-action");
       }
+      return;
+    }
+    if (action === "open-acp-sidebar") {
+      await openAcpSidebar({
+        window: Zotero.getMainWindow?.() as _ZoteroTypes.MainWindow | undefined,
+      });
       return;
     }
     if (action === "view-logs" || action === "select-log-task") {

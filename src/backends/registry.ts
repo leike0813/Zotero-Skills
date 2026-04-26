@@ -1,4 +1,9 @@
 import {
+  ACP_BACKEND_TYPE,
+  ACP_OPENCODE_ARGS,
+  ACP_OPENCODE_BACKEND_ID,
+  ACP_OPENCODE_COMMAND,
+  ACP_OPENCODE_DISPLAY_NAME,
   DEFAULT_REQUEST_KIND_BY_BACKEND_TYPE,
 } from "../config/defaults";
 import { getPref, setPref } from "../utils/prefs";
@@ -31,6 +36,67 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isAcpBackendType(value: unknown) {
+  return String(value || "").trim() === ACP_BACKEND_TYPE;
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as string[];
+  }
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeStringMap(value: unknown) {
+  if (!isObject(value)) {
+    return {} as Record<string, string>;
+  }
+  const normalized: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || typeof entry !== "string") {
+      continue;
+    }
+    normalized[normalizedKey] = entry;
+  }
+  return normalized;
+}
+
+function buildBuiltinAcpBackends() {
+  return [
+    {
+      id: ACP_OPENCODE_BACKEND_ID,
+      displayName: ACP_OPENCODE_DISPLAY_NAME,
+      type: ACP_BACKEND_TYPE,
+      baseUrl: `local://${ACP_OPENCODE_BACKEND_ID}`,
+      command: ACP_OPENCODE_COMMAND,
+      args: [...ACP_OPENCODE_ARGS],
+      auth: {
+        kind: "none" as const,
+      },
+    },
+  ] satisfies BackendInstance[];
+}
+
+function upsertBuiltinBackends(backends: BackendInstance[]) {
+  const next = [...backends];
+  let changed = false;
+  for (const builtin of buildBuiltinAcpBackends()) {
+    const existingIndex = next.findIndex((entry) => entry.id === builtin.id);
+    if (existingIndex < 0) {
+      next.push(builtin);
+      changed = true;
+      continue;
+    }
+  }
+  return {
+    backends: next,
+    changed,
+  };
 }
 
 function normalizeBackendsSchemaVersion(value: unknown) {
@@ -245,23 +311,32 @@ function normalizeBackendEntry(
   if (!isNonEmptyString(typeRaw)) {
     return { error: `entry[${index}] (${idRaw}) missing non-empty type` };
   }
-  if (!isNonEmptyString(baseUrlRaw)) {
-    return { error: `entry[${index}] (${idRaw}) missing non-empty baseUrl` };
-  }
   const id = idRaw.trim();
   const displayName = normalizeBackendDisplayName(rawEntry.displayName, id);
   const type = typeRaw.trim();
-  const baseUrl = baseUrlRaw.trim();
+  const isAcp = isAcpBackendType(type);
+  const baseUrl = isAcp
+    ? isNonEmptyString(baseUrlRaw)
+      ? baseUrlRaw.trim()
+      : `local://${id}`
+    : String(baseUrlRaw || "").trim();
 
-  try {
-    const parsed = new URL(baseUrl);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return {
-        error: `entry[${index}] (${id}) baseUrl protocol must be http/https`,
-      };
+  if (!isAcp) {
+    if (!isNonEmptyString(baseUrlRaw)) {
+      return { error: `entry[${index}] (${id}) missing non-empty baseUrl` };
     }
-  } catch {
-    return { error: `entry[${index}] (${id}) baseUrl is not a valid URL` };
+    try {
+      const parsed = new URL(baseUrl);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        return {
+          error: `entry[${index}] (${id}) baseUrl protocol must be http/https`,
+        };
+      }
+    } catch {
+      return { error: `entry[${index}] (${id}) baseUrl is not a valid URL` };
+    }
+  } else if (!isNonEmptyString(rawEntry.command)) {
+    return { error: `entry[${index}] (${id}) missing non-empty command` };
   }
 
   const authRaw = rawEntry.auth;
@@ -379,12 +454,19 @@ function normalizeBackendEntry(
     };
   }
 
+  const command = isAcp ? String(rawEntry.command || "").trim() : "";
+  const args = isAcp ? normalizeStringArray(rawEntry.args) : [];
+  const env = isAcp ? normalizeStringMap(rawEntry.env) : {};
+
   return {
     backend: {
       id,
       displayName,
       type,
       baseUrl,
+      ...(command ? { command } : {}),
+      ...(args.length > 0 ? { args } : {}),
+      ...(Object.keys(env).length > 0 ? { env } : {}),
       ...(auth ? { auth } : {}),
       ...(defaults ? { defaults } : {}),
       ...(managementAuth ? { management_auth: managementAuth } : {}),
@@ -487,11 +569,15 @@ export async function loadBackendsRegistry(): Promise<LoadedBackends> {
     removedLegacyIds.add(backend.id);
     return false;
   });
-  if (removedLegacyIds.size > 0) {
+  const builtinMerge = upsertBuiltinBackends(finalBackends);
+  const shouldPersistBuiltinRewrite = builtinMerge.changed && errors.length === 0;
+  if (removedLegacyIds.size > 0 || shouldPersistBuiltinRewrite) {
     setPref(
       BACKENDS_CONFIG_PREF_KEY,
-      JSON.stringify(createBackendsPrefsDocument(finalBackends)),
+      JSON.stringify(createBackendsPrefsDocument(builtinMerge.backends)),
     );
+  }
+  if (removedLegacyIds.size > 0) {
     syncBackendReferences({
       idMapping: new Map<string, string>(),
       removedIds: removedLegacyIds,
@@ -503,7 +589,7 @@ export async function loadBackendsRegistry(): Promise<LoadedBackends> {
 
   return {
     sourcePath,
-    backends: finalBackends,
+    backends: builtinMerge.backends,
     warnings,
     errors,
     invalidBackends,

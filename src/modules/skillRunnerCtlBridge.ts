@@ -1,4 +1,11 @@
 import { appendSkillRunnerLocalDeployDebugLog } from "./skillRunnerLocalDeployDebugStore";
+import {
+  getWindowsExecutableCandidates,
+  getWindowsPowerShellAbsoluteCandidates,
+  isTrustedResolvedCommandPath,
+  resolveTrustedPathSearchResult,
+  resolveWindowsCommandFromPowerShell,
+} from "./windowsCommandResolution";
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -136,141 +143,6 @@ function resolveTempRoot() {
     readDirectoryServicePath("ProfD") ||
     "."
   );
-}
-
-function getWindowsPowerShellAbsoluteCandidates() {
-  if (!detectWindows()) {
-    return [] as string[];
-  }
-  const runtime = globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  };
-  const env = runtime.process?.env || {};
-  const windowsRoot =
-    normalizeString(env.SystemRoot) ||
-    normalizeString(env.WINDIR) ||
-    "C:\\Windows";
-  const candidates = [
-    joinFsPath(
-      windowsRoot,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    ),
-    joinFsPath(
-      windowsRoot,
-      "Sysnative",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    ),
-    "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-    "C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe",
-    "C:\\Program Files\\PowerShell\\6\\pwsh.exe",
-  ];
-  return Array.from(
-    new Set(candidates.map((entry) => normalizeString(entry)).filter(Boolean)),
-  );
-}
-
-function getWindowsExecutableCandidates(command: string) {
-  if (!detectWindows()) {
-    return [] as string[];
-  }
-  const normalized = normalizeString(command);
-  if (!normalized) {
-    return [] as string[];
-  }
-  if (/[\\/]/.test(normalized) || /^[A-Za-z]:[\\/]/.test(normalized)) {
-    return [] as string[];
-  }
-  const runtime = globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  };
-  const env = runtime.process?.env || {};
-  const windowsRoot =
-    normalizeString(env.SystemRoot) ||
-    normalizeString(env.WINDIR) ||
-    "C:\\Windows";
-  const withoutExt = normalized.replace(/\.(exe|cmd|bat)$/i, "");
-  const commandVariants = [
-    `${withoutExt}.exe`,
-    `${withoutExt}.cmd`,
-    `${withoutExt}.bat`,
-    normalized,
-  ];
-  const candidates = commandVariants.flatMap((entry) => [
-    joinFsPath(windowsRoot, "System32", entry),
-    joinFsPath(windowsRoot, "Sysnative", entry),
-  ]);
-  return Array.from(
-    new Set(candidates.map((entry) => normalizeString(entry)).filter(Boolean)),
-  );
-}
-
-async function resolveWindowsCommandFromPowerShell(command: string) {
-  if (!detectWindows()) {
-    return [] as string[];
-  }
-  const normalized = normalizeString(command);
-  if (!normalized || /[\\/]/.test(normalized) || /^[A-Za-z]:[\\/]/.test(normalized)) {
-    return [] as string[];
-  }
-  const runtime = globalThis as {
-    Zotero?: {
-      Utilities?: {
-        Internal?: {
-          subprocess?: (command: string, args?: string[]) => Promise<string>;
-        };
-      };
-    };
-  };
-  const subprocess = runtime.Zotero?.Utilities?.Internal?.subprocess;
-  if (typeof subprocess !== "function") {
-    return [] as string[];
-  }
-  const escapedCommand = normalized.replace(/'/g, "''");
-  const script = [
-    "$ErrorActionPreference='SilentlyContinue'",
-    `$cmd=Get-Command '${escapedCommand}'`,
-    "if ($cmd -and $cmd.Source) { Write-Output $cmd.Source; exit 0 }",
-    "exit 1",
-  ].join("; ");
-  const powerShellCandidates = Array.from(
-    new Set([
-      ...getWindowsPowerShellAbsoluteCandidates(),
-      "powershell.exe",
-      "pwsh.exe",
-      "pwsh",
-      "powershell",
-    ]),
-  );
-  for (const shellCommand of powerShellCandidates) {
-    try {
-      const output = await subprocess(shellCommand, [
-        "-NoLogo",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        script,
-      ]);
-      const lines = String(output || "")
-        .split(/\r?\n/)
-        .map((entry) => normalizeString(entry))
-        .filter(Boolean);
-      if (lines.length > 0) {
-        return Array.from(new Set(lines));
-      }
-    } catch {
-      continue;
-    }
-  }
-  return [] as string[];
 }
 
 function joinFsPath(...segments: string[]) {
@@ -691,11 +563,20 @@ async function runWithMozillaSubprocess(args: {
     throw new Error("mozilla subprocess unavailable");
   }
   const command = normalizeString(args.command);
+  const pathSearchResult =
+    !isAbsoluteCommand(command) && !hasPathSeparator(command)
+      ? await resolveTrustedPathSearchResult({
+          command,
+          pathSearch: subprocess.pathSearch,
+          platform: detectWindows() ? "win32" : undefined,
+        })
+      : "";
   const resolvedCommand =
     !isAbsoluteCommand(command) &&
     !hasPathSeparator(command) &&
-    typeof subprocess.pathSearch === "function"
-      ? await subprocess.pathSearch(command)
+    pathSearchResult &&
+    (await isTrustedResolvedCommandPath(pathSearchResult))
+      ? normalizeString(pathSearchResult)
       : command;
   const proc = await subprocess.call({
     command: resolvedCommand,

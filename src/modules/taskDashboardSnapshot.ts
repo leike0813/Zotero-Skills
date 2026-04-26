@@ -1,5 +1,5 @@
 import type { BackendInstance } from "../backends/types";
-import { PASS_THROUGH_BACKEND_TYPE } from "../config/defaults";
+import { ACP_BACKEND_TYPE, PASS_THROUGH_BACKEND_TYPE } from "../config/defaults";
 import type { TaskDashboardHistoryRecord } from "./taskDashboardHistory";
 import type { WorkflowTaskRecord } from "./taskRuntime";
 
@@ -59,7 +59,10 @@ export function normalizeDashboardBackends(args: {
 }) {
   const map = new Map<string, BackendInstance>();
   for (const backend of args.configured) {
-    if (backend.type === PASS_THROUGH_BACKEND_TYPE) {
+    if (
+      backend.type === PASS_THROUGH_BACKEND_TYPE ||
+      backend.type === ACP_BACKEND_TYPE
+    ) {
       continue;
     }
     map.set(backend.id, cloneBackend(backend));

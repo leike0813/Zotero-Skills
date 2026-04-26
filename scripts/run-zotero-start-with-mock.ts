@@ -1,4 +1,6 @@
 import { spawn } from "child_process";
+import { existsSync } from "fs";
+import path from "path";
 
 type Child = ReturnType<typeof spawn>;
 type SpawnOptions = Parameters<typeof spawn>[2];
@@ -16,6 +18,40 @@ function spawnNpm(args: string[], options?: SpawnOptions) {
     });
   }
   return spawn("npm", args, options);
+}
+
+function resolveLocalTsxCli() {
+  const cliPath = path.resolve(
+    process.cwd(),
+    "node_modules",
+    "tsx",
+    "dist",
+    "cli.mjs",
+  );
+  if (!existsSync(cliPath)) {
+    throw new Error(`local tsx CLI not found: ${cliPath}`);
+  }
+  return cliPath;
+}
+
+function spawnMockSkillRunner(env: NodeJS.ProcessEnv) {
+  return spawn(
+    process.execPath,
+    [
+      resolveLocalTsxCli(),
+      "scripts/mock-skillrunner-serve.ts",
+      "--host",
+      MOCK_HOST,
+      "--port",
+      MOCK_PORT,
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    },
+  );
 }
 
 function toExitCode(code: number | null, signal: NodeJS.Signals | null) {
@@ -109,7 +145,18 @@ function terminateChild(child: Child | null, detached = false) {
       const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
         stdio: "ignore",
       });
-      killer.on("exit", () => resolve());
+      let settled = false;
+      const done = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, 3000);
+      killer.on("exit", done);
+      killer.on("error", done);
       return;
     }
 
@@ -133,22 +180,7 @@ async function main() {
     console.log(`[start-args] ${TARGET_START_ARGS.join(" ")}`);
   }
 
-  const mock = spawnNpm(
-    [
-      "run",
-      "mock:skillrunner",
-      "--",
-      "--host",
-      MOCK_HOST,
-      "--port",
-      MOCK_PORT,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-      detached: process.platform !== "win32",
-    },
-  );
+  const mock = spawnMockSkillRunner(env);
 
   let target: Child | null = null;
   let cleaned = false;
@@ -158,8 +190,8 @@ async function main() {
       return;
     }
     cleaned = true;
-    await terminateChild(target, process.platform !== "win32");
     await terminateChild(mock, process.platform !== "win32");
+    await terminateChild(target, process.platform !== "win32");
   };
 
   const trap = async (exitCode: number) => {

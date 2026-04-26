@@ -1,4 +1,6 @@
 import {
+  ACP_BACKEND_TYPE,
+  ACP_PROMPT_REQUEST_KIND,
   DEFAULT_BACKEND_TYPE,
   PASS_THROUGH_BACKEND_TYPE,
   PASS_THROUGH_REQUEST_KIND,
@@ -28,6 +30,11 @@ const PROVIDER_REQUEST_CONTRACTS: Record<
     providerType: "generic-http",
     backendType: "generic-http",
     validatePayload: validateGenericHttpStepsPayload,
+  },
+  [ACP_PROMPT_REQUEST_KIND]: {
+    providerType: ACP_BACKEND_TYPE,
+    backendType: ACP_BACKEND_TYPE,
+    validatePayload: validateAcpPromptPayload,
   },
   [PASS_THROUGH_REQUEST_KIND]: {
     providerType: PASS_THROUGH_BACKEND_TYPE,
@@ -173,6 +180,25 @@ function validatePassThroughPayload(request: unknown) {
   }
   if (!Object.prototype.hasOwnProperty.call(request, "selectionContext")) {
     return "payload.selectionContext is required";
+  }
+  return null;
+}
+
+function validateAcpPromptPayload(request: unknown) {
+  if (!isObject(request)) {
+    return "payload must be object";
+  }
+  if (String(request.kind || "").trim() !== ACP_PROMPT_REQUEST_KIND) {
+    return `payload.kind must be ${ACP_PROMPT_REQUEST_KIND}`;
+  }
+  if (!isNonEmptyString(request.message)) {
+    return "payload.message must be non-empty string";
+  }
+  if (
+    typeof request.hostContext !== "undefined" &&
+    !isObject(request.hostContext)
+  ) {
+    return "payload.hostContext must be object when provided";
   }
   return null;
 }

@@ -15,7 +15,11 @@ import { loadWorkflowManifests } from "../../src/workflows/loader";
 import type { LoadedWorkflow } from "../../src/workflows/types";
 import type { Provider } from "../../src/providers/types";
 import { workflowsPath } from "./workflow-test-utils";
-import { PASS_THROUGH_REQUEST_KIND } from "../../src/config/defaults";
+import {
+  ACP_PROMPT_REQUEST_KIND,
+  PASS_THROUGH_REQUEST_KIND,
+} from "../../src/config/defaults";
+import { resolveWorkflowExecutionContext } from "../../src/modules/workflowSettings";
 
 function buildWorkflow(args: {
   id: string;
@@ -54,6 +58,15 @@ describe("provider/backend registry", function () {
       JSON.stringify(configValue),
       true,
     );
+  }
+
+  function readPersistedBackendsConfig() {
+    return JSON.parse(
+      String(Zotero.Prefs.get(backendsConfigPrefKey, true) || "{}"),
+    ) as {
+      schemaVersion?: number;
+      backends?: Array<Record<string, unknown>>;
+    };
   }
 
   beforeEach(function () {
@@ -129,11 +142,97 @@ describe("provider/backend registry", function () {
 
     const loaded = await loadBackendsRegistry();
     assert.isUndefined(loaded.fatalError);
-    assert.lengthOf(loaded.backends, 1);
-    assert.deepEqual(loaded.backends[0].management_auth, {
+    assert.lengthOf(loaded.backends, 2);
+    const matched = loaded.backends.find(
+      (entry) => entry.id === "skillrunner-primary",
+    );
+    assert.isOk(matched);
+    assert.deepEqual(matched?.management_auth, {
       kind: "basic",
       username: "admin",
       password: "secret",
+    });
+  });
+
+  it("accepts acp backend entries without http baseUrl and normalizes local launch metadata", async function () {
+    setBackendsConfig({
+      schemaVersion: 2,
+      backends: [
+        {
+          id: "acp-opencode-dev",
+          type: "acp",
+          command: "npx",
+          args: ["opencode-ai@latest", "acp"],
+          env: {
+            OPENAI_API_KEY: "test-key",
+          },
+        },
+      ],
+    });
+
+    const loaded = await loadBackendsRegistry();
+    assert.isUndefined(loaded.fatalError);
+    assert.lengthOf(loaded.backends, 2);
+    const matched = loaded.backends.find((entry) => entry.id === "acp-opencode-dev");
+    assert.isOk(matched);
+    assert.equal(matched?.type, "acp");
+    assert.equal(matched?.baseUrl, "local://acp-opencode-dev");
+    assert.equal(matched?.command, "npx");
+    assert.deepEqual(matched?.args, ["opencode-ai@latest", "acp"]);
+    assert.deepEqual(matched?.env, {
+      OPENAI_API_KEY: "test-key",
+    });
+  });
+
+  it("keeps user-edited acp-opencode profile and only seeds builtin when missing", async function () {
+    setBackendsConfig({
+      schemaVersion: 2,
+      backends: [
+        {
+          id: "skillrunner-primary",
+          type: "skillrunner",
+          baseUrl: "http://127.0.0.1:8030",
+          auth: { kind: "none" },
+        },
+        {
+          id: "acp-opencode",
+          displayName: "Stale ACP",
+          type: "acp",
+          baseUrl: "local://acp-opencode",
+          command: "opencode",
+          args: ["acp"],
+          env: {
+            OPENAI_API_KEY: "stale-key",
+          },
+        },
+      ],
+    });
+
+    const loaded = await loadBackendsRegistry();
+    assert.isUndefined(loaded.fatalError);
+    assert.lengthOf(
+      loaded.backends.filter((entry) => entry.id === "acp-opencode"),
+      1,
+    );
+    const matched = loaded.backends.find((entry) => entry.id === "acp-opencode");
+    assert.isOk(matched);
+    assert.equal(matched?.displayName, "Stale ACP");
+    assert.equal(matched?.command, "opencode");
+    assert.deepEqual(matched?.args, ["acp"]);
+    assert.deepEqual(matched?.env, {
+      OPENAI_API_KEY: "stale-key",
+    });
+
+    const persisted = readPersistedBackendsConfig();
+    const persistedAcp = (persisted.backends || []).find(
+      (entry) => String(entry.id || "").trim() === "acp-opencode",
+    );
+    assert.isOk(persistedAcp);
+    assert.equal(persistedAcp?.displayName, "Stale ACP");
+    assert.equal(persistedAcp?.command, "opencode");
+    assert.deepEqual(persistedAcp?.args, ["acp"]);
+    assert.deepEqual(persistedAcp?.env, {
+      OPENAI_API_KEY: "stale-key",
     });
   });
 
@@ -252,6 +351,56 @@ describe("provider/backend registry", function () {
     const typed = thrown as ProviderRequestContractError;
     assert.equal(typed.category, "request_payload_invalid");
     assert.equal(typed.reason, "invalid_request_payload");
+    assert.equal(executeCalled, 0, "provider.execute should not be called");
+  });
+
+  it("validates acp.prompt.v1 payload contract before provider dispatch", async function () {
+    const originalProvider = resolveProviderById("acp");
+    let executeCalled = 0;
+    const stubProvider: Provider = {
+      id: "acp",
+      supports: ({ requestKind, backend }) =>
+        backend.type === "acp" && requestKind === ACP_PROMPT_REQUEST_KIND,
+      execute: async () => {
+        executeCalled += 1;
+        return {
+          status: "succeeded",
+          requestId: "stub-acp",
+          fetchType: "result",
+          resultJson: {},
+          responseJson: {},
+        };
+      },
+    };
+    registerProvider(stubProvider);
+
+    let thrown: unknown;
+    try {
+      await executeWithProvider({
+        requestKind: ACP_PROMPT_REQUEST_KIND,
+        backend: {
+          id: "acp-opencode",
+          type: "acp",
+          baseUrl: "local://acp-opencode",
+          command: "npx",
+          args: ["opencode-ai@latest", "acp"],
+        },
+        request: {
+          kind: ACP_PROMPT_REQUEST_KIND,
+          message: "",
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      registerProvider(originalProvider);
+    }
+
+    assert.instanceOf(thrown, ProviderRequestContractError);
+    const typed = thrown as ProviderRequestContractError;
+    assert.equal(typed.category, "request_payload_invalid");
+    assert.equal(typed.reason, "invalid_request_payload");
+    assert.match(String(typed.detail || ""), /message/i);
     assert.equal(executeCalled, 0, "provider.execute should not be called");
   });
 
@@ -560,7 +709,41 @@ describe("provider/backend registry", function () {
 
     const loaded = await loadBackendsRegistry();
     assert.isUndefined(loaded.fatalError);
-    assert.lengthOf(loaded.backends, 0);
+    assert.lengthOf(loaded.backends, 1);
+    assert.equal(loaded.backends[0].id, "acp-opencode");
+    assert.equal(loaded.backends[0].type, "acp");
+    assert.equal(loaded.backends[0].command, "npx");
+    assert.deepEqual(loaded.backends[0].args, ["opencode-ai@latest", "acp"]);
+
+    const persisted = readPersistedBackendsConfig();
+    assert.equal(persisted.schemaVersion, 2);
+    assert.lengthOf(persisted.backends || [], 1);
+    assert.equal(persisted.backends?.[0]?.id, "acp-opencode");
+    assert.equal(persisted.backends?.[0]?.command, "npx");
+    assert.deepEqual(persisted.backends?.[0]?.args, [
+      "opencode-ai@latest",
+      "acp",
+    ]);
+  });
+
+  it("rejects ACP workflows from workflow execution context resolution", async function () {
+    const workflow = buildWorkflow({
+      id: "acp-global-chat-blocked",
+      provider: "acp",
+      requestKind: ACP_PROMPT_REQUEST_KIND,
+    });
+
+    let thrown: unknown;
+    try {
+      await resolveWorkflowExecutionContext({
+        workflow,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.isOk(thrown);
+    assert.match(String(thrown), /acp|global chat|workflow/i);
   });
 
 });

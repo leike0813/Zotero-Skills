@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ACP Chat</title>
     <link rel="stylesheet" href="./acp-chat.css" />
+    <link rel="stylesheet" href="./vendor/katex/katex.min.css" />
   </head>
   <body>
     <main class="acp-chat-shell">
@@ -73,6 +74,9 @@
           </div>
           <div id="acp-updated-at" class="acp-updated-at"></div>
           <span id="acp-status-summary-text" class="acp-status-summary-text">-</span>
+          <span id="acp-mcp-injection-status" class="acp-mcp-status-monitor">
+            MCP
+          </span>
           <div class="acp-view-toggle" role="group" aria-label="Chat view">
             <button id="acp-chat-mode-plain" class="btn btn-compact" type="button">
               Plain
@@ -133,6 +137,18 @@
 
       <section id="acp-transcript" class="acp-transcript plain-mode"></section>
 
+      <section
+        id="acp-plan-panel"
+        class="acp-plan-panel hidden"
+        aria-live="polite"
+      >
+        <div class="acp-plan-panel-header">
+          <strong id="acp-plan-title">Plan</strong>
+          <span id="acp-plan-summary" class="acp-plan-summary"></span>
+        </div>
+        <div id="acp-plan-list" class="acp-plan-list"></div>
+      </section>
+
       <section id="acp-session-drawer" class="acp-session-drawer hidden">
         <div class="acp-session-drawer-backdrop" data-acp-session-drawer-close="true"></div>
         <aside class="acp-session-drawer-panel" aria-labelledby="acp-session-drawer-title">
@@ -153,23 +169,67 @@
         </aside>
       </section>
 
-      <section class="acp-interaction-notices">
+      <section id="acp-interaction-notices" class="acp-interaction-notices hidden">
         <section id="acp-status-banner" class="acp-status-banner hidden"></section>
+        <section id="acp-running-indicator" class="acp-running-indicator hidden">
+          <span class="acp-running-spinner" aria-hidden="true"></span>
+          <span id="acp-running-label">Working...</span>
+        </section>
 
         <section id="acp-permission-banner" class="acp-permission-banner hidden">
           <div class="acp-permission-copy">
             <strong id="acp-permission-title">Permission request</strong>
-            <div id="acp-permission-summary"></div>
-          </div>
-          <div class="acp-permission-actions">
-            <button id="acp-allow-btn" class="btn btn-primary" type="button">
-              Allow
+            <button
+              id="acp-permission-summary"
+              class="acp-permission-summary"
+              type="button"
+            ></button>
+            <button
+              id="acp-permission-details-btn"
+              class="acp-permission-details-btn"
+              type="button"
+            >
+              View full command
             </button>
-            <button id="acp-deny-btn" class="btn btn-danger" type="button">
-              Deny
-            </button>
           </div>
+          <div id="acp-permission-actions" class="acp-permission-actions"></div>
         </section>
+      </section>
+
+      <section id="acp-permission-drawer" class="acp-permission-drawer hidden">
+        <div
+          class="acp-permission-drawer-backdrop"
+          data-acp-permission-drawer-close="true"
+        ></div>
+        <aside
+          class="acp-permission-drawer-panel"
+          aria-labelledby="acp-permission-drawer-title"
+        >
+          <div class="acp-permission-drawer-header">
+            <div>
+              <strong id="acp-permission-drawer-title">Permission request</strong>
+              <div
+                id="acp-permission-drawer-subtitle"
+                class="acp-permission-drawer-subtitle"
+              ></div>
+            </div>
+            <button
+              id="acp-permission-drawer-close-btn"
+              class="btn btn-compact"
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+          <pre
+            id="acp-permission-full-command"
+            class="acp-permission-full-command"
+          ></pre>
+          <div
+            id="acp-permission-drawer-actions"
+            class="acp-permission-actions acp-permission-drawer-actions"
+          ></div>
+        </aside>
       </section>
 
       <section
@@ -179,7 +239,6 @@
         <div class="acp-diagnostics-header">
           <strong id="acp-diagnostics-title">Diagnostics</strong>
           <div id="acp-stop-reason" class="acp-diagnostics-summary"></div>
-          <div id="acp-usage-summary" class="acp-diagnostics-summary"></div>
           <div id="acp-diagnostics-copy-status" class="acp-diagnostics-summary"></div>
         </div>
         <div id="acp-diagnostics-list" class="acp-diagnostics-list"></div>
@@ -206,12 +265,25 @@
               <select id="acp-reasoning-select"></select>
             </label>
           </div>
+          <div
+            id="acp-usage-gauge"
+            class="acp-usage-gauge hidden"
+            title=""
+            aria-label="Usage"
+          >
+            <span class="acp-usage-gauge-ring">
+              <span id="acp-usage-gauge-value">0%</span>
+            </span>
+          </div>
           <button id="acp-primary-action-btn" class="btn btn-primary" type="submit">
             Send
           </button>
         </div>
       </form>
     </main>
+    <script src="./vendor/katex/katex.min.js"></script>
+    <script src="./vendor/markdown-it/markdown-it.min.js"></script>
+    <script src="./vendor/markdown-it-texmath/texmath.min.js"></script>
     <script src="./acp-chat.js"></script>
   </body>
 </html>

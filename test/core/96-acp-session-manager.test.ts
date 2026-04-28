@@ -52,8 +52,13 @@ import type {
   AcpConnectionPermissionListener,
   AcpConnectionUpdateListener,
 } from "../../src/modules/acpConnectionAdapter";
-import { AcpAuthRequiredError } from "../../src/modules/acpConnectionAdapter";
+import {
+  AcpAuthRequiredError,
+  buildAcpPromptTextForTests,
+} from "../../src/modules/acpConnectionAdapter";
+import { configureZoteroMcpServerForTests } from "../../src/modules/zoteroMcpServer";
 import type {
+  AcpPermissionOption,
   RequestPermissionOutcome,
   SessionNotification,
 } from "../../src/modules/acpProtocol";
@@ -73,6 +78,18 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
   readonly resumeSessionIds: string[] = [];
   readonly authenticateCalls: string[] = [];
   readonly cancelSessionIds: string[] = [];
+  permissionOptions: AcpPermissionOption[] = [
+    {
+      optionId: "allow-once",
+      kind: "allow_once",
+      name: "Allow Once",
+    },
+    {
+      optionId: "reject-once",
+      kind: "reject_once",
+      name: "Reject Once",
+    },
+  ];
   initializeCalls = 0;
   closeCalls = 0;
   promptStopReason = "end_turn";
@@ -80,6 +97,8 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
   failNewSessionUntilAuthenticated = false;
   canLoadSession = false;
   canResumeSession = false;
+  canUseHttpMcp = false;
+  canUseSseMcp = false;
   failLoadSession = false;
   failResumeSession = false;
   emitReplayOnLoad = false;
@@ -134,6 +153,8 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
       commandLine: "npx opencode-ai@latest acp",
       canLoadSession: this.canLoadSession,
       canResumeSession: this.canResumeSession,
+      canUseHttpMcp: this.canUseHttpMcp,
+      canUseSseMcp: this.canUseSseMcp,
     };
   }
 
@@ -285,6 +306,10 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
     }
   }
 
+  async emitSessionUpdate(update: SessionNotification) {
+    await this.emitUpdate(update);
+  }
+
   private emitDiagnostic(entry: {
     kind: string;
     level: "info" | "warn" | "error";
@@ -351,18 +376,7 @@ class FakeAcpConnectionAdapter implements AcpConnectionAdapter {
             sessionId: args.sessionId,
             toolCallId: "tool-1",
             toolTitle: "Inspect notes",
-            options: [
-              {
-                optionId: "allow-once",
-                kind: "allow_once",
-                name: "Allow Once",
-              },
-              {
-                optionId: "reject-once",
-                kind: "reject_once",
-                name: "Reject Once",
-              },
-            ],
+            options: this.permissionOptions,
             resolve,
           });
         }
@@ -577,6 +591,361 @@ describe("acp session manager", function () {
     assert.equal(lastAdapter?.closeCalls, 1);
   });
 
+  it("upserts tool calls by id and does not roll completed back to pending", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "completed",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "pending",
+      },
+    });
+
+    const toolItems = getAcpConversationSnapshot().items.filter(
+      (entry) => entry.kind === "tool_call" && entry.toolCallId === "tool-1",
+    );
+    assert.lengthOf(toolItems, 1);
+    assert.deepInclude(toolItems[0], {
+      title: "Inspect notes",
+      state: "completed",
+    });
+  });
+
+  it("keeps distinct tool call ids as separate transcript items", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "completed",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-2",
+        title: "Read metadata",
+        kind: "read",
+        status: "pending",
+      },
+    });
+
+    const toolItems = getAcpConversationSnapshot().items.filter(
+      (entry) => entry.kind === "tool_call",
+    );
+    assert.lengthOf(toolItems, 2);
+    assert.sameMembers(
+      toolItems.map((entry) => entry.toolCallId),
+      ["tool-1", "tool-2"],
+    );
+    assert.deepInclude(
+      toolItems.find((entry) => entry.toolCallId === "tool-1") || {},
+      {
+        state: "completed",
+      },
+    );
+  });
+
+  it("keeps informative tool summaries from explicit summary or call details", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-summary",
+        title: "Tool Call",
+        kind: "other",
+        status: "pending",
+        input: {
+          path: "artifact/todo_memo.md",
+          limit: 20,
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-summary",
+        title: "Tool Call",
+        kind: "other",
+        status: "completed",
+      },
+    });
+
+    const toolItem = getAcpConversationSnapshot().items.find(
+      (entry) => entry.kind === "tool_call" && entry.toolCallId === "tool-summary",
+    );
+    assert.equal(toolItem?.toolName, "Tool");
+    assert.include(String(toolItem?.inputSummary || ""), "artifact/todo_memo.md");
+    assert.include(String(toolItem?.summary || ""), "artifact/todo_memo.md");
+    assert.notEqual(toolItem?.summary, "Tool Call");
+  });
+
+  it("keeps the first tool call summary when later updates arrive", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-first-summary",
+        title: "Tool Call",
+        kind: "read",
+        status: "pending",
+        input: {
+          path: "first-call.md",
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-first-summary",
+        title: "Tool Call",
+        kind: "read",
+        status: "completed",
+        summary: "Later result text should not replace call args",
+      },
+    });
+
+    const toolItem = getAcpConversationSnapshot().items.find(
+      (entry) =>
+        entry.kind === "tool_call" && entry.toolCallId === "tool-first-summary",
+    );
+    assert.include(String(toolItem?.inputSummary || ""), "first-call.md");
+    assert.include(String(toolItem?.resultSummary || ""), "Later result");
+    assert.include(String(toolItem?.summary || ""), "first-call.md");
+    assert.notInclude(String(toolItem?.summary || ""), "Later result");
+  });
+
+  it("normalizes common ACP tool fields into tool name and frozen input summary", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-normalized",
+        title: "Tool Call",
+        kind: "other",
+        status: "pending",
+        summary: "[]",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-normalized",
+        title: "Tool Call",
+        status: "in_progress",
+        function_name: "read_file",
+        arguments: {
+          path: "artifact/todo_memo.md",
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-normalized",
+        title: "Tool Call",
+        status: "completed",
+        output: "read file completed",
+      },
+    });
+
+    const toolItem = getAcpConversationSnapshot().items.find(
+      (entry) =>
+        entry.kind === "tool_call" && entry.toolCallId === "tool-normalized",
+    );
+    assert.equal(toolItem?.toolName, "read_file");
+    assert.include(String(toolItem?.inputSummary || ""), "artifact/todo_memo.md");
+    assert.equal(toolItem?.resultSummary, "read file completed");
+    assert.notEqual(toolItem?.inputSummary, "[]");
+    assert.notInclude(String(toolItem?.summary || ""), "read file completed");
+  });
+
+  it("starts a new assistant message when a tool region appears between chunks", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "First assistant region.",
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-boundary",
+        title: "Inspect boundary",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "Second assistant region.",
+        },
+      },
+    });
+
+    const assistantItems = getAcpConversationSnapshot().items.filter(
+      (entry) => entry.kind === "message" && entry.role === "assistant",
+    );
+    assert.lengthOf(assistantItems, 2);
+    assert.deepEqual(
+      assistantItems.map((entry) => entry.text),
+      ["First assistant region.", "Second assistant region."],
+    );
+  });
+
+  it("starts a new thought when assistant output appears between thought chunks", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: "First thought region.",
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "Visible assistant output.",
+        },
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: "Second thought region.",
+        },
+      },
+    });
+
+    const thoughtItems = getAcpConversationSnapshot().items.filter(
+      (entry) => entry.kind === "thought",
+    );
+    assert.lengthOf(thoughtItems, 2);
+    assert.deepEqual(
+      thoughtItems.map((entry) => entry.text),
+      ["First thought region.", "Second thought region."],
+    );
+  });
+
+  it("keeps same-id tool updates as one region without adding duplicates", async function () {
+    await connectAcpConversation();
+
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await lastAdapter?.emitSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-1",
+        title: "Inspect notes",
+        kind: "read",
+        status: "completed",
+      },
+    });
+
+    const snapshot = getAcpConversationSnapshot();
+    const toolItems = snapshot.items.filter((entry) => entry.kind === "tool_call");
+    assert.lengthOf(toolItems, 1);
+    assert.equal(snapshot.items[snapshot.items.length - 1]?.id, toolItems[0]?.id);
+    assert.deepInclude(toolItems[0], {
+      toolCallId: "tool-1",
+      state: "completed",
+    });
+  });
+
+  it("injects Zotero MCP guidance instead of raw host context into ACP prompts", function () {
+    const promptText = buildAcpPromptTextForTests("Inspect Zotero", {
+      target: "library",
+      libraryId: "1",
+      selectionEmpty: false,
+      currentItem: {
+        id: 42,
+        key: "ITEMKEY",
+        title: "Private Item Title",
+      },
+    });
+
+    assert.include(promptText, "Inspect Zotero");
+    assert.include(promptText, "[Zotero MCP tool usage]");
+    assert.include(promptText, 'MCP server named "zotero"');
+    assert.include(promptText, "get_current_view");
+    assert.include(promptText, "search_items");
+    assert.notInclude(promptText, "zotero.get_current_view");
+    assert.notInclude(promptText, "zotero.search_items");
+    assert.include(promptText, "Never write directly to Zotero's SQLite database");
+    assert.notInclude(promptText, "[Zotero host context]");
+    assert.notInclude(promptText, "Private Item Title");
+    assert.notInclude(promptText, "\"selectionEmpty\"");
+  });
+
   it("creates an ACP session on demand, merges streamed assistant chunks, and persists transcript state", async function () {
     (Zotero as typeof Zotero & { DataDirectory?: { dir?: string } }).DataDirectory = {
       dir: "D:\\ZoteroData",
@@ -638,6 +1007,13 @@ describe("acp session manager", function () {
         title: "Inspect notes",
         state: "completed",
       },
+    );
+    const plan = snapshot.items.find((entry) => entry.kind === "plan") as
+      | { entries?: Array<{ status?: string }> }
+      | undefined;
+    assert.deepEqual(
+      plan?.entries?.map((entry) => entry.status),
+      ["completed", "skipped"],
     );
     assert.deepInclude(
       snapshot.items.find((entry) => entry.kind === "message" && entry.role === "assistant") || {},
@@ -1139,6 +1515,53 @@ describe("acp session manager", function () {
     });
   });
 
+  it("resolves arbitrary permission option ids supplied by the adapter", async function () {
+    setAcpConnectionAdapterFactoryForTests(async () => {
+      lastAdapter = new FakeAcpConnectionAdapter();
+      lastAdapter.emitPermissionDuringPrompt = true;
+      lastAdapter.permissionOptions = [
+        {
+          optionId: "approve-session",
+          kind: "allow_always",
+          name: "Approve Session",
+        },
+        {
+          optionId: "edit-command",
+          kind: "edit",
+          name: "Edit Command",
+        },
+        {
+          optionId: "deny-session",
+          kind: "reject_always",
+          name: "Deny Session",
+        },
+      ];
+      return lastAdapter;
+    });
+
+    const promptPromise = sendAcpConversationPrompt({
+      message: "Need custom permission",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.deepEqual(
+      snapshot.pendingPermissionRequest?.options.map((entry) => entry.optionId),
+      ["approve-session", "edit-command", "deny-session"],
+    );
+
+    await resolveAcpConversationPermission({
+      outcome: "selected",
+      optionId: "edit-command",
+    });
+    await promptPromise;
+
+    assert.deepEqual(lastAdapter?.lastPermissionOutcome, {
+      outcome: "selected",
+      optionId: "edit-command",
+    });
+  });
+
   it("surfaces command prerequisite failures without silently connecting", async function () {
     setAcpConnectionAdapterFactoryForTests(async () => {
       lastAdapter = new FakeAcpConnectionAdapter();
@@ -1165,6 +1588,28 @@ describe("acp session manager", function () {
     assert.match(bundle.connection.lastError, /npx/i);
     assert.isAtLeast(bundle.diagnostics.length, 1);
     assert.isBoolean(bundle.host.hasTextEncoder);
+    assert.include(["idle", "stopped"], bundle.mcpServer?.status);
+  });
+
+  it("includes live Zotero MCP status in conversation snapshots during active turns", async function () {
+    configureZoteroMcpServerForTests({
+      endpoint: "http://127.0.0.1:26500/mcp",
+      token: "test-token",
+    });
+
+    await sendAcpConversationPrompt({
+      message: "Check MCP status snapshot",
+    });
+
+    const snapshot = getAcpConversationSnapshot();
+    assert.isOk(snapshot.mcpServer);
+    assert.isOk(snapshot.mcpHealth);
+    assert.equal(snapshot.mcpServer?.status, "running");
+    assert.equal(snapshot.mcpHealth?.state, "listening");
+    assert.notInclude(
+      (snapshot.mcpHealth?.tooltip || []).join("\n"),
+      "server snapshot unavailable",
+    );
   });
 
   it("keeps stderr tail and lifecycle metadata visible when the ACP process closes unexpectedly", async function () {

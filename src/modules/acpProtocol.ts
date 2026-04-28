@@ -71,6 +71,11 @@ export type AcpAgentInfo = {
 
 export type AcpAgentCapabilities = {
   loadSession?: boolean | null;
+  mcpCapabilities?: {
+    http?: boolean | null;
+    sse?: boolean | null;
+    [key: string]: unknown;
+  } | null;
   sessionCapabilities?: {
     resume?: Record<string, unknown> | null;
     [key: string]: unknown;
@@ -164,6 +169,25 @@ export type AcpToolCall = {
   title?: string | null;
   kind?: string | null;
   status?: string | null;
+  summary?: string | null;
+  name?: string | null;
+  tool?: string | null;
+  functionName?: string | null;
+  function_name?: string | null;
+  description?: string | null;
+  metadata?: unknown;
+  rawInput?: unknown;
+  input?: unknown;
+  arguments?: unknown;
+  args?: unknown;
+  parameters?: unknown;
+  params?: unknown;
+  rawOutput?: unknown;
+  output?: unknown;
+  result?: unknown;
+  content?: unknown;
+  message?: unknown;
+  detail?: unknown;
 };
 
 export type AcpPlan = {

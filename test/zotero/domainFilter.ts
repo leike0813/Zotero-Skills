@@ -22,6 +22,8 @@ const ZOTERO_LITE_ALLOWLIST: Record<
     /(^|\/)test\/core\/87-workflow-package-runtime-diagnostics\.test\.ts$/,
     /(^|\/)test\/core\/88-workflow-runtime-scope-diagnostics\.test\.ts$/,
     /(^|\/)test\/core\/89-workflow-debug-probe\.test\.ts$/,
+    /(^|\/)test\/core\/102-acp-zotero-mcp-server\.integration\.test\.ts$/,
+    /(^|\/)test\/core\/104-acp-zotero-opencode\.integration\.test\.ts$/,
   ],
   ui: [
     /(^|\/)test\/ui\/01-startup-workflow-menu-init\.test\.ts$/,
@@ -77,6 +79,8 @@ const ZOTERO_LITE_TITLE_ALLOWLIST: Record<
     "workflow package runtime diagnostics ",
     "workflow runtime scope diagnostics ",
     "workflow debug probe ",
+    "embedded Zotero MCP server in Zotero runtime ",
+    "real OpenCode ACP against Zotero MCP server in Zotero runtime ",
   ],
   ui: [
     "startup workflow scan + menu init ",

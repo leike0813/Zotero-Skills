@@ -70,6 +70,7 @@
     "zotero-plugin-toolkit": "^5.1.0-beta.13"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.10.0",

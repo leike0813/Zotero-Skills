@@ -1,8 +1,6 @@
 (function () {
   const state = {
     snapshot: null,
-    allowOptionId: "",
-    denyOptionId: "",
     copyStatus: "",
     transcriptNodeMap: new Map(),
     transcriptOrderKey: "",
@@ -14,15 +12,21 @@
     actionsMenuOpen: false,
     sessionDrawerOpen: false,
     sessionDrawerSignature: "",
-    toolGroupExpandedIds: new Set(),
+    permissionDrawerOpen: false,
+    toolActivityExpandedIds: new Set(),
+    markdownParser: undefined,
   };
   const SIDEBAR_ACTION_BRIDGE_KEY = "__zsAcpSidebarBridge";
 
   const titleEl = document.getElementById("acp-title");
   const subtitleEl = document.getElementById("acp-subtitle");
+  const interactionNoticesEl = document.getElementById("acp-interaction-notices");
   const statusBannerEl = document.getElementById("acp-status-banner");
+  const runningIndicatorEl = document.getElementById("acp-running-indicator");
+  const runningLabelEl = document.getElementById("acp-running-label");
   const statusSummaryEl = document.getElementById("acp-status-summary");
   const statusSummaryTextEl = document.getElementById("acp-status-summary-text");
+  const mcpInjectionStatusEl = document.getElementById("acp-mcp-injection-status");
   const statusDetailsPanelEl = document.getElementById("acp-status-details-panel");
   const statusDetailsToggleBtnEl = document.getElementById(
     "acp-status-details-toggle-btn",
@@ -48,6 +52,7 @@
   const sessionPickerLabelEl = document.getElementById("acp-session-picker-label");
   const sessionSelectEl = document.getElementById("acp-session-select");
   const statusLabelEl = document.getElementById("acp-status-label");
+  const statusPillEl = statusLabelEl.closest(".acp-status-pill");
   const targetLabelEl = document.getElementById("acp-target-label");
   const agentLabelEl = document.getElementById("acp-agent-label");
   const sessionLabelEl = document.getElementById("acp-session-label");
@@ -57,6 +62,10 @@
   const remoteRestoreValueEl = document.getElementById("acp-remote-restore-value");
   const commandLabelEl = document.getElementById("acp-command-label");
   const transcriptEl = document.getElementById("acp-transcript");
+  const planPanelEl = document.getElementById("acp-plan-panel");
+  const planTitleEl = document.getElementById("acp-plan-title");
+  const planSummaryEl = document.getElementById("acp-plan-summary");
+  const planListEl = document.getElementById("acp-plan-list");
   const updatedAtEl = document.getElementById("acp-updated-at");
   const modeSelectEl = document.getElementById("acp-mode-select");
   const modelSelectEl = document.getElementById("acp-model-select");
@@ -76,8 +85,26 @@
   const permissionBannerEl = document.getElementById("acp-permission-banner");
   const permissionTitleEl = document.getElementById("acp-permission-title");
   const permissionSummaryEl = document.getElementById("acp-permission-summary");
-  const allowBtnEl = document.getElementById("acp-allow-btn");
-  const denyBtnEl = document.getElementById("acp-deny-btn");
+  const permissionDetailsBtnEl = document.getElementById(
+    "acp-permission-details-btn",
+  );
+  const permissionActionsEl = document.getElementById("acp-permission-actions");
+  const permissionDrawerEl = document.getElementById("acp-permission-drawer");
+  const permissionDrawerTitleEl = document.getElementById(
+    "acp-permission-drawer-title",
+  );
+  const permissionDrawerSubtitleEl = document.getElementById(
+    "acp-permission-drawer-subtitle",
+  );
+  const permissionDrawerCloseBtnEl = document.getElementById(
+    "acp-permission-drawer-close-btn",
+  );
+  const permissionFullCommandEl = document.getElementById(
+    "acp-permission-full-command",
+  );
+  const permissionDrawerActionsEl = document.getElementById(
+    "acp-permission-drawer-actions",
+  );
   const workspaceLabelEl = document.getElementById("acp-workspace-label");
   const runtimeLabelEl = document.getElementById("acp-runtime-label");
   const hostContextLabelEl = document.getElementById("acp-host-context-label");
@@ -85,7 +112,8 @@
   const runtimeDirEl = document.getElementById("acp-runtime-dir");
   const hostContextSummaryEl = document.getElementById("acp-host-context-summary");
   const stopReasonEl = document.getElementById("acp-stop-reason");
-  const usageSummaryEl = document.getElementById("acp-usage-summary");
+  const usageGaugeEl = document.getElementById("acp-usage-gauge");
+  const usageGaugeValueEl = document.getElementById("acp-usage-gauge-value");
   const diagnosticsCopyStatusEl = document.getElementById(
     "acp-diagnostics-copy-status",
   );
@@ -156,6 +184,63 @@
     return node;
   }
 
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function ensureMarkdownParser() {
+    if (state.markdownParser !== undefined) {
+      return state.markdownParser;
+    }
+    if (!window.markdownit || typeof window.markdownit !== "function") {
+      console.warn("markdown-it not loaded, falling back to plain text rendering");
+      state.markdownParser = null;
+      return null;
+    }
+    const mdParser = window.markdownit({
+      html: false,
+      xhtmlOut: false,
+      breaks: true,
+      langPrefix: "language-",
+      linkify: false,
+      typographer: false,
+      quotes: "\"\"''",
+      highlight: null,
+    });
+    if (window.texmath && window.katex) {
+      mdParser.use(window.texmath, {
+        engine: window.katex,
+        delimiters: "dollars",
+        katexOptions: {
+          throwOnError: false,
+          output: "htmlAndMathML",
+          displayMode: false,
+        },
+      });
+    }
+    state.markdownParser = mdParser;
+    return mdParser;
+  }
+
+  function renderMarkdown(textValue) {
+    const markdownText = String(textValue || "");
+    const mdParser = ensureMarkdownParser();
+    if (!mdParser) {
+      return escapeHtml(markdownText);
+    }
+    try {
+      return mdParser.render(markdownText).trimEnd();
+    } catch (error) {
+      console.warn("Markdown render error, falling back to plain text:", error);
+      return escapeHtml(markdownText);
+    }
+  }
+
   function formatTime(value) {
     const text = String(value || "").trim();
     if (!text) {
@@ -168,11 +253,81 @@
     return parsed.toLocaleString();
   }
 
-  function findPermissionOption(options, kinds) {
-    const matched = (options || []).find(function (entry) {
-      return kinds.indexOf(String(entry.kind || "")) >= 0;
+  function permissionCommandText(request) {
+    return String((request && request.toolTitle) || "Tool Call").trim() || "Tool Call";
+  }
+
+  function truncatePermissionCommand(text) {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim();
+    const limit = 220;
+    if (normalized.length <= limit) {
+      return normalized;
+    }
+    return normalized.slice(0, limit - 1).trimEnd() + "…";
+  }
+
+  function permissionOptionToneClass(option) {
+    const text = [
+      option && option.kind,
+      option && option.name,
+      option && option.optionId,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (
+      text.indexOf("reject") >= 0 ||
+      text.indexOf("deny") >= 0 ||
+      text.indexOf("cancel") >= 0 ||
+      text.indexOf("disallow") >= 0
+    ) {
+      return "btn-danger";
+    }
+    if (
+      text.indexOf("allow") >= 0 ||
+      text.indexOf("approve") >= 0 ||
+      text.indexOf("accept") >= 0 ||
+      text.indexOf("yes") >= 0
+    ) {
+      return "btn-primary";
+    }
+    return "";
+  }
+
+  function renderPermissionActions(container, request) {
+    clearNode(container);
+    const options = (request && Array.isArray(request.options) ? request.options : [])
+      .map(function (entry) {
+        return {
+          optionId: String((entry && entry.optionId) || "").trim(),
+          kind: String((entry && entry.kind) || "").trim(),
+          name: String((entry && entry.name) || "").trim(),
+          description: String((entry && entry.description) || "").trim(),
+        };
+      })
+      .filter(function (entry) {
+        return entry.optionId;
+      });
+    if (options.length === 0) {
+      const empty = el("span", "acp-permission-empty-action", "No options");
+      container.appendChild(empty);
+      return;
+    }
+    options.forEach(function (option) {
+      const toneClass = permissionOptionToneClass(option);
+      const button = el("button", "btn" + (toneClass ? " " + toneClass : ""));
+      button.type = "button";
+      button.textContent = option.name || option.kind || option.optionId;
+      if (option.description) {
+        button.title = option.description;
+      }
+      button.addEventListener("click", function () {
+        sendAction("resolve-permission", {
+          outcome: "selected",
+          optionId: option.optionId,
+        });
+      });
+      container.appendChild(button);
     });
-    return matched ? String(matched.optionId || "").trim() : "";
   }
 
   function isNearTranscriptBottom() {
@@ -203,6 +358,78 @@
     return parts.join(" • ") || "-";
   }
 
+  function latestDiagnostic(snapshot, kinds) {
+    const diagnostics = Array.isArray(snapshot.diagnostics)
+      ? snapshot.diagnostics
+      : [];
+    const wanted = new Set(kinds);
+    for (let index = diagnostics.length - 1; index >= 0; index -= 1) {
+      const entry = diagnostics[index] || {};
+      if (wanted.has(String(entry.kind || ""))) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  function buildMcpServiceStatus(snapshot) {
+    const mcpHealth = snapshot && snapshot.mcpHealth ? snapshot.mcpHealth : null;
+    if (mcpHealth) {
+      const healthState = String(mcpHealth.state || "");
+      const severity = String(mcpHealth.severity || "neutral");
+      const tone =
+        healthState === "listening" ||
+        healthState === "injected" ||
+        healthState === "handshake_seen" ||
+        healthState === "tools_seen" ||
+        severity === "ok" ||
+        severity === "active"
+          ? "is-ready"
+          : severity === "warning"
+            ? "is-warning"
+            : severity === "error"
+              ? "is-error"
+              : healthState === "starting"
+                ? "is-running"
+                : healthState === "unavailable"
+                  ? "is-warning"
+                  : "is-running";
+      const tooltip = Array.isArray(mcpHealth.tooltip)
+        ? mcpHealth.tooltip.join("\n")
+        : String(mcpHealth.summary || "Zotero MCP service");
+      return {
+        tone,
+        label: "MCP",
+        tooltip: tooltip || "Zotero MCP service",
+      };
+    }
+    const injected = latestDiagnostic(snapshot, ["mcp_server_injected"]);
+    const unavailable = latestDiagnostic(snapshot, ["zotero_mcp_unavailable"]);
+    const injectedAt = Date.parse(String((injected && injected.ts) || "")) || 0;
+    const unavailableAt = Date.parse(String((unavailable && unavailable.ts) || "")) || 0;
+    if (injected && injectedAt >= unavailableAt) {
+      return {
+        tone: "is-running",
+        label: "MCP",
+        tooltip: [
+          "Zotero MCP service",
+          "descriptor=injected",
+          "status=server health snapshot pending",
+          String(injected.message || ""),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      };
+    }
+    return {
+      tone: "is-running",
+      label: "MCP",
+      tooltip:
+        "Zotero MCP service\nstatus=server health snapshot pending" +
+        (unavailable ? "\n" + String(unavailable.message || "") : ""),
+    };
+  }
+
   function isSessionMutationBlocked(snapshot) {
     return (
       snapshot.busy === true ||
@@ -211,7 +438,274 @@
     );
   }
 
-  function renderBanner(snapshot) {
+  function normalizeStatusToken(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+  }
+
+  function isTerminalPlanStatus(status) {
+    return [
+      "complete",
+      "completed",
+      "done",
+      "succeeded",
+      "success",
+      "skipped",
+      "cancelled",
+      "canceled",
+      "failed",
+      "error",
+    ].indexOf(normalizeStatusToken(status)) >= 0;
+  }
+
+  function statusToneClass(status) {
+    switch (normalizeStatusToken(status)) {
+      case "connected":
+      case "prompting":
+      case "permission_required":
+      case "auth_required":
+        return "is-connected";
+      case "checking_command":
+      case "spawning":
+      case "initializing":
+        return "is-connecting";
+      case "error":
+        return "is-error";
+      case "idle":
+      default:
+        return "is-idle";
+    }
+  }
+
+  function planStatusToneClass(status) {
+    switch (normalizeStatusToken(status)) {
+      case "complete":
+      case "completed":
+      case "done":
+      case "succeeded":
+      case "success":
+        return "is-completed";
+      case "in_progress":
+      case "running":
+        return "is-running";
+      case "failed":
+      case "error":
+        return "is-failed";
+      case "cancelled":
+      case "canceled":
+        return "is-cancelled";
+      case "skipped":
+        return "is-skipped";
+      case "pending":
+      case "todo":
+      default:
+        return "is-pending";
+    }
+  }
+
+  function planStatusIcon(status) {
+    switch (planStatusToneClass(status)) {
+      case "is-completed":
+        return "✓";
+      case "is-running":
+        return "";
+      case "is-failed":
+        return "×";
+      case "is-cancelled":
+        return "−";
+      case "is-skipped":
+        return "↷";
+      case "is-pending":
+      default:
+        return "";
+    }
+  }
+
+  function isPlanPanelLive(snapshot) {
+    return (
+      snapshot &&
+      (snapshot.busy === true ||
+        snapshot.status === "prompting" ||
+        snapshot.status === "permission-required")
+    );
+  }
+
+  function toolStatusToneClass(status) {
+    switch (normalizeStatusToken(status)) {
+      case "completed":
+        return "is-completed";
+      case "failed":
+        return "is-failed";
+      case "in_progress":
+      case "running":
+        return "is-running";
+      case "pending":
+      default:
+        return "is-pending";
+    }
+  }
+
+  function isGenericToolText(value) {
+    const text = String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, " ");
+    const raw = String(value || "").trim();
+    return (
+      !text ||
+      text === "tool" ||
+      text === "tool call" ||
+      text === "other" ||
+      text === "[]" ||
+      text === "{}" ||
+      /^call_[a-z0-9_-]+$/i.test(raw) ||
+      /^toolu_[a-z0-9_-]+$/i.test(raw)
+    );
+  }
+
+  function compactToolName(tool) {
+    const candidates = [
+      tool && tool.toolName,
+      tool && tool.toolKind,
+      tool && tool.title,
+    ];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const value = String(candidates[index] || "").trim();
+      if (!isGenericToolText(value)) {
+        return value;
+      }
+    }
+    return "Tool";
+  }
+
+  function compactToolSummary(tool) {
+    const candidates = [
+      tool && tool.inputSummary,
+      tool && tool.title,
+      tool && tool.summary,
+    ];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const value = String(candidates[index] || "").replace(/\s+/g, " ").trim();
+      if (!isGenericToolText(value)) {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  function compactToolType(tool) {
+    return compactToolName(tool);
+  }
+
+  function appendToolDisplay(parent, tool) {
+    const toolType = compactToolType(tool);
+    parent.appendChild(el("span", "acp-tool-kind-badge", toolType));
+    const summary = compactToolSummary(tool);
+    if (summary) {
+      parent.appendChild(el("span", "acp-tool-summary-text", summary));
+    }
+  }
+
+  function toolActivitySummaryState(items) {
+    const tools = Array.isArray(items) ? items : [];
+    const states = tools.map(function (tool) {
+      return normalizeStatusToken(tool && tool.state);
+    });
+    const completedCount = states.filter(function (state) {
+      return state === "completed";
+    }).length;
+    const failedCount = states.filter(function (state) {
+      return state === "failed";
+    }).length;
+    if (tools.length > 0 && completedCount === tools.length) {
+      return "completed";
+    }
+    if (tools.length > 0 && failedCount === tools.length) {
+      return "failed";
+    }
+    if (completedCount > 0 && failedCount > 0) {
+      return "in_progress";
+    }
+    if (failedCount > 0) {
+      return "failed";
+    }
+    if (states.indexOf("in_progress") >= 0 || states.indexOf("running") >= 0) {
+      return "in_progress";
+    }
+    if (states.indexOf("pending") >= 0) {
+      return "pending";
+    }
+    return "completed";
+  }
+
+  function findActivePlan(items) {
+    const plans = (Array.isArray(items) ? items : []).filter(function (item) {
+      return item && item.kind === "plan" && Array.isArray(item.entries);
+    });
+    for (let index = plans.length - 1; index >= 0; index -= 1) {
+      const plan = plans[index];
+      const entries = Array.isArray(plan.entries) ? plan.entries : [];
+      if (
+        entries.length > 0 &&
+        entries.some(function (entry) {
+          return !isTerminalPlanStatus(entry.status);
+        })
+      ) {
+        return plan;
+      }
+    }
+    return null;
+  }
+
+  function renderPlanPanel(snapshot) {
+    const labels = snapshot.labels || {};
+    const activePlan = isPlanPanelLive(snapshot)
+      ? findActivePlan(snapshot.items)
+      : null;
+    if (!activePlan) {
+      planPanelEl.className = "acp-plan-panel hidden";
+      planTitleEl.textContent = labels.plan || "Plan";
+      planSummaryEl.textContent = "";
+      clearNode(planListEl);
+      return;
+    }
+    const entries = Array.isArray(activePlan.entries) ? activePlan.entries : [];
+    const terminalCount = entries.filter(function (entry) {
+      return isTerminalPlanStatus(entry.status);
+    }).length;
+    planPanelEl.className = "acp-plan-panel";
+    planTitleEl.textContent = labels.plan || "Plan";
+    planSummaryEl.textContent =
+      String(terminalCount) + "/" + String(entries.length) + " complete";
+    clearNode(planListEl);
+    entries.forEach(function (entry) {
+      const terminal = isTerminalPlanStatus(entry.status);
+      const statusTone = planStatusToneClass(entry.status);
+      const statusNode = el("span", "acp-plan-entry-status " + statusTone);
+      const statusIcon = el(
+        "span",
+        "acp-plan-status-icon " + statusTone,
+        planStatusIcon(entry.status),
+      );
+      statusIcon.setAttribute("aria-hidden", "true");
+      statusNode.appendChild(statusIcon);
+      const row = el(
+        "div",
+        "acp-plan-entry " +
+          statusTone +
+          (terminal ? " is-terminal" : " is-active"),
+      );
+      row.appendChild(statusNode);
+      row.appendChild(
+        el("span", "acp-plan-entry-content", String(entry.content || "")),
+      );
+      planListEl.appendChild(row);
+    });
+  }
+
+  function buildStatusNoticeParts(snapshot) {
     const labels = snapshot.labels || {};
     const parts = [];
     if (snapshot.lastError) {
@@ -226,23 +720,61 @@
           "Remote session could not be restored; continued with a new agent session.",
       );
     }
-    if (snapshot.usage && typeof snapshot.usage.used === "number") {
-      parts.push(
-        (labels.usage || "Usage") +
-          ": " +
-          String(snapshot.usage.used) +
-          "/" +
-          String(snapshot.usage.size),
-      );
-    }
+    return parts;
+  }
+
+  function renderBanner(snapshot) {
+    const parts = buildStatusNoticeParts(snapshot);
     if (parts.length === 0) {
       statusBannerEl.textContent = "";
       statusBannerEl.className = "acp-status-banner hidden";
-      return;
+      return false;
     }
     statusBannerEl.textContent = parts.join(" • ");
     statusBannerEl.className =
       "acp-status-banner" + (snapshot.status === "error" ? " is-error" : " is-warning");
+    return true;
+  }
+
+  function isPromptRunning(snapshot) {
+    const status = String(snapshot.status || "");
+    return (
+      snapshot.busy === true ||
+      status === "prompting" ||
+      status === "checking-command" ||
+      status === "spawning" ||
+      status === "initializing"
+    );
+  }
+
+  function renderRunningIndicator(snapshot) {
+    const labels = snapshot.labels || {};
+    runningLabelEl.textContent =
+      labels.running || labels.working || "Working...";
+    runningIndicatorEl.className =
+      "acp-running-indicator" + (isPromptRunning(snapshot) ? "" : " hidden");
+  }
+
+  function renderUsageGauge(snapshot) {
+    const labels = snapshot.labels || {};
+    const usage = snapshot.usage || {};
+    const used = Number(usage.used);
+    const size = Number(usage.size);
+    if (!Number.isFinite(used) || !Number.isFinite(size) || size <= 0) {
+      usageGaugeEl.className = "acp-usage-gauge is-unavailable";
+      usageGaugeEl.title = (labels.usage || "Usage") + ": unavailable";
+      usageGaugeEl.setAttribute("aria-label", usageGaugeEl.title);
+      usageGaugeEl.style.setProperty("--acp-usage-percent", "0");
+      usageGaugeValueEl.textContent = "-";
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round((used / size) * 100)));
+    usageGaugeEl.className = "acp-usage-gauge";
+    usageGaugeEl.style.setProperty("--acp-usage-percent", String(percent));
+    usageGaugeEl.title =
+      (labels.usage || "Usage") + ": " + String(used) + "/" + String(size);
+    usageGaugeEl.setAttribute("aria-label", usageGaugeEl.title);
+    usageGaugeValueEl.textContent = String(percent) + "%";
   }
 
   function renderActionsMenu(snapshot) {
@@ -464,6 +996,14 @@
       expanded ? "true" : "false",
     );
     statusSummaryTextEl.textContent = buildStatusSummary(snapshot);
+    if (mcpInjectionStatusEl) {
+      const mcpStatus = buildMcpServiceStatus(snapshot);
+      mcpInjectionStatusEl.className =
+        "acp-mcp-status-monitor " + mcpStatus.tone;
+      mcpInjectionStatusEl.textContent = mcpStatus.label;
+      mcpInjectionStatusEl.title = mcpStatus.tooltip;
+      mcpInjectionStatusEl.setAttribute("aria-label", mcpStatus.tooltip);
+    }
   }
 
   function optionsSignature(options, current) {
@@ -534,10 +1074,8 @@
       reasoningSelectEl.disabled = reasoningOptions.length <= 1;
       state.pickerSignature = signature;
     }
-    modeSelectEl.closest(".acp-picker").classList.toggle("hidden", modeOptions.length === 0);
-    modelSelectEl
-      .closest(".acp-picker")
-      .classList.toggle("hidden", modelOptions.length === 0);
+    modeSelectEl.closest(".acp-picker").classList.remove("hidden");
+    modelSelectEl.closest(".acp-picker").classList.remove("hidden");
     reasoningSelectEl.closest(".acp-picker").classList.remove("hidden");
   }
 
@@ -638,34 +1176,63 @@
     const labels = snapshot.labels || {};
     const request = snapshot.pendingPermissionRequest;
     if (!request) {
-      state.allowOptionId = "";
-      state.denyOptionId = "";
+      state.permissionDrawerOpen = false;
       permissionBannerEl.className = "acp-permission-banner hidden";
       permissionSummaryEl.textContent = "";
+      permissionDrawerEl.className = "acp-permission-drawer hidden";
+      permissionFullCommandEl.textContent = "";
+      clearNode(permissionActionsEl);
+      clearNode(permissionDrawerActionsEl);
+      return false;
+    }
+    const title = labels.permission || "Permission request";
+    const commandText = permissionCommandText(request);
+    permissionTitleEl.textContent = title;
+    permissionSummaryEl.textContent = truncatePermissionCommand(commandText);
+    permissionSummaryEl.title = commandText;
+    permissionDetailsBtnEl.textContent =
+      labels.permissionDetails || "View full command";
+    renderPermissionActions(permissionActionsEl, request);
+    permissionBannerEl.className = "acp-permission-banner";
+    permissionDrawerTitleEl.textContent = title;
+    permissionDrawerSubtitleEl.textContent =
+      labels.permissionDrawerSubtitle || "Review the full command before choosing.";
+    permissionFullCommandEl.textContent = commandText;
+    renderPermissionActions(permissionDrawerActionsEl, request);
+    permissionDrawerEl.className =
+      "acp-permission-drawer" + (state.permissionDrawerOpen ? "" : " hidden");
+    return true;
+  }
+
+  function renderInteractionZone(snapshot) {
+    const hasPermission = renderPermission(snapshot);
+    const hasNotice = renderBanner(snapshot);
+    renderRunningIndicator(snapshot);
+
+    if (hasPermission) {
+      interactionNoticesEl.className = "acp-interaction-notices";
+      permissionBannerEl.className = "acp-permission-banner";
+      statusBannerEl.className = "acp-status-banner hidden";
+      runningIndicatorEl.className = "acp-running-indicator hidden";
       return;
     }
-    state.allowOptionId = findPermissionOption(request.options, [
-      "allow_once",
-      "allow_always",
-    ]);
-    state.denyOptionId = findPermissionOption(request.options, [
-      "reject_once",
-      "reject_always",
-    ]);
-    permissionTitleEl.textContent = labels.permission || "Permission request";
-    permissionSummaryEl.textContent =
-      String(request.toolTitle || "Tool Call") +
-      " • " +
-      (request.options || [])
-        .map(function (entry) {
-          return entry.name;
-        })
-        .join(", ");
-    allowBtnEl.textContent = labels.allow || "Allow";
-    denyBtnEl.textContent = labels.deny || "Deny";
-    allowBtnEl.disabled = !state.allowOptionId;
-    denyBtnEl.disabled = !state.denyOptionId;
-    permissionBannerEl.className = "acp-permission-banner";
+    if (hasNotice) {
+      interactionNoticesEl.className = "acp-interaction-notices";
+      permissionBannerEl.className = "acp-permission-banner hidden";
+      runningIndicatorEl.className = "acp-running-indicator hidden";
+      return;
+    }
+    if (isPromptRunning(snapshot)) {
+      interactionNoticesEl.className = "acp-interaction-notices";
+      permissionBannerEl.className = "acp-permission-banner hidden";
+      statusBannerEl.className = "acp-status-banner hidden";
+      runningIndicatorEl.className = "acp-running-indicator";
+      return;
+    }
+    interactionNoticesEl.className = "acp-interaction-notices hidden";
+    permissionBannerEl.className = "acp-permission-banner hidden";
+    statusBannerEl.className = "acp-status-banner hidden";
+    runningIndicatorEl.className = "acp-running-indicator hidden";
   }
 
   function buildDiagnosticsRows(snapshot) {
@@ -748,14 +1315,6 @@
     stopReasonEl.textContent = snapshot.lastStopReason
       ? (labels.stopReason || "Stop reason") + ": " + snapshot.lastStopReason
       : "";
-    usageSummaryEl.textContent =
-      snapshot.usage && typeof snapshot.usage.used === "number"
-        ? (labels.usage || "Usage") +
-          ": " +
-          String(snapshot.usage.used) +
-          "/" +
-          String(snapshot.usage.size)
-        : "";
     if (!snapshot.showDiagnostics) {
       return;
     }
@@ -781,15 +1340,15 @@
     const role =
       item.kind === "message"
         ? String(item.role || "assistant")
-        : item.kind === "tool_call" || item.kind === "tool_group"
+        : item.kind === "tool_call" || item.kind === "tool_activity_group"
           ? "tool"
           : String(item.kind || "assistant");
     row.className = "acp-message acp-role-" + role;
-    if (item.kind === "tool_call") {
+    if (item.kind === "tool_call" || item.kind === "tool_activity_group") {
       row.classList.add("acp-tool-line");
     }
-    if (item.kind === "tool_group") {
-      row.classList.add("acp-tool-group");
+    if (item.kind === "tool_activity_group") {
+      row.classList.add("acp-tool-activity-group");
       row.classList.toggle("is-expanded", item.expanded === true);
       row.classList.toggle("is-collapsed", item.expanded !== true);
     }
@@ -805,7 +1364,7 @@
     const roleClass =
       item.kind === "message"
         ? "acp-role-" + String(item.role || "assistant")
-        : item.kind === "tool_call" || item.kind === "tool_group"
+        : item.kind === "tool_call" || item.kind === "tool_activity_group"
           ? "acp-role-tool"
           : "acp-role-" + String(item.kind || "status");
     const row = el("article", "acp-message " + roleClass);
@@ -818,17 +1377,42 @@
     return row;
   }
 
+  function toolGroupSummaryText(items) {
+    const tools = Array.isArray(items) ? items : [];
+    const failedCount = tools.filter(function (tool) {
+      return String(tool.state || "").trim() === "failed";
+    }).length;
+    const runningCount = tools.filter(function (tool) {
+      const status = String(tool.state || "").trim();
+      return status === "in_progress" || status === "running";
+    }).length;
+    const pendingCount = tools.filter(function (tool) {
+      return String(tool.state || "").trim() === "pending";
+    }).length;
+    return [
+      String(tools.length) + " tools",
+      failedCount ? String(failedCount) + " failed" : "",
+      runningCount ? String(runningCount) + " running" : "",
+      pendingCount ? String(pendingCount) + " pending" : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+  }
+
   function renderTranscriptItem(row, item) {
     const meta = row.querySelector(".acp-message-meta");
     const body = row.querySelector("[data-acp-body]");
     updateMessageClasses(row, item);
+    while (row.children.length > 2) {
+      row.removeChild(row.lastChild);
+    }
     row.onclick =
-      item.kind === "tool_group"
+      item.kind === "tool_activity_group"
         ? function () {
-            if (state.toolGroupExpandedIds.has(item.id)) {
-              state.toolGroupExpandedIds.delete(item.id);
+            if (state.toolActivityExpandedIds.has(item.id)) {
+              state.toolActivityExpandedIds.delete(item.id);
             } else {
-              state.toolGroupExpandedIds.add(item.id);
+              state.toolActivityExpandedIds.add(item.id);
             }
             renderTranscript(state.snapshot || {});
           }
@@ -839,27 +1423,38 @@
     if (item.kind === "message") {
       meta.appendChild(el("span", "acp-message-role", String(item.role || "assistant")));
       meta.appendChild(el("span", "acp-message-time", formatTime(item.createdAt)));
-      body.textContent = String(item.text || "");
+      body.classList.add("acp-markdown-body");
+      body.innerHTML = renderMarkdown(String(item.text || ""));
       return;
     }
     if (item.kind === "thought") {
       meta.textContent = "Thought";
-      body.textContent = String(item.text || "");
+      body.classList.add("acp-markdown-body");
+      body.innerHTML = renderMarkdown(String(item.text || ""));
       return;
     }
     if (item.kind === "tool_call") {
       meta.textContent = "Tool";
-      body.textContent = [
-        String(item.title || "Tool"),
-        String(item.state || "").trim(),
-        String(item.toolKind || "").trim(),
-      ]
-        .filter(Boolean)
-        .join(" • ");
+      const statusTone = toolStatusToneClass(item.state);
+      const led = el("span", "acp-tool-led " + statusTone);
+      led.setAttribute("aria-hidden", "true");
+      body.appendChild(led);
+      appendToolDisplay(body, item);
       return;
     }
-    if (item.kind === "tool_group") {
+    if (item.kind === "tool_activity_group") {
       const latest = item.items[item.items.length - 1] || {};
+      const summaryState = toolActivitySummaryState(item.items);
+      const failedCount = item.items.filter(function (tool) {
+        return String(tool.state || "").trim() === "failed";
+      }).length;
+      const runningCount = item.items.filter(function (tool) {
+        const status = String(tool.state || "").trim();
+        return status === "in_progress" || status === "running";
+      }).length;
+      const pendingCount = item.items.filter(function (tool) {
+        return String(tool.state || "").trim() === "pending";
+      }).length;
       meta.appendChild(
         el(
           "span",
@@ -867,50 +1462,40 @@
           "Tool activity" + " (" + String(item.items.length) + ")",
         ),
       );
-      meta.appendChild(el("span", "acp-message-time", String(latest.state || "")));
-      body.appendChild(
+      const summary = el("div", "acp-tool-activity-summary");
+      const summaryLed = el("span", "acp-tool-led " + toolStatusToneClass(summaryState));
+      summaryLed.setAttribute("aria-hidden", "true");
+      summary.appendChild(summaryLed);
+      summary.appendChild(
         el(
-          "div",
-          "acp-tool-group-summary",
+          "span",
+          "acp-tool-summary-text",
           [
-            String(latest.title || "Tool"),
-            String(latest.state || "").trim(),
-            item.expanded ? "expanded" : "collapsed",
+            String(item.items.length) + " tools",
+            failedCount ? String(failedCount) + " failed" : "",
+            runningCount ? String(runningCount) + " running" : "",
+            pendingCount ? String(pendingCount) + " pending" : "",
           ]
             .filter(Boolean)
             .join(" • "),
         ),
       );
-      const list = el("div", "acp-tool-group-list");
-      item.items.forEach(function (tool) {
-        const entry = el("div", "acp-tool-group-item");
-        entry.appendChild(el("span", "", String(tool.title || "Tool")));
-        entry.appendChild(
-          el(
-            "span",
-            "",
-            [String(tool.state || "").trim(), String(tool.toolKind || "").trim()]
-              .filter(Boolean)
-              .join(" • "),
-          ),
-        );
-        list.appendChild(entry);
-      });
-      body.appendChild(list);
-      return;
-    }
-    if (item.kind === "plan") {
-      meta.textContent = "Plan";
-      body.className = "acp-plan-list";
-      (item.entries || []).forEach(function (entry) {
-        body.appendChild(
-          el(
+      body.appendChild(summary);
+      if (item.expanded === true) {
+        const list = el("div", "acp-tool-activity-list");
+        item.items.forEach(function (tool) {
+          const entry = el(
             "div",
-            "acp-plan-entry",
-            String(entry.status || "") + " • " + String(entry.content || ""),
-          ),
-        );
-      });
+            "acp-tool-activity-item " + toolStatusToneClass(tool.state),
+          );
+          const led = el("span", "acp-tool-led " + toolStatusToneClass(tool.state));
+          led.setAttribute("aria-hidden", "true");
+          entry.appendChild(led);
+          appendToolDisplay(entry, tool);
+          list.appendChild(entry);
+        });
+        row.appendChild(list);
+      }
       return;
     }
     meta.textContent = String(item.label || "Status");
@@ -926,50 +1511,177 @@
     );
   }
 
-  function flushToolGroup(entries, group) {
-    if (!group || group.length === 0) {
-      return;
+  function sanitizeToolGroupKey(key) {
+    const text = String(key || "unknown");
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
     }
-    if (group.length === 1) {
-      entries.push(group[0]);
-      return;
+    const slug = text.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 48) || "unknown";
+    return slug + "-" + hash.toString(36);
+  }
+
+  function toolStateRank(state) {
+    switch (String(state || "").trim()) {
+      case "failed":
+        return 4;
+      case "completed":
+        return 3;
+      case "in_progress":
+        return 2;
+      case "pending":
+      default:
+        return 1;
     }
-    const first = group[0];
-    const last = group[group.length - 1];
+  }
+
+  function toolEventTime(item) {
+    const parsed = Date.parse(String(item.updatedAt || item.createdAt || ""));
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  function isPreferredToolEvent(candidate, current) {
+    const candidateRank = toolStateRank(candidate.state);
+    const currentRank = toolStateRank(current.state);
+    if (candidateRank !== currentRank) {
+      return candidateRank > currentRank;
+    }
+    return toolEventTime(candidate) >= toolEventTime(current);
+  }
+
+  function createCanonicalToolItem(key, group) {
+    const items = group.items || [];
+    const first = items[0] || {};
+    const selected = items.reduce(function (current, candidate) {
+      return isPreferredToolEvent(candidate, current) ? candidate : current;
+    }, first);
+    const latestSummary =
+      items.slice().reverse().find(function (tool) {
+        return String(tool.summary || "").trim();
+      }) || {};
+    const firstInputSummary =
+      items.find(function (tool) {
+        return !isGenericToolText(tool.inputSummary);
+      }) || {};
+    const latestResultSummary =
+      items.slice().reverse().find(function (tool) {
+        return !isGenericToolText(tool.resultSummary);
+      }) || {};
+    const latestToolName =
+      items.slice().reverse().find(function (tool) {
+        return !isGenericToolText(tool.toolName);
+      }) || {};
+    return {
+      id: "acp-tool-" + sanitizeToolGroupKey(key),
+      kind: "tool_call",
+      toolCallId: String(selected.toolCallId || first.toolCallId || key || ""),
+      title: String(selected.title || first.title || "Tool"),
+      toolKind: String(selected.toolKind || first.toolKind || "").trim() || undefined,
+      toolName:
+        String(latestToolName.toolName || selected.toolName || first.toolName || "")
+          .trim() || undefined,
+      inputSummary:
+        String(firstInputSummary.inputSummary || selected.inputSummary || "").trim() ||
+        undefined,
+      resultSummary:
+        String(
+          latestResultSummary.resultSummary || selected.resultSummary || "",
+        ).trim() || undefined,
+      state: selected.state || first.state || "pending",
+      summary: String(selected.summary || latestSummary.summary || "").trim() || undefined,
+      createdAt: first.createdAt,
+      updatedAt: selected.updatedAt || selected.createdAt || first.updatedAt,
+    };
+  }
+
+  function buildCanonicalTranscriptItems(items) {
+    const entries = [];
+    const toolGroups = new Map();
+    (Array.isArray(items) ? items : []).forEach(function (item) {
+      if (!item || item.kind === "plan") {
+        return;
+      }
+      if (item.kind !== "tool_call") {
+        entries.push({
+          index: entries.length,
+          item: item,
+        });
+        return;
+      }
+      const key = String(item.toolCallId || item.id || "").trim();
+      const groupKey = key || String(item.id || entries.length);
+      let group = toolGroups.get(groupKey);
+      if (!group) {
+        group = {
+          index: entries.length,
+          items: [],
+        };
+        toolGroups.set(groupKey, group);
+        entries.push({
+          index: group.index,
+          toolGroupKey: groupKey,
+        });
+      }
+      group.items.push(item);
+    });
+    return entries
+      .map(function (entry) {
+        if (entry.toolGroupKey) {
+          const group = toolGroups.get(entry.toolGroupKey) || { items: [] };
+          return createCanonicalToolItem(entry.toolGroupKey, group);
+        }
+        return entry.item;
+      })
+      .filter(Boolean);
+  }
+
+  function createToolActivityGroup(run) {
+    const first = run[0] || {};
+    const last = run[run.length - 1] || first;
     const id =
-      "acp-tool-group-" +
-      String(first.id || "") +
-      "-" +
-      String(last.id || "") +
-      "-" +
-      String(group.length);
-    entries.push({
+      "acp-tool-activity-" +
+      sanitizeToolGroupKey(
+        [String(first.id || ""), String(last.id || ""), String(run.length)].join("-"),
+      );
+    return {
       id,
-      kind: "tool_group",
-      items: group,
+      kind: "tool_activity_group",
+      items: run,
       createdAt: first.createdAt,
       updatedAt: last.updatedAt || last.createdAt,
       state: last.state,
-      expanded: state.toolGroupExpandedIds.has(id),
-    });
+      expanded: state.toolActivityExpandedIds.has(id),
+    };
+  }
+
+  function flushToolActivityRun(entries, run) {
+    if (run.length === 0) {
+      return;
+    }
+    if (run.length === 1) {
+      entries.push(run[0]);
+      return;
+    }
+    entries.push(createToolActivityGroup(run));
   }
 
   function buildTranscriptRenderItems(items, mode) {
+    const canonicalItems = buildCanonicalTranscriptItems(items);
     if (mode !== "bubble") {
-      return items;
+      return canonicalItems;
     }
     const entries = [];
-    let toolGroup = [];
-    items.forEach(function (item) {
+    let toolRun = [];
+    canonicalItems.forEach(function (item) {
       if (item.kind === "tool_call") {
-        toolGroup.push(item);
+        toolRun.push(item);
         return;
       }
-      flushToolGroup(entries, toolGroup);
-      toolGroup = [];
+      flushToolActivityRun(entries, toolRun);
+      toolRun = [];
       entries.push(item);
     });
-    flushToolGroup(entries, toolGroup);
+    flushToolActivityRun(entries, toolRun);
     return entries;
   }
 
@@ -1026,6 +1738,10 @@
     renderBackendPicker(snapshot);
     renderSessionPicker(snapshot);
     statusLabelEl.textContent = snapshot.statusLabel || "-";
+    if (statusPillEl) {
+      statusPillEl.className =
+        "acp-status-pill " + statusToneClass(snapshot.status || "idle");
+    }
     targetLabelEl.textContent =
       snapshot.target === "reader"
         ? labels.targetReader || "Reader"
@@ -1085,14 +1801,15 @@
     authenticateBtnEl.disabled =
       !Array.isArray(snapshot.authMethods) || snapshot.authMethods.length === 0;
     statusSummaryEl.setAttribute("data-status", String(snapshot.status || "idle"));
-    renderBanner(snapshot);
+    renderUsageGauge(snapshot);
+    renderInteractionZone(snapshot);
     renderActionsMenu(snapshot);
     renderSessionDrawer(snapshot);
     renderChatMode(snapshot);
     renderStatusDetails(snapshot);
     renderPickers(snapshot);
-    renderPermission(snapshot);
     renderDiagnostics(snapshot);
+    renderPlanPanel(snapshot);
     renderTranscript(snapshot);
   }
 
@@ -1251,21 +1968,30 @@
     sendAction("open-backend-manager", {});
   });
 
-  allowBtnEl.addEventListener("click", function () {
-    if (!state.allowOptionId) {
-      return;
-    }
-    sendAction("resolve-permission", {
-      outcome: "selected",
-      optionId: state.allowOptionId,
-    });
+  permissionSummaryEl.addEventListener("click", function () {
+    state.permissionDrawerOpen = true;
+    renderPermission(state.snapshot || {});
   });
 
-  denyBtnEl.addEventListener("click", function () {
-    sendAction("resolve-permission", {
-      outcome: state.denyOptionId ? "selected" : "cancelled",
-      optionId: state.denyOptionId || "",
-    });
+  permissionDetailsBtnEl.addEventListener("click", function () {
+    state.permissionDrawerOpen = true;
+    renderPermission(state.snapshot || {});
+  });
+
+  permissionDrawerCloseBtnEl.addEventListener("click", function () {
+    state.permissionDrawerOpen = false;
+    renderPermission(state.snapshot || {});
+  });
+
+  permissionDrawerEl.addEventListener("click", function (event) {
+    if (
+      event.target &&
+      event.target.closest &&
+      event.target.closest("[data-acp-permission-drawer-close]")
+    ) {
+      state.permissionDrawerOpen = false;
+      renderPermission(state.snapshot || {});
+    }
   });
 
   newConversationBtnEl.addEventListener("click", function () {

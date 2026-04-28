@@ -160,6 +160,12 @@ export function buildAcpSidebarViewSnapshot(args: {
     runtimeDir: String(args.snapshot.runtimeDir || "").trim(),
     stderrTail: String(args.snapshot.stderrTail || "").trim(),
     lastLifecycleEvent: String(args.snapshot.lastLifecycleEvent || "").trim(),
+    mcpServer: args.snapshot.mcpServer
+      ? JSON.parse(JSON.stringify(args.snapshot.mcpServer))
+      : undefined,
+    mcpHealth: args.snapshot.mcpHealth
+      ? JSON.parse(JSON.stringify(args.snapshot.mcpHealth))
+      : undefined,
     showDiagnostics: args.snapshot.showDiagnostics === true,
     lastStopReason: String(args.snapshot.lastStopReason || "").trim(),
     usage: args.snapshot.usage ? { ...args.snapshot.usage } : null,

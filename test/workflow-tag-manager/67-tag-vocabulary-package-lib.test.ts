@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { config } from "../../package.json";
 import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
+import { WORKFLOW_HOST_API_VERSION } from "../../src/workflows/hostApi";
 import {
   collectParentBindingsByTag,
   mergeParentBindingsIntoStagedEntries,
@@ -158,6 +159,40 @@ describe("tag-vocabulary-package lib", function () {
       () => readRawPref("scoped.pref"),
     );
     assert.equal(value, "scoped-value");
+  });
+
+  it("accepts current hostApi v3 as a compatible v2 extension", async function () {
+    const value = await withPackageRuntimeScope(
+      {
+        hostApiVersion: WORKFLOW_HOST_API_VERSION,
+        hostApi: {
+          prefs: {
+            get(key: string) {
+              return key === "scoped.pref" ? "scoped-v3-value" : "";
+            },
+            set() {
+              return undefined;
+            },
+            clear() {
+              return undefined;
+            },
+          },
+          addon: {
+            getConfig() {
+              return {
+                addonName: "Zotero Skills",
+                addonRef: "zotero-skills",
+                prefsPrefix: config.prefsPrefix,
+              };
+            },
+          },
+        },
+      },
+      () => readRawPref("scoped.pref"),
+    );
+
+    assert.equal(WORKFLOW_HOST_API_VERSION, 3);
+    assert.equal(value, "scoped-v3-value");
   });
 
   it("pref accessors read workflow metadata from hostApi addon config", async function () {

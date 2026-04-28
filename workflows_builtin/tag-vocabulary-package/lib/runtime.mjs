@@ -1,4 +1,5 @@
-const HOST_API_VERSION = 2;
+const MIN_HOST_API_VERSION = 2;
+const MAX_HOST_API_VERSION = 3;
 const GLOBAL_HOST_API_KEY = "__zsHostApi";
 const GLOBAL_HOST_API_VERSION_KEY = "__zsHostApiVersion";
 const runtimeScopeStack = [];
@@ -151,10 +152,14 @@ export function requireHostApi(runtime, message) {
     );
   }
   const version = resolveHostApiVersion(runtime);
-  if (version !== HOST_API_VERSION) {
+  if (
+    !Number.isFinite(version) ||
+    version < MIN_HOST_API_VERSION ||
+    version > MAX_HOST_API_VERSION
+  ) {
     throw createHostContractError(
       runtime,
-      `workflow-package hostApi version mismatch: expected ${HOST_API_VERSION}, received ${String(version || "missing")}`,
+      `workflow-package hostApi version mismatch: expected ${MIN_HOST_API_VERSION}-${MAX_HOST_API_VERSION}, received ${String(version || "missing")}`,
     );
   }
   return hostApi;

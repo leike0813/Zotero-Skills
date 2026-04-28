@@ -23,6 +23,14 @@ import {
   type SessionModeState,
   type SessionNotification,
 } from "./acpProtocol";
+import {
+  ensureZoteroMcpServer,
+  markZoteroMcpServerDescriptorInjected,
+  redactZoteroMcpServerDescriptor,
+  type ZoteroMcpDiagnosticEvent,
+  type ZoteroMcpServerDescriptor,
+} from "./zoteroMcpServer";
+import type { ZoteroMcpToolPermissionRequest } from "./zoteroMcpProtocol";
 
 export type AcpConnectionUpdate = SessionNotification;
 export type AcpConnectionUpdateListener = (
@@ -56,6 +64,8 @@ export type AcpConnectionInitializeResult = {
   commandLine: string;
   canLoadSession: boolean;
   canResumeSession: boolean;
+  canUseHttpMcp: boolean;
+  canUseSseMcp: boolean;
 };
 
 export type AcpConnectionNewSessionResult = {
@@ -86,7 +96,6 @@ export type AcpConnectionAdapter = {
   prompt: (args: {
     sessionId: string;
     message: string;
-    hostContext?: AcpHostContext;
   }) => Promise<{ stopReason: string }>;
   cancel: (args: { sessionId: string }) => Promise<void>;
   setMode: (args: { sessionId: string; modeId: string }) => Promise<void>;
@@ -115,20 +124,32 @@ function compactError(error: unknown) {
     .trim();
 }
 
-function formatHostContext(hostContext?: AcpHostContext) {
-  if (!hostContext) {
-    return "";
-  }
-  return [
-    "",
-    "[Zotero host context]",
-    JSON.stringify(hostContext, null, 2),
-    "[/Zotero host context]",
-  ].join("\n");
+const ZOTERO_MCP_PROMPT_GUIDANCE = [
+  "",
+  "[Zotero MCP tool usage]",
+  'Use the injected MCP server named "zotero" for Zotero interactions.',
+  "Start with the zotero tool get_current_view when you need current library or selection context.",
+  "Use zotero read tools such as get_selected_items, search_items, list_library_items, get_item_detail, get_item_notes, get_note_detail, and get_item_attachments instead of reading Zotero internals directly.",
+  "Use zotero mutation tools for writes, and respect the preview, permission, and execute flow.",
+  "Avoid reading Zotero's SQLite database directly unless the user explicitly asks for low-level diagnostics.",
+  "Never write directly to Zotero's SQLite database, storage files, or internal data directories. Use zotero MCP write tools only.",
+  "If an attachment tool returns a local file path, you may read that returned attachment file path when needed; do not infer or modify Zotero storage paths yourself.",
+  "[/Zotero MCP tool usage]",
+].join("\n");
+
+function formatZoteroMcpPromptGuidance() {
+  return ZOTERO_MCP_PROMPT_GUIDANCE;
 }
 
-function buildPromptText(message: string, hostContext?: AcpHostContext) {
-  return `${String(message || "").trim()}${formatHostContext(hostContext)}`;
+function buildPromptText(message: string) {
+  return `${String(message || "").trim()}${formatZoteroMcpPromptGuidance()}`;
+}
+
+export function buildAcpPromptTextForTests(
+  message: string,
+  _hostContext?: AcpHostContext,
+) {
+  return buildPromptText(message);
 }
 
 function nowIso() {
@@ -180,7 +201,19 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
   private agentVersion = "";
   private canLoadSession = false;
   private canResumeSession = false;
+  private canUseHttpMcp = false;
+  private canUseSseMcp = false;
+  private currentSessionId = "";
   private closing = false;
+  private readonly zoteroMcpDiagnosticListener = (event: ZoteroMcpDiagnosticEvent) => {
+    this.emitDiagnostic({
+      kind: event.kind,
+      level: event.level || "info",
+      message: event.message,
+      detail: event.detail,
+      raw: event.raw,
+    });
+  };
 
   constructor(private readonly args: AcpConnectionAdapterFactoryArgs) {}
 
@@ -257,6 +290,110 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
       detail: JSON.stringify(event),
       raw: event,
     });
+  }
+
+  private async resolveMcpServers(stage: string) {
+    if (!this.canUseHttpMcp) {
+      this.emitDiagnostic({
+        kind: "zotero_mcp_unavailable",
+        level: "warn",
+        message: "ACP backend did not advertise HTTP MCP support",
+        detail: JSON.stringify({
+          stage,
+          canUseHttpMcp: this.canUseHttpMcp,
+          canUseSseMcp: this.canUseSseMcp,
+          legacySseIgnored: this.canUseSseMcp,
+        }),
+        stage,
+      });
+      return [];
+    }
+    try {
+      const descriptor = await ensureZoteroMcpServer({
+        onDiagnostic: this.zoteroMcpDiagnosticListener,
+        requestToolPermission: (request) =>
+          this.requestZoteroMcpToolPermission(request),
+      });
+      markZoteroMcpServerDescriptorInjected();
+      this.emitDiagnostic({
+        kind: "mcp_server_injected",
+        message: "Injected embedded Zotero MCP server",
+        detail: JSON.stringify(
+          redactZoteroMcpServerDescriptor(descriptor as ZoteroMcpServerDescriptor),
+        ),
+        stage,
+      });
+      return [descriptor];
+    } catch (error) {
+      const detail = compactError(error);
+      this.emitDiagnostic({
+        kind: "zotero_mcp_unavailable",
+        level: "warn",
+        message: "Embedded Zotero MCP server is unavailable; continuing without MCP tools",
+        detail,
+        stage,
+      });
+      return [];
+    }
+  }
+
+  private async requestZoteroMcpToolPermission(
+    request: ZoteroMcpToolPermissionRequest,
+  ) {
+    this.emitDiagnostic({
+      kind: "permission_requested",
+      level: "warn",
+      message: `Permission requested for ${request.toolName}`,
+      detail: request.summary,
+    });
+    if (this.permissionListeners.size === 0) {
+      return {
+        outcome: "unavailable" as const,
+        reason: "permission_listener_unavailable",
+      };
+    }
+    const requestId = nextOpaqueId("acp-mcp-permission");
+    const outcome = await new Promise<RequestPermissionOutcome>((resolve) => {
+      const pending: AcpPendingPermissionRequest & {
+        resolve: (outcome: RequestPermissionOutcome) => void;
+      } = {
+        requestId,
+        sessionId: this.currentSessionId,
+        toolCallId: requestId,
+        toolTitle: `Zotero MCP: ${request.toolName}`,
+        requestedAt: request.requestedAt,
+        options: [
+          {
+            optionId: "approve",
+            kind: "allow_once",
+            name: "Approve Zotero write",
+            description: request.summary,
+          },
+          {
+            optionId: "deny",
+            kind: "deny",
+            name: "Deny",
+            description: "Do not write to Zotero.",
+          },
+        ],
+        resolve,
+      };
+      for (const listener of this.permissionListeners) {
+        void listener(pending);
+      }
+    });
+    if (outcome.outcome === "selected" && outcome.optionId === "approve") {
+      return {
+        outcome: "approved" as const,
+      };
+    }
+    return {
+      outcome: "denied" as const,
+      reason:
+        outcome.outcome === "selected"
+          ? String(outcome.optionId || "denied")
+          : "cancelled",
+    };
   }
 
   private emitClose(event?: { message?: string; stderrText?: string }) {
@@ -336,6 +473,8 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         commandLine: this.commandLine,
         canLoadSession: this.canLoadSession,
         canResumeSession: this.canResumeSession,
+        canUseHttpMcp: this.canUseHttpMcp,
+        canUseSseMcp: this.canUseSseMcp,
       };
     }
     this.emitDiagnostic({
@@ -418,6 +557,10 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
       this.canLoadSession = response.agentCapabilities?.loadSession === true;
       this.canResumeSession =
         !!response.agentCapabilities?.sessionCapabilities?.resume;
+      this.canUseHttpMcp =
+        response.agentCapabilities?.mcpCapabilities?.http === true;
+      this.canUseSseMcp =
+        response.agentCapabilities?.mcpCapabilities?.sse === true;
       this.initialized = true;
       this.emitDiagnostic({
         kind: "initialized",
@@ -427,7 +570,12 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
           this.agentVersion,
           this.canResumeSession ? "resume" : "",
           this.canLoadSession ? "load" : "",
+          this.canUseHttpMcp ? "mcp-http" : "",
+          this.canUseSseMcp ? "mcp-sse" : "",
         ].filter(Boolean).join(" "),
+        raw: {
+          agentCapabilities: response.agentCapabilities || null,
+        },
       });
       return {
         authMethods: this.authMethods.map((entry) => ({ ...entry })),
@@ -437,6 +585,8 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         commandLine: this.commandLine,
         canLoadSession: this.canLoadSession,
         canResumeSession: this.canResumeSession,
+        canUseHttpMcp: this.canUseHttpMcp,
+        canUseSseMcp: this.canUseSseMcp,
       };
     } catch (error) {
       this.emitErrorDiagnostic({
@@ -484,7 +634,7 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
     try {
       const response = (await this.connection!.newSession({
         cwd: this.args.sessionCwd,
-        mcpServers: [],
+        mcpServers: await this.resolveMcpServers("session_new"),
       })) as NewSessionResponse & {
         title?: string | null;
         updatedAt?: string | null;
@@ -493,8 +643,9 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         kind: "session_created",
         message: `Created ACP session ${String(response.sessionId || "").trim()}`,
       });
+      this.currentSessionId = String(response.sessionId || "").trim();
       return {
-        sessionId: String(response.sessionId || "").trim(),
+        sessionId: this.currentSessionId,
         sessionTitle:
           String(response.title || "").trim() || undefined,
         sessionUpdatedAt:
@@ -540,12 +691,13 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
       const response = await this.connection!.loadSession({
         sessionId,
         cwd: this.args.sessionCwd,
-        mcpServers: [],
+        mcpServers: await this.resolveMcpServers("session_load"),
       });
       this.emitDiagnostic({
         kind: "session_load_succeeded",
         message: `Loaded ACP session ${sessionId}`,
       });
+      this.currentSessionId = sessionId;
       return {
         sessionId,
         sessionTitle: String(response?.title || "").trim() || undefined,
@@ -577,12 +729,13 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
       const response = await this.connection!.resumeSession({
         sessionId,
         cwd: this.args.sessionCwd,
-        mcpServers: [],
+        mcpServers: await this.resolveMcpServers("session_resume"),
       });
       this.emitDiagnostic({
         kind: "session_resume_succeeded",
         message: `Resumed ACP session ${sessionId}`,
       });
+      this.currentSessionId = sessionId;
       return {
         sessionId,
         sessionTitle: String(response?.title || "").trim() || undefined,
@@ -604,7 +757,6 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
   async prompt(args: {
     sessionId: string;
     message: string;
-    hostContext?: AcpHostContext;
   }) {
     if (!this.connection) {
       await this.initialize();
@@ -619,7 +771,7 @@ class NativeAcpConnectionAdapter implements AcpConnectionAdapter {
         prompt: [
           {
             type: "text",
-            text: buildPromptText(args.message, args.hostContext),
+            text: buildPromptText(args.message),
             _meta: {
               requestKind: ACP_PROMPT_REQUEST_KIND,
             },

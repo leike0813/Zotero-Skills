@@ -1,3 +1,20 @@
+import type {
+  ZoteroHostAttachmentDto,
+  ZoteroHostCurrentViewDto,
+  ZoteroHostItemDetailDto,
+  ZoteroHostItemRefInput,
+  ZoteroHostLibraryListArgs,
+  ZoteroHostLibraryListResponse,
+  ZoteroHostItemSearchArgs,
+  ZoteroHostItemSummaryDto,
+  ZoteroHostMutationExecuteResponse,
+  ZoteroHostMutationPreviewResponse,
+  ZoteroHostMutationRequest,
+  ZoteroHostNoteDetailArgs,
+  ZoteroHostNoteDetailChunkDto,
+  ZoteroHostNoteDto,
+} from "../modules/zoteroHostCapabilityBroker";
+
 export type WorkflowParameterType = "string" | "number" | "boolean";
 
 export type WorkflowParameterSchema = {
@@ -145,6 +162,44 @@ export type WorkflowHostApi = {
       key: string,
     ) => Zotero.Item | null;
     getAll: () => Promise<Zotero.Item[]>;
+  };
+  context: {
+    getCurrentView: () => ZoteroHostCurrentViewDto;
+    getSelectedItems: () => ZoteroHostItemSummaryDto[];
+  };
+  library: {
+    listItems: (
+      args: ZoteroHostLibraryListArgs,
+    ) => Promise<ZoteroHostLibraryListResponse>;
+    searchItems: (
+      args: ZoteroHostItemSearchArgs,
+    ) => Promise<ZoteroHostItemSummaryDto[]>;
+    getItemDetail: (
+      ref: ZoteroHostItemRefInput,
+    ) => Promise<ZoteroHostItemDetailDto | null>;
+    getItemNotes: (
+      ref: ZoteroHostItemRefInput,
+      args?: {
+        limit?: number | string;
+        cursor?: number | string;
+        maxExcerptChars?: number | string;
+      },
+    ) => Promise<ZoteroHostNoteDto[]>;
+    getNoteDetail: (
+      ref: ZoteroHostItemRefInput,
+      args?: ZoteroHostNoteDetailArgs,
+    ) => Promise<ZoteroHostNoteDetailChunkDto>;
+    getItemAttachments: (
+      ref: ZoteroHostItemRefInput,
+    ) => Promise<ZoteroHostAttachmentDto[]>;
+  };
+  mutations: {
+    preview: (
+      request: ZoteroHostMutationRequest,
+    ) => Promise<ZoteroHostMutationPreviewResponse>;
+    execute: (
+      request: ZoteroHostMutationRequest,
+    ) => Promise<ZoteroHostMutationExecuteResponse>;
   };
   prefs: {
     get: (key: string, global?: boolean) => unknown;

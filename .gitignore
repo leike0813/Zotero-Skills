@@ -39,3 +39,5 @@ artifact/test-diagnostics/
 
 .tmp_lit_bundle/
 non-existing-zotero-data/
+
+artifact/acp-transcript-samples/

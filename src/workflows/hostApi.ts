@@ -10,6 +10,10 @@ import {
   releaseLeakProbeTempArtifactForTests,
 } from "../modules/testLeakProbeTempArtifacts";
 import { recordTestPerformanceSpan } from "../modules/testPerformanceProbeBridge";
+import {
+  createZoteroHostCapabilityBrokerApis,
+  getAllRegularZoteroItems,
+} from "../modules/zoteroHostCapabilityBroker";
 import { showWorkflowToast } from "../modules/workflowExecution/feedbackSeam";
 import {
   resolveRuntimeAddon,
@@ -18,7 +22,7 @@ import {
 } from "../utils/runtimeBridge";
 import type { WorkflowHostApi } from "./types";
 
-export const WORKFLOW_HOST_API_VERSION = 2;
+export const WORKFLOW_HOST_API_VERSION = 3;
 
 type DynamicImport = (specifier: string) => Promise<any>;
 
@@ -60,39 +64,6 @@ function resolveHostItem(ref: Zotero.Item | number | string) {
     return null;
   }
   return zotero.Items.getByLibraryAndKey(zotero.Libraries.userLibraryID, key) || null;
-}
-
-async function scanAllRegularItems() {
-  const zotero = resolveHostZotero();
-  const results: Zotero.Item[] = [];
-  let misses = 0;
-  for (let id = 1; id <= 50000; id += 1) {
-    const item = zotero.Items.get(id);
-    if (!item) {
-      misses += 1;
-      if (misses >= 200) {
-        break;
-      }
-      continue;
-    }
-    misses = 0;
-    const regular =
-      typeof item.isRegularItem === "function"
-        ? item.isRegularItem()
-        : !item.isNote?.() && !item.isAttachment?.();
-    if (!regular) {
-      continue;
-    }
-    const deleted =
-      typeof (item as any).isDeleted === "function"
-        ? (item as any).isDeleted()
-        : Boolean((item as any).deleted);
-    if (deleted) {
-      continue;
-    }
-    results.push(item);
-  }
-  return results;
 }
 
 function resolveIOUtils() {
@@ -310,6 +281,7 @@ export function createWorkflowHostApi(): WorkflowHostApi {
   if (cachedHostApi) {
     return cachedHostApi;
   }
+  const zoteroBroker = createZoteroHostCapabilityBrokerApis();
   cachedHostApi = {
     version: WORKFLOW_HOST_API_VERSION,
     addon: {
@@ -346,9 +318,12 @@ export function createWorkflowHostApi(): WorkflowHostApi {
             // fall through to deterministic scan
           }
         }
-        return scanAllRegularItems();
+        return getAllRegularZoteroItems();
       },
     },
+    context: zoteroBroker.context,
+    library: zoteroBroker.library,
+    mutations: zoteroBroker.mutations,
     prefs: {
       get(key, global = true) {
         return resolveHostZotero().Prefs.get(String(key || "").trim(), Boolean(global));
@@ -451,6 +426,9 @@ export function summarizeWorkflowHostApiCapabilities(hostApi?: WorkflowHostApi |
     logging: !!hostApi?.logging,
     file: !!hostApi?.file,
     addon: !!hostApi?.addon,
+    context: !!hostApi?.context,
+    library: !!hostApi?.library,
+    mutations: !!hostApi?.mutations,
   };
 }
 

@@ -13,6 +13,122 @@ export type AcpConnectionStatus =
 
 export type AcpSidebarTarget = "library" | "reader";
 export type AcpChatDisplayMode = "plain" | "bubble";
+export type AcpMcpRuntimeLogSummary = {
+  ts: string;
+  level: "debug" | "info" | "warn" | "error";
+  requestId: string;
+  stage: string;
+  phase: string;
+  operation: string;
+  message: string;
+  method: string;
+  path: string;
+  status: number;
+  jsonrpcMethod: string;
+  jsonrpcId: string;
+  toolName: string;
+  durationMs: number;
+  responseBytes: number;
+  errorName: string;
+  errorMessage: string;
+};
+export type AcpMcpServerSnapshot = {
+  status: "idle" | "starting" | "running" | "error" | "stopped";
+  host: string;
+  port: number;
+  endpoint: string;
+  tokenMasked: string;
+  lastRequestMethod: string;
+  lastResponseStatus: number;
+  lastError: string;
+  requestCount: number;
+  toolCallCount: number;
+  queuePolicy: {
+    runningLimit: number;
+    pendingLimit: number;
+    queueTimeoutMs: number;
+  };
+  queueState: {
+    running: number;
+    pending: number;
+  };
+  recentRuntimeLogs: AcpMcpRuntimeLogSummary[];
+  recentRequests: Array<{
+    ts: string;
+    method: string;
+    path: string;
+    status: number;
+    authorized: boolean;
+    accept: string;
+    contentType: string;
+    jsonrpcMethod: string;
+    jsonrpcId: string;
+    jsonrpcToolName: string;
+    protocolVersion: string;
+    transportMode: "streamable-http";
+    responseContentType: string;
+    responseBodyLength: number;
+    responseJsonrpc: string;
+    responseJsonrpcId: string;
+    responseProtocolVersion: string;
+    responseToolCount: number;
+    responseError: string;
+    queuePolicy: {
+      runningLimit: number;
+      pendingLimit: number;
+      queueTimeoutMs: number;
+    };
+    queueDepthAtAccept: number;
+    queuePosition: number;
+    queueWaitMs: number;
+    durationMs: number;
+    limitReason: string;
+    toolOutcome: "" | "success" | "error" | "notification";
+    toolErrorName: string;
+    error: string;
+  }>;
+  updatedAt: string;
+};
+export type AcpMcpHealthState =
+  | "unavailable"
+  | "starting"
+  | "listening"
+  | "injected"
+  | "handshake_seen"
+  | "tools_seen"
+  | "active"
+  | "degraded"
+  | "circuit_open"
+  | "descriptor_stale"
+  | "error";
+export type AcpMcpHealthSeverity =
+  | "neutral"
+  | "ok"
+  | "active"
+  | "warning"
+  | "error";
+export type AcpMcpHealthSnapshot = {
+  state: AcpMcpHealthState;
+  severity: AcpMcpHealthSeverity;
+  summary: string;
+  tooltip: string[];
+  endpoint: string;
+  descriptorInjected: boolean;
+  descriptorStale: boolean;
+  clientHandshakeSeen: boolean;
+  toolsListSeen: boolean;
+  toolCallSeen: boolean;
+  queueDepth: number;
+  activeTool: string;
+  openCircuitCount: number;
+  lastError: string;
+  lastLogStage?: string;
+  lastLogErrorName?: string;
+  lastRequestId?: string;
+  lastWriteFailure?: boolean;
+  recommendedAction: string;
+  updatedAt: string;
+};
 export type AcpRemoteSessionRestoreStatus =
   | "none"
   | "unsupported"
@@ -120,6 +236,9 @@ export type AcpConversationToolCallItem = AcpConversationItemBase & {
   toolCallId: string;
   title: string;
   toolKind?: string;
+  toolName?: string;
+  inputSummary?: string;
+  resultSummary?: string;
   state: "pending" | "in_progress" | "completed" | "failed";
   summary?: string;
 };
@@ -190,6 +309,8 @@ export type AcpConversationSnapshot = {
   runtimeDir: string;
   stderrTail: string;
   lastLifecycleEvent: string;
+  mcpServer?: AcpMcpServerSnapshot;
+  mcpHealth?: AcpMcpHealthSnapshot;
   updatedAt: string;
 };
 
@@ -273,6 +394,8 @@ export type AcpDiagnosticsBundle = {
     lastLifecycleEvent: string;
     updatedAt: string;
   };
+  mcpServer?: AcpMcpServerSnapshot;
+  mcpHealth?: AcpMcpHealthSnapshot;
   diagnostics: AcpDiagnosticsEntry[];
   recentItems: AcpConversationItem[];
   lastHostContext: AcpHostContext | null;

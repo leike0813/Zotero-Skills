@@ -48,6 +48,12 @@ import {
   type AcpSelectableOption,
 } from "./acpTypes";
 import type { RequestPermissionOutcome } from "./acpProtocol";
+import {
+  getZoteroMcpHealthSnapshot,
+  getZoteroMcpServerStatus,
+  resetZoteroMcpServerForTests,
+  shutdownZoteroMcpServer,
+} from "./zoteroMcpServer";
 
 type AcpSnapshotListener = (snapshot: AcpConversationSnapshot) => void;
 type AcpFrontendSnapshotListener = (snapshot: AcpFrontendSnapshot) => void;
@@ -171,6 +177,8 @@ function cloneSnapshotValue(value: AcpConversationSnapshot) {
     lastHostContext: value.lastHostContext
       ? JSON.parse(JSON.stringify(value.lastHostContext))
       : null,
+    mcpServer: getZoteroMcpServerStatus(),
+    mcpHealth: getZoteroMcpHealthSnapshot(),
   } satisfies AcpConversationSnapshot;
 }
 
@@ -450,9 +458,287 @@ function pushItem(slot: AcpSessionSlot, item: AcpConversationItem) {
   slot.snapshot.items = [...slot.snapshot.items, item];
 }
 
+function getLatestConversationItem(slot: AcpSessionSlot) {
+  return slot.snapshot.items[slot.snapshot.items.length - 1];
+}
+
+function getLatestActiveAssistantItem(slot: AcpSessionSlot) {
+  const latest = getLatestConversationItem(slot);
+  return latest?.kind === "message" &&
+    latest.role === "assistant" &&
+    latest.id === slot.activeAssistantItemId
+    ? (latest as AcpConversationMessageItem)
+    : undefined;
+}
+
+function getLatestActiveThoughtItem(slot: AcpSessionSlot) {
+  const latest = getLatestConversationItem(slot);
+  return latest?.kind === "thought" && latest.id === slot.activeThoughtItemId
+    ? (latest as AcpConversationThoughtItem)
+    : undefined;
+}
+
+function normalizeToolCallState(
+  status: unknown,
+): AcpConversationToolCallItem["state"] {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "pending" || value === "queued") {
+    return "pending";
+  }
+  if (value === "failed" || value === "error" || value === "cancelled") {
+    return "failed";
+  }
+  if (value === "in_progress" || value === "running") {
+    return "in_progress";
+  }
+  return "completed";
+}
+
+function toolCallStateRank(state: AcpConversationToolCallItem["state"]) {
+  switch (state) {
+    case "failed":
+      return 4;
+    case "completed":
+      return 3;
+    case "in_progress":
+      return 2;
+    case "pending":
+    default:
+      return 1;
+  }
+}
+
+function isTerminalPlanStatus(status: string) {
+  return [
+    "complete",
+    "completed",
+    "done",
+    "succeeded",
+    "success",
+    "skipped",
+    "cancelled",
+    "canceled",
+    "failed",
+    "error",
+  ].includes(
+    String(status || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_"),
+  );
+}
+
+function isGenericToolDisplayText(value: unknown) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
+  return (
+    !normalized ||
+    normalized === "tool" ||
+    normalized === "tool call" ||
+    normalized === "other" ||
+    normalized === "[]" ||
+    normalized === "{}" ||
+    /^call [a-z0-9]+$/i.test(normalized) ||
+    /^call_[a-z0-9_-]+$/i.test(String(value || "").trim()) ||
+    /^toolu_[a-z0-9_-]+$/i.test(String(value || "").trim())
+  );
+}
+
+function readRecordValue(value: unknown, key: string) {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+}
+
+function isEmptyStructuredToolValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length === 0
+  );
+}
+
+function stringifyToolCallDetail(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (isEmptyStructuredToolValue(value)) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value || "").trim();
+    }
+  }
+  if (typeof value === "object") {
+    const preferredKeys = [
+      "description",
+      "title",
+      "command",
+      "query",
+      "path",
+      "filePath",
+      "file_path",
+      "name",
+      "text",
+    ];
+    for (const key of preferredKeys) {
+      const nested: string = stringifyToolCallDetail(
+        (value as Record<string, unknown>)[key],
+      );
+      if (nested && !isGenericToolDisplayText(nested)) {
+        return nested;
+      }
+    }
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value || "").trim();
+  }
+}
+
+function shortenToolCallSummary(value: string) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+}
+
+function firstNonGenericToolText(values: unknown[]) {
+  for (const value of values) {
+    const text = shortenToolCallSummary(stringifyToolCallDetail(value));
+    if (text && !isGenericToolDisplayText(text)) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function extractToolName(
+  update: Record<string, unknown>,
+  fallbackTitle: string,
+  fallbackKind?: string,
+) {
+  return (
+    firstNonGenericToolText([
+      update.name,
+      update.tool,
+      update.functionName,
+      update.function_name,
+      update.toolName,
+      fallbackKind,
+      update.summary,
+      fallbackTitle,
+    ]) || "Tool"
+  );
+}
+
+function extractToolInputSummary(
+  update: Record<string, unknown>,
+  fallbackTitle: string,
+) {
+  const metadata = update.metadata;
+  return firstNonGenericToolText([
+    update.rawInput,
+    update.input,
+    update.arguments,
+    update.args,
+    update.parameters,
+    update.params,
+    readRecordValue(metadata, "description"),
+    readRecordValue(metadata, "title"),
+    update.description,
+    fallbackTitle,
+  ]);
+}
+
+function extractToolResultSummary(update: Record<string, unknown>) {
+  return firstNonGenericToolText([
+    update.rawOutput,
+    update.output,
+    update.result,
+    update.content,
+    update.message,
+    update.detail,
+    update.summary,
+  ]);
+}
+
+function upsertToolCallItem(
+  slot: AcpSessionSlot,
+  update: Record<string, unknown>,
+) {
+  const toolCallId = String(update.toolCallId || "").trim();
+  const nextState = normalizeToolCallState(update.status);
+  const title = String(update.title || "Tool Call").trim() || "Tool Call";
+  const toolKind = String(update.kind || "").trim() || undefined;
+  const toolName = extractToolName(update, title, toolKind);
+  const inputSummary = extractToolInputSummary(update, title);
+  const resultSummary = extractToolResultSummary(update);
+  const now = nowIso();
+  const target = toolCallId
+    ? (slot.snapshot.items.find(
+        (entry) =>
+          entry.kind === "tool_call" && entry.toolCallId === toolCallId,
+      ) as AcpConversationToolCallItem | undefined)
+    : undefined;
+  if (!target) {
+    const frozenInputSummary = inputSummary || undefined;
+    pushItem(slot, {
+      id: nextOpaqueId("acp-tool"),
+      kind: "tool_call",
+      toolCallId,
+      title,
+      toolKind,
+      toolName,
+      inputSummary: frozenInputSummary,
+      resultSummary: resultSummary || undefined,
+      state: nextState,
+      createdAt: now,
+      summary: frozenInputSummary || resultSummary || undefined,
+    });
+    return;
+  }
+  if (!isGenericToolDisplayText(title) || isGenericToolDisplayText(target.title)) {
+    target.title = title || target.title;
+  }
+  if (toolKind) {
+    target.toolKind = toolKind;
+  }
+  if (!isGenericToolDisplayText(toolName) || isGenericToolDisplayText(target.toolName)) {
+    target.toolName = toolName || target.toolName;
+  }
+  if (inputSummary && !target.inputSummary) {
+    target.inputSummary = inputSummary;
+  }
+  if (resultSummary) {
+    target.resultSummary = resultSummary;
+  }
+  if (target.inputSummary) {
+    target.summary = target.inputSummary;
+  } else if (resultSummary && !target.summary) {
+    target.summary = resultSummary;
+  }
+  if (toolCallStateRank(nextState) >= toolCallStateRank(target.state)) {
+    target.state = nextState;
+  }
+  target.updatedAt = now;
+}
+
 function finalizeStreamingItems(
   slot: AcpSessionSlot,
   finalState: "complete" | "error",
+  planTerminalStatus: "cancelled" | "skipped" = "skipped",
 ) {
   if (slot.activeAssistantItemId) {
     const target = slot.snapshot.items.find(
@@ -476,7 +762,23 @@ function finalizeStreamingItems(
     }
     slot.activeThoughtItemId = "";
   }
-  slot.activePlanItemId = "";
+  if (slot.activePlanItemId) {
+    const target = slot.snapshot.items.find(
+      (entry) => entry.id === slot.activePlanItemId && entry.kind === "plan",
+    ) as AcpConversationPlanItem | undefined;
+    if (target) {
+      target.entries = target.entries.map((entry) =>
+        isTerminalPlanStatus(entry.status)
+          ? entry
+          : {
+              ...entry,
+              status: planTerminalStatus,
+            },
+      );
+      target.updatedAt = nowIso();
+    }
+    slot.activePlanItemId = "";
+  }
 }
 
 function normalizeModeOption(args: {
@@ -825,10 +1127,7 @@ function handleSessionUpdate(
       if (!chunk) {
         return;
       }
-      let target = slot.snapshot.items.find(
-        (entry) =>
-          entry.id === slot.activeAssistantItemId && entry.kind === "message",
-      ) as AcpConversationMessageItem | undefined;
+      let target = getLatestActiveAssistantItem(slot);
       if (!target) {
         target = {
           id: nextOpaqueId("acp-msg-assistant"),
@@ -857,10 +1156,7 @@ function handleSessionUpdate(
       if (!chunk) {
         return;
       }
-      let target = slot.snapshot.items.find(
-        (entry) =>
-          entry.id === slot.activeThoughtItemId && entry.kind === "thought",
-      ) as AcpConversationThoughtItem | undefined;
+      let target = getLatestActiveThoughtItem(slot);
       if (!target) {
         target = {
           id: nextOpaqueId("acp-thought"),
@@ -880,55 +1176,13 @@ function handleSessionUpdate(
     }
     case "tool_call": {
       slot.snapshot.lastLifecycleEvent = "tool_call";
-      pushItem(slot, {
-        id: nextOpaqueId("acp-tool"),
-        kind: "tool_call",
-        toolCallId: String(update.toolCallId || "").trim(),
-        title: String(update.title || "Tool Call"),
-        toolKind: String(update.kind || "").trim() || undefined,
-        state:
-          update.status === "pending" ||
-          update.status === "failed" ||
-          update.status === "in_progress"
-            ? update.status
-            : "completed",
-        createdAt: nowIso(),
-        summary: "",
-      });
+      upsertToolCallItem(slot, update);
       emitSlotSnapshot(slot);
       return;
     }
     case "tool_call_update": {
       slot.snapshot.lastLifecycleEvent = "tool_call_update";
-      const toolCallId = String(update.toolCallId || "").trim();
-      const target = slot.snapshot.items.find(
-        (entry) => entry.kind === "tool_call" && entry.toolCallId === toolCallId,
-      ) as AcpConversationToolCallItem | undefined;
-      const nextState =
-        update.status === "pending" ||
-        update.status === "failed" ||
-        update.status === "in_progress"
-          ? update.status
-          : "completed";
-      if (!target) {
-        pushItem(slot, {
-          id: nextOpaqueId("acp-tool"),
-          kind: "tool_call",
-          toolCallId,
-          title: String(update.title || "Tool Call"),
-          toolKind: String(update.kind || "").trim() || undefined,
-          state: nextState,
-          createdAt: nowIso(),
-          summary: "",
-        });
-      } else {
-        target.title = String(update.title || target.title);
-        target.toolKind =
-          String(update.kind || target.toolKind || "").trim() || target.toolKind;
-        target.state = nextState;
-        target.summary = String(update.title || "").trim() || target.summary || undefined;
-        target.updatedAt = nowIso();
-      }
+      upsertToolCallItem(slot, update);
       emitSlotSnapshot(slot);
       return;
     }
@@ -1133,6 +1387,23 @@ async function ensureAdapter(backendId?: string) {
       initializedAdapter.canLoadSession === true;
     slot.snapshot.canResumeRemoteSession =
       initializedAdapter.canResumeSession === true;
+    appendDiagnostic(slot, {
+      id: nextOpaqueId("acp-diag"),
+      ts: nowIso(),
+      kind: "zotero_mcp_capabilities",
+      level: initializedAdapter.canUseHttpMcp ? "info" : "warn",
+      message: initializedAdapter.canUseHttpMcp
+        ? "ACP backend advertises HTTP MCP support"
+        : "ACP backend does not advertise HTTP MCP support",
+      detail: JSON.stringify({
+        http: initializedAdapter.canUseHttpMcp,
+        sse: initializedAdapter.canUseSseMcp,
+      }),
+      raw: {
+        http: initializedAdapter.canUseHttpMcp,
+        sse: initializedAdapter.canUseSseMcp,
+      },
+    });
     slot.snapshot.status = "initializing";
     slot.adapter = nextAdapter;
     emitSlotSnapshot(slot);
@@ -1287,6 +1558,13 @@ async function ensureSession(backendId?: string) {
       slot.snapshot.authMethods = error.authMethods.map((entry) => ({ ...entry }));
       slot.snapshot.lastError = error.message;
       emitSlotSnapshot(slot);
+    } else {
+      slot.snapshot.busy = false;
+      slot.snapshot.status = "error";
+      slot.snapshot.lastError = compactError(error);
+      slot.snapshot.prerequisiteError =
+        slot.snapshot.prerequisiteError || slot.snapshot.lastError;
+      emitSlotSnapshot(slot);
     }
     throw error;
   }
@@ -1324,6 +1602,9 @@ function buildBackendSummary(
 function buildFrontendSnapshot(): AcpFrontendSnapshot {
   ensureInitialized();
   const activeSlot = getOrCreateSlot(activeBackendId);
+  const activeSnapshot = cloneSnapshotValue(activeSlot.snapshot);
+  activeSnapshot.mcpServer = getZoteroMcpServerStatus();
+  activeSnapshot.mcpHealth = getZoteroMcpHealthSnapshot();
   const chatSessions = listAcpChatSessions(activeBackendId);
   const knownBackends =
     cachedAcpBackends.length > 0
@@ -1369,7 +1650,7 @@ function buildFrontendSnapshot(): AcpFrontendSnapshot {
     chatSessions,
     backendChatSessions,
     backends: summaries,
-    activeSnapshot: cloneSnapshotValue(activeSlot.snapshot),
+    activeSnapshot,
     connectedCount: summaries.filter((entry) => entry.connected).length,
     errorCount: summaries.filter((entry) => entry.status === "error").length,
     totalMessageCount: summaries.reduce((sum, entry) => sum + entry.messageCount, 0),
@@ -1567,16 +1848,15 @@ export async function sendAcpConversationPrompt(args: {
     const response = await adapter.prompt({
       sessionId: slot.snapshot.sessionId,
       message,
-      hostContext: args.hostContext,
     });
     slot.snapshot.busy = false;
     slot.snapshot.status = "connected";
     slot.snapshot.lastStopReason = String(response.stopReason || "").trim();
-    finalizeStreamingItems(slot, "complete");
+    finalizeStreamingItems(slot, "complete", "skipped");
     emitSlotSnapshot(slot);
   } catch (error) {
     slot.snapshot.busy = false;
-    finalizeStreamingItems(slot, "error");
+    finalizeStreamingItems(slot, "error", "cancelled");
     if (error instanceof AcpAuthRequiredError) {
       slot.snapshot.status = "auth-required";
       slot.snapshot.authMethods = error.authMethods.map((entry) => ({ ...entry }));
@@ -1601,6 +1881,12 @@ export async function cancelAcpConversationPrompt(args?: { backendId?: string })
   await slot.adapter.cancel({
     sessionId: slot.snapshot.sessionId,
   });
+  slot.snapshot.busy = false;
+  slot.snapshot.status = "connected";
+  slot.snapshot.lastStopReason = "cancelled";
+  slot.snapshot.pendingPermissionRequest = null;
+  finalizeStreamingItems(slot, "complete", "cancelled");
+  emitSlotSnapshot(slot);
 }
 
 export async function startNewAcpConversation(args?: { backendId?: string }) {
@@ -1973,6 +2259,8 @@ export function buildAcpDiagnosticsBundle(backendId?: string): AcpDiagnosticsBun
       lastLifecycleEvent: snapshot.lastLifecycleEvent,
       updatedAt: snapshot.updatedAt,
     },
+    mcpServer: getZoteroMcpServerStatus(),
+    mcpHealth: getZoteroMcpHealthSnapshot(),
     diagnostics: snapshot.diagnostics.map((entry) => ({ ...entry })),
     recentItems: snapshot.items.slice(-12).map((entry) => cloneAcpConversationItem(entry)),
     lastHostContext: snapshot.lastHostContext
@@ -2025,12 +2313,14 @@ export async function shutdownAcpSessionManager() {
     pending.push(disconnectSlotAdapter(slot));
   }
   await Promise.allSettled(pending);
+  await shutdownZoteroMcpServer();
   slots.clear();
   listeners.clear();
   frontendListeners.clear();
   cachedAcpBackends = [];
   activeBackendId = "";
   initialized = false;
+  resetZoteroMcpServerForTests();
 }
 
 export function setAcpConnectionAdapterFactoryForTests(

@@ -94,3 +94,28 @@ export function buildAcpHostContext(args: {
     ? buildReaderContext(args.window)
     : buildLibraryContext(args.window);
 }
+
+export function buildCurrentAcpHostContext(): AcpHostContext {
+  const runtime = globalThis as {
+    Zotero?: {
+      getMainWindow?: () => _ZoteroTypes.MainWindow | null;
+    };
+  };
+  const win = runtime.Zotero?.getMainWindow?.() || (globalThis as any).window;
+  if (!win) {
+    return {
+      target: "library",
+      selectionEmpty: true,
+    };
+  }
+  const selectedTabId = String((win as any).Zotero_Tabs?.selectedID || "").trim();
+  const tabRecord = selectedTabId
+    ? (win as any).Zotero_Tabs?._getTab?.(selectedTabId)
+    : null;
+  const target: AcpSidebarTarget =
+    String(tabRecord?.type || "").trim() === "reader" ? "reader" : "library";
+  return buildAcpHostContext({
+    window: win,
+    target,
+  });
+}

@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { setDebugModeOverrideForTests } from "../../src/modules/debugMode";
+import { WORKFLOW_HOST_API_VERSION } from "../../src/workflows/hostApi";
 import { encodeBase64Utf8 } from "../zotero/workflow-test-utils";
 import { decodeBase64Utf8 } from "../../workflows_builtin/literature-workbench-package/lib/htmlCodec.mjs";
 import {
@@ -112,6 +113,50 @@ describe("literature-workbench-package lib", function () {
     );
 
     assert.equal(normalized.parent?.title, "Scoped Parent");
+  });
+
+  it("accepts current hostApi v3 as a compatible v2 extension", async function () {
+    const normalized = await withPackageRuntimeScope(
+      {
+        hostApiVersion: WORKFLOW_HOST_API_VERSION,
+        hostApi: {
+          items: {
+            get(id: number) {
+              return id === 7
+                ? {
+                    getField(field: string) {
+                      return field === "title" ? "HostApi v3 Parent" : "";
+                    },
+                  }
+                : null;
+            },
+          },
+        },
+      },
+      () =>
+        normalizeNoteSelectionEntry({
+          id: 11,
+          key: "NOTE11",
+          itemType: "note",
+          libraryID: 1,
+          parentItemID: 7,
+          getField(field: string) {
+            return field === "title" ? "Child Note" : "";
+          },
+          toJSON() {
+            return {};
+          },
+          getTags() {
+            return [];
+          },
+          getCollections() {
+            return [];
+          },
+        }),
+    );
+
+    assert.equal(WORKFLOW_HOST_API_VERSION, 3);
+    assert.equal(normalized.parent?.title, "HostApi v3 Parent");
   });
 
   it("hostApi-backed item accessors work in debug mode without raw Zotero globals", async function () {

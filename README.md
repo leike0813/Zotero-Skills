@@ -33,7 +33,7 @@
   <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 Starting from v0.5.0, this plugin has been renamed from **Zotero Skills** to **Zotero Agents**.
+> 💡 Starting from v0.5.0, this plugin has been renamed from **Zotero Skills** to [**Zotero Agents**](https://github.com/leike0813/zotero-agents).
 
 ---
 

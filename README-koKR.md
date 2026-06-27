@@ -33,7 +33,7 @@
   <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 v0.5.0부터 본 플러그인의 이름이 **Zotero Skills**에서 **Zotero Agents**로 변경되었습니다.
+> 💡 v0.5.0부터 본 플러그인의 이름이 **Zotero Skills**에서 [**Zotero Agents**](https://github.com/leike0813/zotero-agents)로 변경되었습니다.
 
 ---
 

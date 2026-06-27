@@ -33,7 +33,7 @@
   <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 Начиная с версии v0.5.0, плагин переименован из **Zotero Skills** в **Zotero Agents**.
+> 💡 Начиная с версии v0.5.0, плагин переименован из **Zotero Skills** в [**Zotero Agents**](https://github.com/leike0813/zotero-agents).
 
 ---
 

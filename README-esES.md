@@ -33,7 +33,7 @@
   <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 A partir de v0.5.0, este complemento ha pasado de llamarse **Zotero Skills** a **Zotero Agents**.
+> 💡 A partir de v0.5.0, este complemento ha pasado de llamarse **Zotero Skills** a [**Zotero Agents**](https://github.com/leike0813/zotero-agents).
 
 ---
 

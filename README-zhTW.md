@@ -33,7 +33,7 @@
   <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 自 v0.5.0 起，本外掛程式由 **Zotero Skills** 更名為 **Zotero Agents**。
+> 💡 自 v0.5.0 起，本外掛程式由 **Zotero Skills** 更名為 [**Zotero Agents**](https://github.com/leike0813/zotero-agents)。
 
 ---
 

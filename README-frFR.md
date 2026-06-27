@@ -20,7 +20,7 @@
   <a href="README.md">English</a> · <a href="README-zhCN.md">简体中文</a> · <a href="README-zhTW.md">繁體中文</a> · <a href="README-jaJP.md">日本語</a> · <strong>Français</strong> · <a href="README-de.md">Deutsch</a> · <a href="README-esES.md">Español</a> · <a href="README-ptBR.md">Português</a> · <a href="README-koKR.md">한국어</a> · <a href="README-itIT.md">Italiano</a> · <a href="README-ruRU.md">Русский</a> · <a href="https://leike0813.github.io/zotero-agents/">📖 Documentation</a> · <a href="https://github.com/leike0813/zotero-agents">GitHub</a> · <a href="https://gitee.com/leike0813/zotero-agents">Gitee</a>
 </p>
 
-> 💡 Depuis la version v0.5.0, ce plugin a été renommé de **Zotero Skills** en **Zotero Agents**.
+> 💡 Depuis la version v0.5.0, ce plugin a été renommé de **Zotero Skills** en [**Zotero Agents**](https://github.com/leike0813/zotero-agents).
 
 ---
 
